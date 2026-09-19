@@ -1,5 +1,6 @@
 package com.verireview.review;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -22,4 +23,7 @@ public interface FindingRepository extends JpaRepository<Finding, UUID> {
       """)
   Page<Finding> search(UUID reviewId, FindingSeverity severity, FindingCategory category,
       FindingStatus status, Pageable pageable);
+
+  List<Finding> findByReviewProjectIdAndSeverityInAndCreatedAtAfter(
+      UUID projectId, List<FindingSeverity> severities, Instant after);
 }

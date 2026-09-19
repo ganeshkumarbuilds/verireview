@@ -1,6 +1,7 @@
 package com.verireview.verification;
 
 import com.verireview.common.BaseEntity;
+import com.verireview.execution.ExecutionRun;
 import com.verireview.fix.Patch;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -25,6 +26,10 @@ public class VerificationRun extends BaseEntity {
   @ManyToOne(fetch = FetchType.LAZY, optional = false)
   @JoinColumn(name = "patch_id", nullable = false)
   private Patch patch;
+
+  @ManyToOne(fetch = FetchType.LAZY)
+  @JoinColumn(name = "execution_run_id")
+  private ExecutionRun executionRun;
 
   @Enumerated(EnumType.STRING)
   @Column(name = "build_status", nullable = false, length = 20)
@@ -73,6 +78,14 @@ public class VerificationRun extends BaseEntity {
 
   public void setPatch(Patch patch) {
     this.patch = patch;
+  }
+
+  public ExecutionRun getExecutionRun() {
+    return executionRun;
+  }
+
+  public void setExecutionRun(ExecutionRun executionRun) {
+    this.executionRun = executionRun;
   }
 
   public BuildStatus getBuildStatus() {

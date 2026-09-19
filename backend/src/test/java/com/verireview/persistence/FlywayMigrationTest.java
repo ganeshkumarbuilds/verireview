@@ -25,7 +25,7 @@ class FlywayMigrationTest extends AbstractPersistenceTest {
     List<String> versions = jdbc.queryForList(
         "SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
         String.class);
-    assertThat(versions).containsExactly("1", "2", "3", "4");
+    assertThat(versions).containsExactly("1", "2", "3", "4", "5", "6");
   }
 
   @Test
