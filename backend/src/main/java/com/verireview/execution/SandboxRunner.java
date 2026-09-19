@@ -34,22 +34,35 @@ public class SandboxRunner {
   private final String memory;
   private final String cpus;
   private final String pidsLimit;
+  private final String executionImage;
+  private final long executionTimeoutSeconds;
+  private final long maxOutputBytes;
 
   public SandboxRunner(
       @Value("${app.analysis.image:verireview-analysis:phase6}") String image,
       @Value("${app.analysis.timeout-seconds:300}") long timeoutSeconds,
       @Value("${app.analysis.memory:2g}") String memory,
       @Value("${app.analysis.cpus:2}") String cpus,
-      @Value("${app.analysis.pids-limit:256}") String pidsLimit) {
+      @Value("${app.analysis.pids-limit:256}") String pidsLimit,
+      @Value("${app.execution.image:maven:3.9.9-eclipse-temurin-21}") String executionImage,
+      @Value("${app.execution.timeout-seconds:300}") long executionTimeoutSeconds,
+      @Value("${app.execution.max-output-bytes:1048576}") long maxOutputBytes) {
     this.image = image;
     this.timeoutSeconds = timeoutSeconds;
     this.memory = memory;
     this.cpus = cpus;
     this.pidsLimit = pidsLimit;
+    this.executionImage = executionImage;
+    this.executionTimeoutSeconds = executionTimeoutSeconds;
+    this.maxOutputBytes = maxOutputBytes;
   }
 
   /** Disposable container run workspace (snapshot copy + report dir). */
   public record SandboxWorkspace(Path snapshotDir, Path outputDir) {
+  }
+
+  /** Result of a sandboxed build+test execution. */
+  public record ExecutionResult(int exitCode, String stdout, String stderr, long durationMs, boolean timedOut) {
   }
 
   /**
@@ -79,6 +92,91 @@ public class SandboxRunner {
       deleteQuietly(work);
       throw new SandboxException("Analysis sandbox failed: " + e.getMessage());
     }
+  }
+
+  /**
+   * Executes build+test for an APPLIED project snapshot inside Docker.
+   * Never runs on host; no network; capped resources; bounded timeout.
+   */
+  public ExecutionResult executeBuild(Path projectDir) throws SandboxException {
+    Path work;
+    try {
+      work = Files.createTempDirectory("verireview-execution-");
+    } catch (IOException e) {
+      throw new SandboxException("Could not stage execution workspace");
+    }
+    Path snapshot = work.resolve("project");
+    try {
+      try {
+        copySnapshot(projectDir, snapshot);
+      } catch (IOException e) {
+        throw new SandboxException("Could not stage execution workspace: " + e.getMessage());
+      }
+      long start = System.currentTimeMillis();
+      ExecutionResult result = runExecutionContainer(snapshot);
+      long duration = System.currentTimeMillis() - start;
+      // Adjust duration if needed
+      return new ExecutionResult(result.exitCode(), result.stdout(), result.stderr(), duration, result.timedOut());
+    } finally {
+      deleteQuietly(work);
+    }
+  }
+
+  private ExecutionResult runExecutionContainer(Path snapshot) throws SandboxException {
+    List<String> command = new ArrayList<>(List.of(
+        "docker", "run", "--rm",
+        "--network", "none",
+        "--memory", memory,
+        "--cpus", cpus,
+        "--pids-limit", pidsLimit,
+        "-v", snapshot.toAbsolutePath() + ":/project:ro",
+        executionImage,
+        "sh", "-c", "cd /project && if [ -f pom.xml ]; then mvn -B test -o 2>&1 || mvn -B test 2>&1; elif [ -f build.gradle ]; then gradle test 2>&1; elif [ -f build.gradle.kts ]; then gradle test 2>&1; else echo 'no build file found' >&2; exit 1; fi"));
+    Process process;
+    long start = System.currentTimeMillis();
+    try {
+      process = new ProcessBuilder(command).start();
+      java.io.ByteArrayOutputStream stdoutBuf = new java.io.ByteArrayOutputStream();
+      java.io.ByteArrayOutputStream stderrBuf = new java.io.ByteArrayOutputStream();
+      Thread outDrainer = new Thread(() -> {
+        try { process.getInputStream().transferTo(stdoutBuf); } catch (IOException ignored) {}
+      });
+      Thread errDrainer = new Thread(() -> {
+        try { process.getErrorStream().transferTo(stderrBuf); } catch (IOException ignored) {}
+      });
+      outDrainer.setDaemon(true);
+      errDrainer.setDaemon(true);
+      outDrainer.start();
+      errDrainer.start();
+      boolean finished = process.waitFor(executionTimeoutSeconds, TimeUnit.SECONDS);
+      if (!finished) {
+        process.destroyForcibly();
+        outDrainer.join(5000);
+        errDrainer.join(5000);
+        long duration = System.currentTimeMillis() - start;
+        String stdout = truncate(new String(stdoutBuf.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+        String stderr = truncate(new String(stderrBuf.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+        return new ExecutionResult(124, stdout, stderr, duration, true);
+      }
+      outDrainer.join(10_000);
+      errDrainer.join(10_000);
+      long duration = System.currentTimeMillis() - start;
+      int exitCode = process.exitValue();
+      String stdout = truncate(new String(stdoutBuf.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+      String stderr = truncate(new String(stderrBuf.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+      return new ExecutionResult(exitCode, stdout, stderr, duration, false);
+    } catch (IOException e) {
+      throw new SandboxException("Docker unavailable for execution: " + e.getMessage());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new SandboxException("Execution interrupted");
+    }
+  }
+
+  private String truncate(String content) {
+    if (content == null) return null;
+    if (content.length() <= maxOutputBytes) return content;
+    return content.substring(0, (int) maxOutputBytes) + "\n...[truncated at " + maxOutputBytes + " bytes]";
   }
 
   public void deleteWorkspace(SandboxWorkspace workspace) {

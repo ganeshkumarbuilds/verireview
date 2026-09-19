@@ -53,6 +53,13 @@ app:
     pids-limit: "256"
     # Dependency-Check needs an NVD mirror; off unless explicitly enabled.
     dependency-check-enabled: false
+  execution:
+    image: ${EXECUTION_IMAGE:maven:3.9.9-eclipse-temurin-21}
+    timeout-seconds: 300
+    memory: 2g
+    cpus: "2"
+    pids-limit: "256"
+    max-output-bytes: 1048576
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
   # Phase 7C: Review Agent integration. The backend calls the ai-service
