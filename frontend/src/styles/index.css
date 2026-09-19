@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* VeriReview clean light theme. Component styling uses Tailwind utilities
+   inline; only global defaults live here. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-slate-50);
+  color: var(--color-slate-900);
+}
+
+/* Clickable things show the pointer everywhere (Tailwind v4 preflight
+   renders buttons with a default cursor). */
+button:not(:disabled),
+[role='button'],
+a {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}

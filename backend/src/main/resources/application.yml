@@ -1,0 +1,61 @@
+spring:
+  application:
+    name: verireview
+  # Local one-command boot (`.\mvnw.cmd spring-boot:run` from backend/):
+  # values come from the repo-root .env when present (JWT key, datasource).
+  # Missing .env is fine — safe defaults below apply and the app still fails
+  # fast when JWT_SIGNING_KEY is absent. The .env file itself is never committed.
+  config:
+    import: optional:file:../.env[.properties]
+  datasource:
+    # Values resolve from the repo-root .env when present, else the localhost
+    # defaults below (which match the compose `db` service credentials).
+    # Never commit real credentials — placeholder default only.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/verireview}
+    username: ${SPRING_DATASOURCE_USERNAME:verireview}
+    password: ${SPRING_DATASOURCE_PASSWORD:change-me-in-your-local-env}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    # Flyway owns the schema. Hibernate only validates; it must never create
+    # or drop tables (no create / create-drop anywhere, including tests).
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  servlet:
+    multipart:
+      # Phase 5: admits the 50 MB project cap (larger bodies → 413).
+      max-file-size: 50MB
+      max-request-size: 55MB
+
+# Phase 3 auth (SECURITY_DESIGN §2, ADR-009). Secret comes from the
+# JWT_SIGNING_KEY environment variable only — never commit a real value.
+# The app fails fast at startup when it is missing or too short for HS256.
+app:
+  jwt:
+    secret: ${JWT_SIGNING_KEY:}
+    access-minutes: 15
+    refresh-days: 7
+  auth:
+    rate-limit-per-minute: 100
+  ingestion:
+    # Project blobs live outside the DB (metadata only in PostgreSQL).
+    # Overridable: STORAGE_ROOT=/var/lib/verireview/projects
+    storage-root: ${STORAGE_ROOT:./uploads/projects}
+  analysis:
+    # Deterministic analyzers run ONLY in this Docker image (SECURITY_DESIGN §4).
+    image: ${ANALYSIS_IMAGE:verireview-analysis:phase6}
+    timeout-seconds: 300
+    memory: 2g
+    cpus: "2"
+    pids-limit: "256"
+    # Dependency-Check needs an NVD mirror; off unless explicitly enabled.
+    dependency-check-enabled: false
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+
+server:
+  # Overridable at runtime: PORT=8081 ./mvnw spring-boot:run
+  port: ${PORT:8080}

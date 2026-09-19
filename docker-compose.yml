@@ -1,0 +1,38 @@
+# VeriReview Compose — Phase 0 stub
+# Phase-limited subset: PostgreSQL 16 only. Backend, frontend, ai-service,
+# and sandbox-runner services arrive in their roadmap phases (1, 4, 7, 10).
+# `docker compose config` must pass. `docker compose up db` starts Postgres only.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    # NOTE: docker compose automatically loads .env for ${VAR} interpolation.
+    # No `env_file` here so `docker compose config` passes without a local .env.
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-verireview}
+      POSTGRES_USER: ${POSTGRES_USER:-verireview}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-your-local-env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-verireview} -d $${POSTGRES_DB:-verireview}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Phase 1+: backend (Spring Boot, Java 21)
+  # backend:
+  #   build: ./backend
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+
+  # Phase 4+: frontend (React + Vite, static build served via nginx or preview)
+  # Phase 7+: ai-service (Python FastAPI + LangGraph, internal network only)
+  # Phase 10+: sandbox-runner (isolated build/test executor, see ADR-007)
+
+volumes:
+  pgdata:
