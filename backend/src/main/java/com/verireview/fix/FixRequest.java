@@ -30,10 +30,13 @@ public class FixRequest extends BaseEntity {
 
   @Enumerated(EnumType.STRING)
   @Column(name = "status", nullable = false, length = 20)
-  private FixRequestStatus status = FixRequestStatus.PENDING;
+  private FixRequestStatus status = FixRequestStatus.REQUESTED;
 
   @Column(name = "scope_note", columnDefinition = "TEXT")
   private String scopeNote;
+
+  @Column(name = "error", columnDefinition = "TEXT")
+  private String error;
 
   public FixRequest() {
   }
@@ -73,5 +76,13 @@ public class FixRequest extends BaseEntity {
 
   public void setScopeNote(String scopeNote) {
     this.scopeNote = scopeNote;
+  }
+
+  public String getError() {
+    return error;
+  }
+
+  public void setError(String error) {
+    this.error = error;
   }
 }

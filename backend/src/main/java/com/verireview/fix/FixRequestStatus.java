@@ -1,7 +1,7 @@
 package com.verireview.fix;
 
 public enum FixRequestStatus {
-  PENDING,
+  REQUESTED,
   IN_PROGRESS,
   COMPLETED,
   FAILED,

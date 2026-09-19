@@ -1,6 +1,7 @@
 package com.verireview.fix;
 
 import com.verireview.common.BaseEntity;
+import com.verireview.project.Project;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -21,6 +22,10 @@ public class Patch extends BaseEntity {
   @ManyToOne(fetch = FetchType.LAZY, optional = false)
   @JoinColumn(name = "fix_request_id", nullable = false)
   private FixRequest fixRequest;
+
+  @ManyToOne(fetch = FetchType.LAZY)
+  @JoinColumn(name = "project_id")
+  private Project project;
 
   @Column(name = "diff", nullable = false, columnDefinition = "TEXT")
   private String diff;
@@ -55,6 +60,14 @@ public class Patch extends BaseEntity {
 
   public void setFixRequest(FixRequest fixRequest) {
     this.fixRequest = fixRequest;
+  }
+
+  public Project getProject() {
+    return project;
+  }
+
+  public void setProject(Project project) {
+    this.project = project;
   }
 
   public String getDiff() {

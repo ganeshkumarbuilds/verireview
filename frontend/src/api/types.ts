@@ -86,6 +86,20 @@ export interface FindingResponse {
   createdAt: string;
 }
 
+export type FixRequestStatus = 'REQUESTED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+
+export interface FixRequestResponse {
+  id: string;
+  findingId: string;
+  projectId: string;
+  requestedBy: string;
+  status: FixRequestStatus;
+  scopeNote: string | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** Legacy envelope shape (kept for forward-compat parsing only). */
 export interface ApiEnvelope<T> {
   data: T | null;
