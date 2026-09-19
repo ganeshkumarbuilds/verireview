@@ -3,6 +3,7 @@ import { ApiError } from '../api/client';
 import { createFixRequest, listFixRequests } from '../api/fixRequests';
 import type { FindingResponse, FixRequestResponse } from '../api/types';
 import { apiClient, useAuth } from '../auth/AuthContext';
+import { FixWorkflow } from './FixWorkflow';
 import { Badge } from './ui';
 
 export interface EvidenceMeta {
@@ -163,6 +164,10 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
   const hasActiveRequest = fixRequests.some(
     (r) => r.status === 'REQUESTED' || r.status === 'IN_PROGRESS',
   );
+
+  // History is newest-first (backend orders by createdAt desc): drive the
+  // Apply → Execute → Verify workflow from the latest fix request.
+  const latestFixRequest = fixRequests.length > 0 ? fixRequests[0] : null;
 
   const handleSubmit = async () => {
     if (!token) return;
@@ -342,6 +347,14 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
               </button>
             )}
           </section>
+
+          {latestFixRequest && (
+            <FixWorkflow
+              key={latestFixRequest.id}
+              fixRequest={latestFixRequest}
+              onFixRequestChanged={() => void loadFixRequests()}
+            />
+          )}
         </div>
       </div>
 

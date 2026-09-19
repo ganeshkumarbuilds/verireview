@@ -100,6 +100,57 @@ export interface FixRequestResponse {
   updatedAt: string;
 }
 
+export type PatchStatus = 'PROPOSED' | 'APPLIED' | 'REJECTED';
+
+export interface PatchResponse {
+  id: string;
+  fixRequestId: string;
+  projectId: string;
+  diff: string;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  status: PatchStatus;
+  validationError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ExecutionStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+export type BuildStatus = 'SUCCESS' | 'FAILURE' | 'TIMEOUT' | 'PENDING' | 'RUNNING';
+
+export interface ExecutionRunResponse {
+  id: string;
+  projectId: string;
+  patchId: string;
+  status: ExecutionStatus;
+  exitCode: number | null;
+  stdout: string | null;
+  stderr: string | null;
+  durationMs: number | null;
+  buildStatus: BuildStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type VerificationVerdict = 'PENDING' | 'VERIFIED' | 'REJECTED';
+
+export interface VerificationRunResponse {
+  id: string;
+  patchId: string;
+  executionRunId: string | null;
+  buildStatus: BuildStatus;
+  testsTotal: number;
+  testsPassed: number;
+  testsFailed: number;
+  testsSkipped: number;
+  verdict: VerificationVerdict;
+  logRef: string | null;
+  durationMs: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** Legacy envelope shape (kept for forward-compat parsing only). */
 export interface ApiEnvelope<T> {
   data: T | null;
