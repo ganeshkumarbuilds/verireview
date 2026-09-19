@@ -6,7 +6,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.verireview.agent.AiServiceException;
 import com.verireview.agent.CodingAgent;
+import com.verireview.agent.CodingAiClient;
+import com.verireview.agent.dto.AiCodingResult;
 import com.verireview.audit.AuditLogRepository;
 import com.verireview.persistence.AbstractPersistenceTest;
 import com.verireview.project.Project;
@@ -22,15 +25,20 @@ import com.verireview.review.ReviewRepository;
 import com.verireview.user.User;
 import com.verireview.user.UserRepository;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
 /**
  * Phase 9C patch foundation: CodingAgent placeholder, Patch linked to FixRequest+project,
@@ -50,6 +58,35 @@ class PatchTest extends AbstractPersistenceTest {
   @Autowired private FixRequestRepository fixRequests;
   @Autowired private PatchRepository patches;
   @Autowired private CodingAgent codingAgent;
+  @MockitoBean private CodingAiClient codingAiClient;
+
+  private static final String VALID_DIFF =
+      "diff --git a/src/Main.java b/src/Main.java\n"
+          + "--- a/src/Main.java\n"
+          + "+++ b/src/Main.java\n"
+          + "@@ -10,3 +10,4 @@\n"
+          + " // placeholder for finding: SQL concat\n"
+          + "+// FIX (proposed, not applied): SQL concat\n"
+          + " // finding: SQL concat";
+
+  @BeforeEach
+  void stubCodingAi() {
+    when(codingAiClient.coding(any())).thenAnswer(inv -> {
+      var arg = inv.getArgument(0);
+      if (arg == null) return null;
+      var req = (com.verireview.agent.dto.AiCodingRequest) arg;
+      return new AiCodingResult(
+          req.fixRequestId(),
+          "coding",
+          "coding/v1",
+          VALID_DIFF,
+          1,
+          1,
+          0,
+          "Fix SQL concat via prepared statement",
+          "ok");
+    });
+  }
 
   @Test
   void codingAgentDoesNotModifyFilesAndReturnsPlaceholder() throws Exception {
@@ -171,6 +208,40 @@ class PatchTest extends AbstractPersistenceTest {
         .andExpect(status().isUnauthorized());
     mockMvc.perform(get("/api/v1/patches/" + fakePatch))
         .andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void aiServiceUnavailableReturnsBadGatewayAndNoPatch() throws Exception {
+    String token = access(register());
+    User owner = tokenOwner(token);
+    String findingId = findingFor(owner);
+    String fixId = createFixRequest(token, findingId);
+
+    when(codingAiClient.coding(any()))
+        .thenThrow(new AiServiceException(AiServiceException.Kind.UNAVAILABLE, "AI down"));
+
+    mockMvc.perform(post("/api/v1/fix-requests/" + fixId + "/patch")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isBadGateway());
+
+    FixRequest fr = fixRequests.findById(UUID.fromString(fixId)).orElseThrow();
+    assertThat(fr.getStatus()).isEqualTo(FixRequestStatus.REQUESTED);
+    assertThat(patches.findByFixRequestIdOrderByCreatedAtDesc(UUID.fromString(fixId))).isEmpty();
+  }
+
+  @Test
+  void malformedAiDiffReturnsBadGateway() throws Exception {
+    String token = access(register());
+    User owner = tokenOwner(token);
+    String findingId = findingFor(owner);
+    String fixId = createFixRequest(token, findingId);
+
+    when(codingAiClient.coding(any()))
+        .thenReturn(new AiCodingResult(fixId, "coding", "coding/v1", "not a diff", 0, 0, 0, "bad", "notes"));
+
+    mockMvc.perform(post("/api/v1/fix-requests/" + fixId + "/patch")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isBadGateway());
   }
 
   // Helpers

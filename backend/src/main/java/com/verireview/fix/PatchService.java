@@ -1,5 +1,6 @@
 package com.verireview.fix;
 
+import com.verireview.agent.AiServiceException;
 import com.verireview.agent.CodingAgent;
 import com.verireview.audit.AuditService;
 import com.verireview.fix.dto.PatchResponse;
@@ -43,14 +44,23 @@ public class PatchService {
           HttpStatus.CONFLICT, "FixRequest must be in REQUESTED state to propose a patch");
     }
 
-    CodingAgent.Proposal proposal = codingAgent.propose(fixRequest);
-    if (proposal == null || proposal.diff() == null || proposal.diff().isBlank()) {
-      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Agent produced empty diff");
+    CodingAgent.Proposal proposal;
+    try {
+      proposal = codingAgent.propose(fixRequest);
+    } catch (AiServiceException e) {
+      // Controlled failure: do not create patch, keep FixRequest in REQUESTED
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage());
     }
-    // Basic validation: diff must look like unified diff
+    if (proposal == null || proposal.diff() == null || proposal.diff().isBlank()) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI coding returned empty diff");
+    }
+    // Strict validation: diff must look like unified diff and not claim verification
     String diff = proposal.diff().trim();
-    if (!diff.startsWith("diff --git") && !diff.contains("---") && !diff.contains("+++")) {
-      throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Invalid diff format");
+    if (!diff.contains("diff --git") || !diff.contains("---") || !diff.contains("+++") || !diff.contains("@@")) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI coding returned invalid diff format");
+    }
+    if (diff.toLowerCase().contains("verified") || diff.toLowerCase().contains("tests passed") || diff.toLowerCase().contains("build passed")) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI diff must not claim verification");
     }
 
     Project project = fixRequest.getFinding().getReview().getProject();
