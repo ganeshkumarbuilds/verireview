@@ -1,5 +1,6 @@
 package com.verireview.review;
 
+import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -9,6 +10,8 @@ import org.springframework.data.jpa.repository.Query;
 public interface FindingRepository extends JpaRepository<Finding, UUID> {
 
   boolean existsByReviewIdAndDedupKey(UUID reviewId, String dedupKey);
+
+  List<Finding> findByReviewId(UUID reviewId);
 
   @Query("""
       SELECT f FROM Finding f

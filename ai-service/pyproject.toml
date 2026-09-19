@@ -1,0 +1,25 @@
+[project]
+name = "verireview-ai-service"
+version = "0.1.0"
+description = "VeriReview agentic AI service (Phase 7A foundation): FastAPI + LangGraph review skeleton, no LLM calls yet."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.141.1",
+  "uvicorn==0.53.0",
+  "langgraph==1.2.11",
+  "pydantic==2.13.5",
+  "pydantic-settings==2.15.0",
+  "httpx==0.28.1",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest==9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

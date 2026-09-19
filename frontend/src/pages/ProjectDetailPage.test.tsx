@@ -191,3 +191,114 @@ describe('ProjectDetailPage analysis', () => {
     );
   });
 });
+
+const AI_FINDING = {
+  id: 'f3',
+  reviewId: 'r1',
+  category: 'SECURITY',
+  severity: 'HIGH',
+  source: 'AI',
+  status: 'OPEN',
+  analyzer: 'review-agent',
+  rule: null,
+  title: 'SQL string concat',
+  description: 'User input reaches the query.',
+  filePath: 'Dao.java',
+  lineStart: 41,
+  lineEnd: 41,
+  evidence: JSON.stringify({
+    analyzer: 'review-agent',
+    model: 'openrouter/auto',
+    confidence: 0.85,
+    suggestedFixHint: 'Use prepared statements.',
+  }),
+  dedupKey: 'c',
+  createdAt: '2026-01-01T00:00:00Z',
+};
+
+const FAILED_REVIEW = {
+  ...COMPLETED,
+  id: 'r9',
+  status: 'FAILED',
+  findingCount: 0,
+  finishedAt: null,
+  durationMs: null,
+  error: 'Sandbox image missing.',
+};
+
+function renderWithFindings(review: unknown, findings: unknown[]) {
+  renderDetail((url) => {
+    if (url.endsWith('/projects/p1')) {
+      return new Response(JSON.stringify(PROJECT), { status: 200 });
+    }
+    if (url.includes('/files/content')) {
+      return new Response(
+        JSON.stringify({ path: 'Dao.java', sizeBytes: 10, truncated: false, content: 'x' }),
+        { status: 200 },
+      );
+    }
+    if (url.includes('/files')) {
+      return pageOf([]);
+    }
+    if (url.includes('/findings')) {
+      return pageOf(findings);
+    }
+    return pageOf([review]);
+  });
+}
+
+describe('Phase 8 review experience', () => {
+  it('shows overview counts split by severity and source', async () => {
+    renderWithFindings(COMPLETED, [...FINDINGS, AI_FINDING]);
+    await waitFor(() => expect(screen.getByText('3 total')).toBeInTheDocument());
+    expect(screen.getByText('0 critical')).toBeInTheDocument();
+    expect(screen.getByText('2 high')).toBeInTheDocument();
+    expect(screen.getByText('1 medium')).toBeInTheDocument();
+    expect(screen.getByText('0 low')).toBeInTheDocument();
+    expect(screen.getByText('2 deterministic')).toBeInTheDocument();
+    expect(screen.getByText('1 ai')).toBeInTheDocument();
+  });
+
+  it('filters by source and searches across title, file, and rule', async () => {
+    renderWithFindings(COMPLETED, [...FINDINGS, AI_FINDING]);
+    await waitFor(() => expect(screen.getByText('SQL string concat')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'AI' } });
+    expect(screen.queryByText('LineLength')).not.toBeInTheDocument();
+    expect(screen.getByText('SQL string concat')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'ALL' } });
+    fireEvent.change(screen.getByLabelText('Search findings'), {
+      target: { value: 'dao.java' },
+    });
+    expect(screen.queryByText('LineLength')).not.toBeInTheDocument();
+    expect(screen.getByText('SQL string concat')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Search findings'), {
+      target: { value: 'nothing matches this' },
+    });
+    expect(screen.getByText('No findings match the selected filters.')).toBeInTheDocument();
+  });
+
+  it('opens a detail panel with remediation and closes it', async () => {
+    renderWithFindings(COMPLETED, [...FINDINGS, AI_FINDING]);
+    await waitFor(() => expect(screen.getByText('SQL string concat')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open finding SQL string concat' }));
+    expect(screen.getByRole('dialog', { name: 'Finding details' })).toBeInTheDocument();
+    expect(screen.getByText('Use prepared statements.')).toBeInTheDocument();
+    expect(screen.getByText('85%')).toBeInTheDocument();
+    expect(screen.getByText('openrouter/auto')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close finding details' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Finding details' })).not.toBeInTheDocument(),
+    );
+  });
+
+  it('shows a clear banner when the analysis failed', async () => {
+    renderWithFindings(FAILED_REVIEW, []);
+    await waitFor(() => expect(screen.getByText('Analysis failed')).toBeInTheDocument());
+    expect(screen.getByText('Sandbox image missing.')).toBeInTheDocument();
+  });
+});

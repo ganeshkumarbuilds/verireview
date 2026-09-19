@@ -1,5 +1,6 @@
 package com.verireview.project;
 
+import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -9,6 +10,8 @@ import org.springframework.data.jpa.repository.Query;
 public interface ProjectFileRepository extends JpaRepository<ProjectFile, UUID> {
 
   long countByProjectId(UUID projectId);
+
+  List<ProjectFile> findByProjectId(UUID projectId);
 
   @Query("""
       SELECT f FROM ProjectFile f

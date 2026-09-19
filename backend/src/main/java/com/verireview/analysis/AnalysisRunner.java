@@ -1,5 +1,9 @@
 package com.verireview.analysis;
 
+import com.verireview.agent.AiReviewService;
+import com.verireview.agent.AiServiceProperties;
+import com.verireview.agent.ReviewAiClient;
+import com.verireview.agent.dto.AiReviewResult;
 import com.verireview.audit.AuditService;
 import com.verireview.execution.SandboxRunner;
 import com.verireview.review.ReviewStatus;
@@ -33,16 +37,25 @@ public class AnalysisRunner {
   private final SandboxRunner sandbox;
   private final AuditService audits;
   private final boolean dependencyCheckEnabled;
+  private final AiServiceProperties aiProps;
+  private final AiReviewService aiReviews;
+  private final ReviewAiClient aiClient;
 
   public AnalysisRunner(
       @Lazy AnalysisJobService jobs,
       SandboxRunner sandbox,
       AuditService audits,
-      @Value("${app.analysis.dependency-check-enabled:false}") boolean dependencyCheckEnabled) {
+      @Value("${app.analysis.dependency-check-enabled:false}") boolean dependencyCheckEnabled,
+      AiServiceProperties aiProps,
+      AiReviewService aiReviews,
+      ReviewAiClient aiClient) {
     this.jobs = jobs;
     this.sandbox = sandbox;
     this.audits = audits;
     this.dependencyCheckEnabled = dependencyCheckEnabled;
+    this.aiProps = aiProps;
+    this.aiReviews = aiReviews;
+    this.aiClient = aiClient;
   }
 
   @Async("analysisExecutor")
@@ -59,8 +72,9 @@ public class AnalysisRunner {
       workspace = sandbox.analyzeSnapshot(projectDir);
       List<ToolReport> reports = collectReports(workspace);
       int stored = jobs.persistFindings(reviewId, reports);
-      String notes = toolNotes(reports);
-      jobs.finish(reviewId, started, ReviewStatus.COMPLETED, stored,
+      AiReviewService.AiOutcome aiOutcome = runAiStep(reviewId);
+      String notes = combineNotes(toolNotes(reports), aiOutcome.note());
+      jobs.finish(reviewId, started, ReviewStatus.COMPLETED, stored + aiOutcome.added(),
           notes.isEmpty() ? null : notes);
       audits.record(null, "ANALYSIS_COMPLETED", "review", reviewId.toString());
     } catch (Exception e) {
@@ -106,8 +120,38 @@ public class AnalysisRunner {
     };
   }
 
-  private static String toolNotes(List<ToolReport> reports) {
-    List<String> notes = new ArrayList<>();
+  /**
+   * AI review step: scoped input is assembled and sent in one transaction,
+   * the HTTP call runs outside any transaction (bounded by client timeouts),
+   * and validation/persistence happen in a second short transaction.
+   * Any AI failure degrades to deterministic-only — it never fails the review.
+   */
+  private AiReviewService.AiOutcome runAiStep(UUID reviewId) {
+    if (!aiProps.enabled()) {
+      return AiReviewService.AiOutcome.skipped("AI review disabled");
+    }
+    AiReviewService.AiContext ctx = aiReviews.prepare(reviewId);
+    long callStart = System.nanoTime();
+    try {
+      AiReviewResult result = aiClient.review(ctx.toRequest());
+      return aiReviews.complete(ctx, result, elapsedMs(callStart));
+    } catch (com.verireview.agent.AiServiceException e) {
+      return aiReviews.fail(ctx, e.getMessage(), elapsedMs(callStart));
+    }
+  }
+
+  private static long elapsedMs(long startNanos) {
+    return (System.nanoTime() - startNanos) / 1_000_000L;
+  }
+
+  private static String combineNotes(String toolNotes, String aiNote) {
+    if (aiNote == null || aiNote.isBlank()) {
+      return toolNotes;
+    }
+    return toolNotes.isEmpty() ? aiNote : toolNotes + "; " + aiNote;
+  }
+
+  private static String toolNotes(List<ToolReport> reports) {    List<String> notes = new ArrayList<>();
     for (ToolReport report : reports) {
       if (report.status() != ToolReport.ToolStatus.RAN) {
         notes.add(report.analyzer() + ": " + report.status()

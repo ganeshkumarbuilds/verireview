@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import { RequireAuth } from './auth/AuthContext';
 import { Layout } from './components/Layout';
 import { DashboardPage } from './pages/DashboardPage';
@@ -9,11 +9,11 @@ import { NotFoundPage } from './pages/NotFoundPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { RegisterPage } from './pages/RegisterPage';
-import { ReviewPage } from './pages/ReviewPage';
 
 /** Route table. `/`, `/login`, and `/register` render standalone;
- *  the workspace (dashboard, projects, review, history) lives under Layout.
- *  Project routes require a session; auth wiring is live. */
+ *  the workspace (dashboard, projects, history) lives under Layout.
+ *  Reviews are project-scoped in the API, so `/review` redirects to the
+ *  project list. Project routes require a session. */
 export function AppRoutes() {
   return (
     <Routes>
@@ -38,7 +38,7 @@ export function AppRoutes() {
             </RequireAuth>
           }
         />
-        <Route path="review" element={<ReviewPage />} />
+        <Route path="review" element={<Navigate to="/projects" replace />} />
         <Route path="history" element={<HistoryPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

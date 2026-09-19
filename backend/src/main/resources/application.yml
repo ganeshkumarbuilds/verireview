@@ -55,6 +55,17 @@ app:
     dependency-check-enabled: false
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
+  # Phase 7C: Review Agent integration. The backend calls the ai-service
+  # POST /internal/review with scoped data; failures degrade to
+  # deterministic-only (never fail the review, never block past timeouts).
+  ai-service:
+    url: ${AI_SERVICE_INTERNAL_URL:http://localhost:8001}
+    secret: ${AI_SERVICE_INTERNAL_SECRET:}
+    timeout-seconds: 120
+    enabled: true
+    model-label: "ai-service/review"
+    max-files: 25
+    max-bytes-per-file: 16384
 
 server:
   # Overridable at runtime: PORT=8081 ./mvnw spring-boot:run

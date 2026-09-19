@@ -64,7 +64,7 @@ describe('placeholder pages', () => {
     ['/', 'Generate. Review. Fix. Verify.', false],
     ['/dashboard', 'Dashboard', false],
     ['/projects', 'Projects', true],
-    ['/review', 'Review', false],
+    ['/review', 'Login', false],
     ['/history', 'History', false],
     ['/login', 'Login', false],
     ['/register', 'Register', false],

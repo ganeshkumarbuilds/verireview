@@ -17,6 +17,7 @@ import type {
 } from '../api/types';
 import { apiClient, useAuth } from '../auth/AuthContext';
 import { Badge, Card } from '../components/ui';
+import { FindingDetail } from '../components/FindingDetail';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 const POLL_MS = 3000;
@@ -70,6 +71,9 @@ export function ProjectDetailPage() {
   const [findings, setFindings] = useState<FindingResponse[]>([]);
   const [severityFilter, setSeverityFilter] = useState('ALL');
   const [analyzerFilter, setAnalyzerFilter] = useState('ALL');
+  const [sourceFilter, setSourceFilter] = useState('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [detailFindingId, setDetailFindingId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
@@ -194,11 +198,41 @@ export function ProjectDetailPage() {
   const analyzers = Array.from(
     new Set(findings.map((finding) => finding.analyzer ?? 'unknown')),
   ).sort();
-  const visibleFindings = findings.filter(
-    (finding) =>
-      (severityFilter === 'ALL' || finding.severity === severityFilter) &&
-      (analyzerFilter === 'ALL' || (finding.analyzer ?? 'unknown') === analyzerFilter),
-  );
+  const visibleFindings = findings.filter((finding) => {
+    if (severityFilter !== 'ALL' && finding.severity !== severityFilter) {
+      return false;
+    }
+    if (analyzerFilter !== 'ALL' && (finding.analyzer ?? 'unknown') !== analyzerFilter) {
+      return false;
+    }
+    if (sourceFilter !== 'ALL' && finding.source !== sourceFilter) {
+      return false;
+    }
+    const query = searchQuery.trim().toLowerCase();
+    if (query) {
+      const haystack = [finding.title, finding.description, finding.filePath, finding.rule]
+        .filter((part): part is string => part != null)
+        .join('\n')
+        .toLowerCase();
+      if (!haystack.includes(query)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const countBy = (predicate: (finding: FindingResponse) => boolean): number =>
+    findings.filter(predicate).length;
+  const overviewStats: [string, number][] = [
+    ['total', findings.length],
+    ['critical', countBy((finding) => finding.severity === 'CRITICAL')],
+    ['high', countBy((finding) => finding.severity === 'HIGH')],
+    ['medium', countBy((finding) => finding.severity === 'MEDIUM')],
+    ['low', countBy((finding) => finding.severity === 'LOW')],
+    ['deterministic', countBy((finding) => finding.source === 'DETERMINISTIC')],
+    ['ai', countBy((finding) => finding.source === 'AI')],
+  ];
+  const detailFinding = findings.find((finding) => finding.id === detailFindingId) ?? null;
 
   if (loading) {
     return <p className="text-sm text-slate-500">Loading…</p>;
@@ -321,9 +355,21 @@ export function ProjectDetailPage() {
             </div>
           </dl>
         )}
-        {selectedReview?.error && (
-          <p className="pt-2 text-sm text-amber-700">{selectedReview.error}</p>
-        )}
+      {selectedReview?.error && selectedReview.status !== 'FAILED' && (
+        <p className="pt-2 text-sm text-amber-700">{selectedReview.error}</p>
+      )}
+      {selectedReview && selectedReview.status === 'FAILED' && (
+        <div
+          role="alert"
+          className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+        >
+          <p className="font-semibold">Analysis failed</p>
+          <p className="mt-1">
+            {selectedReview.error ??
+              'The analysis did not complete. Start a new analysis to retry.'}
+          </p>
+        </div>
+      )}
       </Card>
 
       {reviews.length > 0 && (
@@ -352,6 +398,13 @@ export function ProjectDetailPage() {
 
       {selectedReview && (
         <Card title={`Findings (${visibleFindings.length})`}>
+          <ul aria-label="Review overview" className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+            {overviewStats.map(([label, count]) => (
+              <li key={label} className="text-slate-500">
+                <span className="font-semibold text-slate-800">{`${count} ${label}`}</span>
+              </li>
+            ))}
+          </ul>
           <div className="mb-3 flex flex-wrap gap-2">
             <label className="flex items-center gap-1.5 text-sm">
               <span className="text-slate-500">Severity</span>
@@ -385,6 +438,31 @@ export function ProjectDetailPage() {
                 ))}
               </select>
             </label>
+            <label className="flex items-center gap-1.5 text-sm">
+              <span className="text-slate-500">Source</span>
+              <select
+                aria-label="Filter by source"
+                value={sourceFilter}
+                onChange={(event) => setSourceFilter(event.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
+              >
+                <option value="ALL">All</option>
+                <option value="DETERMINISTIC">DETERMINISTIC</option>
+                <option value="AI">AI</option>
+                <option value="VERIFIED">VERIFIED</option>
+              </select>
+            </label>
+            <label className="flex flex-1 items-center gap-1.5 text-sm">
+              <span className="text-slate-500">Search</span>
+              <input
+                type="search"
+                aria-label="Search findings"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Title, file, rule…"
+                className="w-full min-w-32 flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
+              />
+            </label>
           </div>
           {findings.length === 0 ? (
             <p>
@@ -397,26 +475,43 @@ export function ProjectDetailPage() {
           ) : (
             <ul className="divide-y divide-slate-200">
               {visibleFindings.map((finding) => (
-                <li key={finding.id} className="space-y-1 py-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone={severityTone(finding.severity)}>{finding.severity}</Badge>
-                    <Badge tone="violet">{finding.analyzer ?? 'unknown'}</Badge>
-                    <span className="font-mono text-sm font-medium text-slate-800">
-                      {finding.rule ?? finding.title}
-                    </span>
-                  </div>
-                  {finding.description && (
-                    <p className="text-sm">{finding.description}</p>
-                  )}
-                  <p className="font-mono text-xs text-slate-500">
-                    {finding.filePath ?? '—'}
-                    {finding.lineStart != null ? `:${finding.lineStart}` : ''}
-                  </p>
+                <li key={finding.id}>
+                  <button
+                    type="button"
+                    onClick={() => setDetailFindingId(finding.id)}
+                    aria-label={`Open finding ${finding.rule ?? finding.title}`}
+                    className="block w-full space-y-1 rounded-lg py-3 text-left hover:bg-slate-50"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone={severityTone(finding.severity)}>{finding.severity}</Badge>
+                      <Badge tone="violet">{finding.analyzer ?? 'unknown'}</Badge>
+                      <span className="font-mono text-sm font-medium text-slate-800">
+                        {finding.rule ?? finding.title}
+                      </span>
+                    </div>
+                    {finding.description && (
+                      <p className="line-clamp-2 text-sm">{finding.description}</p>
+                    )}
+                    <p className="font-mono text-xs text-slate-500">
+                      {finding.filePath ?? '—'}
+                      {finding.lineStart != null ? `:${finding.lineStart}` : ''}
+                    </p>
+                  </button>
                 </li>
               ))}
             </ul>
           )}
         </Card>
+      )}
+      {detailFinding && (
+        <FindingDetail
+          finding={detailFinding}
+          onClose={() => setDetailFindingId(null)}
+          onViewFile={(path) => {
+            setDetailFindingId(null);
+            void openFile(path);
+          }}
+        />
       )}
     </div>
   );
