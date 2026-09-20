@@ -24,8 +24,8 @@ import org.hibernate.type.SqlTypes;
 @Table(name = "verification_runs")
 public class VerificationRun extends BaseEntity {
 
-  @ManyToOne(fetch = FetchType.LAZY, optional = false)
-  @JoinColumn(name = "patch_id", nullable = false)
+  @ManyToOne(fetch = FetchType.LAZY, optional = true)
+  @JoinColumn(name = "patch_id", nullable = true)
   private Patch patch;
 
   @ManyToOne(fetch = FetchType.LAZY)

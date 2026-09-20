@@ -1,14 +1,19 @@
 package com.verireview.generation;
 
+import com.verireview.agent.AgentExecution;
 import com.verireview.agent.AgentExecutionStatus;
 import com.verireview.agent.AgentType;
 import com.verireview.agent.AiServiceException;
+import com.verireview.agent.AiServiceProperties;
 import com.verireview.agent.GenerationAiClient;
+import com.verireview.agent.ReviewAiClient;
 import com.verireview.agent.VerifiedAgentClient;
 import com.verireview.agent.dto.AiGenerationFilesRequest;
 import com.verireview.agent.dto.AiGenerationFilesResult;
 import com.verireview.agent.dto.AiGenerationPlanRequest;
 import com.verireview.agent.dto.AiGenerationPlanResult;
+import com.verireview.agent.dto.AiProposedFinding;
+import com.verireview.agent.dto.AiReviewResult;
 import com.verireview.audit.AuditService;
 import com.verireview.execution.SandboxRunner;
 import com.verireview.fix.UnifiedDiffValidator;
@@ -19,10 +24,9 @@ import com.verireview.project.ProjectFileRepository;
 import com.verireview.project.ProjectRepository;
 import com.verireview.project.ProjectSourceType;
 import com.verireview.user.UserRepository;
-import com.verireview.verification.BuildStatus;
-import com.verireview.verification.VerificationRun;
-import com.verireview.verification.VerificationVerdict;
 import com.verireview.generation.GenerationExecutionEvidence;
+import com.verireview.verification.VerificationVerdict;
+import com.verireview.review.ReviewStatus;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,6 +44,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Async generation worker. Runs outside any database transaction (the AI run
@@ -87,6 +92,8 @@ public class GenerationRunner {
   private final GenerationAiClient aiClient;
   private final SandboxRunner sandboxRunner;
   private final VerifiedAgentClient verifiedAgentClient;
+  private final ReviewAiClient reviewAiClient;
+  private final AiServiceProperties aiServiceProperties;
   private final UserRepository users;
   private final ProjectRepository projects;
   private final ProjectFileRepository files;
@@ -98,6 +105,8 @@ public class GenerationRunner {
       GenerationAiClient aiClient,
       SandboxRunner sandboxRunner,
       VerifiedAgentClient verifiedAgentClient,
+      ReviewAiClient reviewAiClient,
+      AiServiceProperties aiServiceProperties,
       UserRepository users,
       ProjectRepository projects,
       ProjectFileRepository files,
@@ -107,6 +116,8 @@ public class GenerationRunner {
     this.aiClient = aiClient;
     this.sandboxRunner = sandboxRunner;
     this.verifiedAgentClient = verifiedAgentClient;
+    this.reviewAiClient = reviewAiClient;
+    this.aiServiceProperties = aiServiceProperties;
     this.users = users;
     this.projects = projects;
     this.files = files;
@@ -116,10 +127,10 @@ public class GenerationRunner {
 
   /**
    * Phase C pipeline: snapshot → iteration budget → PLANNING → CODING →
-   * BUILDING → VERIFYING. Files land in an isolated generation workspace;
-   * build/test runs in the Docker sandbox; the Verified Agent evaluates
-   * evidence. On success the run parks at VERIFYING — COMPLETED, review,
-   * fix loop belong to later phases.
+   * BUILDING → VERIFYING → VERIFIED → REVIEWING → REVIEWED.
+   * Files land in an isolated generation workspace; build runs in the Docker sandbox;
+   * Verified Agent evaluates evidence; Review Agent reviews the generated project.
+   * On success the run parks at REVIEWED — COMPLETED, fix loop belong to later phases.
    */
   @Async("generationExecutor")
   public void runAsync(UUID generationId) {
@@ -143,7 +154,7 @@ public class GenerationRunner {
       generations.markStatus(generationId, GenerationStatus.CODING, null);
       runCoding(generationId, snapshot, secrets, iteration, plan);
 
-      // Phase C: BUILDING → VERIFYING
+      // Phase C: BUILDING → VERIFYING (or FAILED on build failure)
       generations.markStatus(generationId, GenerationStatus.BUILDING, null);
       UUID evidenceId = runBuilding(generationId, snapshot, iteration);
       GenerationExecutionEvidence evidence = generations.executionEvidence()
@@ -155,9 +166,17 @@ public class GenerationRunner {
         return;
       }
 
+      // Build succeeded — run Verified Agent to evaluate evidence
       generations.markStatus(generationId, GenerationStatus.VERIFYING, null);
       UUID verificationRunId = generations.createVerificationRun(generationId, iteration, evidenceId);
       runVerifying(generationId, snapshot, iteration, evidence, verificationRunId);
+
+      // VERIFIED → REVIEWING → REVIEWED
+      Generation review = generations.findById(generationId);
+      if (review.getStatus() == GenerationStatus.VERIFIED) {
+        generations.markStatus(generationId, GenerationStatus.REVIEWING, null);
+        runReviewing(generationId, snapshot, iteration);
+      }
 
     } catch (Exception e) {
       // Never include request bodies or secrets in state: messages only.
@@ -495,7 +514,7 @@ public class GenerationRunner {
   }
 
   /**
-   * Runs the Verified Agent to evaluate build/test evidence and produce a verdict.
+   * Runs the Verified Agent to evaluate build evidence and produce a verdict.
    * The Verified Agent is READ-ONLY — it inspects evidence but never modifies files.
    */
   private void runVerifying(UUID generationId,
@@ -521,8 +540,10 @@ public class GenerationRunner {
       generations.finishAgentExecution(executionId, AgentExecutionStatus.COMPLETED,
           null, millisSince(startedNanos), "verification:" + verificationRunId);
 
-      // Check verdict
-      if (verified.verdictEnum() != VerificationVerdict.VERIFIED) {
+      // Check verdict and transition state
+      if (verified.verdictEnum() == VerificationVerdict.VERIFIED) {
+        generations.markStatus(generationId, GenerationStatus.VERIFIED, null);
+      } else {
         fail(generationId, snapshot.ownerId(),
             "Verification failed: " + verified.reason());
       }
@@ -532,6 +553,96 @@ public class GenerationRunner {
           millisSince(startedNanos), null);
       fail(generationId, snapshot.ownerId(), "Verification error: " + e.getMessage());
     }
+  }
+
+  /**
+   * Runs the Review Agent to evaluate the generated project files.
+   * The Review Agent is READ-ONLY — it inspects files but never modifies them.
+   */
+  private void runReviewing(UUID generationId,
+      GenerationService.GenerationSnapshot snapshot, int iteration) {
+    // Start REVIEW agent execution
+    String hash = GenerationService.inputHash(
+        snapshot.id().toString(), String.valueOf(iteration), "review");
+    UUID executionId = generations.startAgentExecution(
+        generationId, AgentType.REVIEW, snapshot.aiModel(), PROMPT_VERSION, hash);
+    long startedNanos = System.nanoTime();
+    try {
+      // Create a review record for this generation
+      UUID reviewId = generations.createReview(generationId, iteration);
+
+      // Link the review to the agent execution
+      generations.linkReviewToAgentExecution(executionId, reviewId);
+
+      // Read files from the generation workspace
+      Path workspace = storage.generationWorkspaceDir(generationId, iteration);
+      List<com.verireview.agent.dto.AiFileSnapshot> files = readWorkspaceFiles(workspace);
+
+      // Prepare deterministic findings (empty for generation review - no deterministic tools run yet)
+      List<com.verireview.agent.dto.AiDeterministicFinding> deterministic = new ArrayList<>();
+
+      // Build review request
+      com.verireview.agent.dto.AiReviewRequest request = new com.verireview.agent.dto.AiReviewRequest(
+          reviewId.toString(),
+          generationId.toString(),
+          primaryLanguage(snapshot.backend()),
+          files,
+          deterministic,
+          "gen-review-" + reviewId);
+
+      // Invoke Review Agent via AI service
+      com.verireview.agent.dto.AiReviewResult result = reviewAiClient.review(request);
+
+      // Persist AI findings using shared validation/dedup logic
+      int added = generations.persistGenerationReviewFindings(
+          reviewId, result, result.promptVersion(), aiServiceProperties.modelLabel());
+
+      // Update review with results
+      generations.updateReview(reviewId, ReviewStatus.COMPLETED, added, null);
+
+      generations.finishAgentExecution(executionId, AgentExecutionStatus.COMPLETED,
+          null, millisSince(startedNanos), "review:" + reviewId + " ai:" + added);
+
+      // Transition to REVIEWED
+      generations.markStatus(generationId, GenerationStatus.REVIEWED, null);
+
+    } catch (Exception e) {
+      generations.finishAgentExecution(executionId, AgentExecutionStatus.FAILED,
+          truncate("Review failed: " + e.getMessage(), 2000),
+          millisSince(startedNanos), null);
+      fail(generationId, snapshot.ownerId(), "Review error: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Reads files from the generation workspace for review.
+   */
+  private List<com.verireview.agent.dto.AiFileSnapshot> readWorkspaceFiles(Path workspace) {
+    List<com.verireview.agent.dto.AiFileSnapshot> snapshots = new ArrayList<>();
+    try {
+      if (Files.exists(workspace)) {
+        Files.walk(workspace)
+            .filter(Files::isRegularFile)
+            .forEach(file -> {
+              try {
+                String relativePath = workspace.relativize(file).toString();
+                String content = Files.readString(file);
+                if (content.indexOf('\0') < 0 && !content.isBlank()) {
+                  snapshots.add(new com.verireview.agent.dto.AiFileSnapshot(
+                      relativePath,
+                      languageOf(relativePath, null),
+                      content,
+                      false));
+                }
+              } catch (Exception ignored) {
+                // Skip unreadable files
+              }
+            });
+      }
+    } catch (Exception ignored) {
+      // Return empty list on error
+    }
+    return snapshots;
   }
 
   /**

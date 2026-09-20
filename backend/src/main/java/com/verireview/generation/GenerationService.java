@@ -5,7 +5,10 @@ import com.verireview.agent.AgentExecutionRepository;
 import com.verireview.agent.AgentExecutionStatus;
 import com.verireview.agent.AgentType;
 import com.verireview.agent.dto.AiGenerationPlanResult;
+import com.verireview.agent.dto.AiProposedFinding;
+import com.verireview.agent.dto.AiReviewResult;
 import com.verireview.audit.AuditService;
+import com.verireview.analysis.Fingerprint;
 import com.verireview.common.PagedResponse;
 import com.verireview.generation.dto.CreateGenerationRequest;
 import com.verireview.generation.dto.CreateGenerationRevisionRequest;
@@ -16,6 +19,15 @@ import com.verireview.generation.dto.UpdateGenerationRequest;
 import com.verireview.project.Project;
 import com.verireview.project.ProjectRepository;
 import com.verireview.user.UserRepository;
+import com.verireview.review.Finding;
+import com.verireview.review.FindingCategory;
+import com.verireview.review.FindingRepository;
+import com.verireview.review.FindingSeverity;
+import com.verireview.review.FindingSource;
+import com.verireview.review.FindingStatus;
+import com.verireview.review.Review;
+import com.verireview.review.ReviewRepository;
+import com.verireview.review.ReviewStatus;
 import com.verireview.verification.VerificationRun;
 import com.verireview.verification.VerificationRunRepository;
 import com.verireview.verification.VerificationVerdict;
@@ -25,8 +37,10 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -66,6 +80,8 @@ public class GenerationService {
   private final GenerationExecutionEvidenceRepository executionEvidence;
   private final AgentExecutionRepository executions;
   private final VerificationRunRepository verificationRuns;
+  private final ReviewRepository reviews;
+  private final FindingRepository findings;
   private final UserRepository users;
   private final ProjectRepository projects;
   private final GenerationRunner runner;
@@ -81,6 +97,8 @@ public class GenerationService {
       GenerationExecutionEvidenceRepository executionEvidence,
       AgentExecutionRepository executions,
       VerificationRunRepository verificationRuns,
+      ReviewRepository reviews,
+      FindingRepository findings,
       UserRepository users,
       ProjectRepository projects,
       @Lazy GenerationRunner runner,
@@ -93,6 +111,8 @@ public class GenerationService {
     this.executionEvidence = executionEvidence;
     this.executions = executions;
     this.verificationRuns = verificationRuns;
+    this.reviews = reviews;
+    this.findings = findings;
     this.users = users;
     this.projects = projects;
     this.runner = runner;
@@ -102,6 +122,10 @@ public class GenerationService {
 
   public GenerationExecutionEvidenceRepository executionEvidence() {
     return executionEvidence;
+  }
+
+  public ReviewRepository reviews() {
+    return reviews;
   }
 
   @Transactional
@@ -389,6 +413,11 @@ public class GenerationService {
   }
 
   @Transactional(readOnly = true)
+  public Generation findById(UUID generationId) {
+    return generations.findById(generationId).orElseThrow();
+  }
+
+  @Transactional(readOnly = true)
   public PagedResponse<GenerationResponse> list(UUID ownerId, Pageable pageable) {
     Page<Generation> page = generations.findByOwnerIdOrderByCreatedAtDesc(ownerId, pageable);
     return PagedResponse.of(page.map(this::toResponse));
@@ -576,6 +605,23 @@ public class GenerationService {
     execution.setOutputRef(outputRef);
   }
 
+  @Transactional(readOnly = true)
+  public AgentExecution getAgentExecution(UUID executionId) {
+    return executions.findById(executionId).orElseThrow();
+  }
+
+  @Transactional(readOnly = true)
+  public Review getReview(UUID reviewId) {
+    return reviews.findById(reviewId).orElseThrow();
+  }
+
+  @Transactional
+  public void linkReviewToAgentExecution(UUID executionId, UUID reviewId) {
+    AgentExecution execution = executions.findById(executionId).orElseThrow();
+    Review review = reviews.findById(reviewId).orElseThrow();
+    execution.setReview(review);
+  }
+
   /**
    * Records build/test execution evidence for a generation iteration.
    * Persisted facts only — no secrets, no source code.
@@ -650,6 +696,126 @@ public class GenerationService {
       return HexFormat.of().formatHex(digest.digest());
     } catch (Exception e) {
       throw new IllegalStateException("SHA-256 unavailable", e);
+    }
+  }
+
+  /**
+   * Creates a review for a generation iteration, linked to the generation.
+   * The review can later be populated with AI findings.
+   *
+   * @return the persisted review id
+   */
+  @Transactional
+  public UUID createReview(UUID generationId, int iteration) {
+    Generation managed = generations.findById(generationId).orElseThrow();
+    Review review = new Review(null); // Project will be set after materialization
+    review.setGeneration(managed);
+    review.setStatus(ReviewStatus.QUEUED);
+    return reviews.save(review).getId();
+  }
+
+  /**
+   * Updates a generation's review with status and finding count.
+   */
+  @Transactional
+  public void updateReview(UUID reviewId, ReviewStatus status, int findingCount, String error) {
+    Review review = reviews.findById(reviewId).orElseThrow();
+    review.setStatus(status);
+    review.setFindingCount(findingCount);
+    review.setError(error);
+  }
+
+  /**
+   * Persists AI findings from a generation review. Reuses the validation and
+   * deduplication logic from {@link com.verireview.agent.AiReviewService}.
+   * VERIFIED-source findings are coerced to AI (backend never lets AI self-verify).
+   * Deterministic echoes are skipped.
+   *
+   * @return number of findings actually persisted
+   */
+  @Transactional
+  public int persistGenerationReviewFindings(UUID reviewId, AiReviewResult result,
+      String promptVersion, String modelLabel) {
+    Review review = reviews.findById(reviewId).orElseThrow();
+    List<Finding> rows = new ArrayList<>();
+    Set<String> seen = new LinkedHashSet<>();
+    int skippedInvalid = 0;
+    int skippedEchoes = 0;
+    boolean verifiedCoerced = false;
+    for (AiProposedFinding item : result.findings()) {
+      if (!"AI".equalsIgnoreCase(item.source())
+          && !"VERIFIED".equalsIgnoreCase(item.source())) {
+        if ("DETERMINISTIC".equalsIgnoreCase(item.source())) {
+          skippedEchoes++;
+          continue;
+        }
+        skippedInvalid++;
+        continue;
+      }
+      FindingCategory category;
+      FindingSeverity severity;
+      try {
+        category = FindingCategory.valueOf(item.category().trim().toUpperCase());
+        severity = FindingSeverity.valueOf(item.severity().trim().toUpperCase());
+      } catch (Exception e) {
+        skippedInvalid++;
+        continue;
+      }
+      if (item.title() == null || item.title().isBlank()) {
+        skippedInvalid++;
+        continue;
+      }
+      if ("VERIFIED".equalsIgnoreCase(item.source())) {
+        verifiedCoerced = true;
+      }
+      String title = trim(item.title(), 500);
+      String filePath = trim(item.filePath(), 1000);
+      Integer lineStart = nonNegative(item.lineStart());
+      Integer lineEnd = nonNegative(item.lineEnd());
+      String key = Fingerprint.of(
+          "review-agent", title, filePath, lineStart, item.description());
+      if (!seen.add(key) || findings.existsByReviewIdAndDedupKey(review.getId(), key)) {
+        continue;
+      }
+      Finding row = new Finding(review, category, severity, FindingSource.AI, title);
+      row.setDescription(trim(item.description(), 5000));
+      row.setFilePath(filePath);
+      row.setLineStart(lineStart);
+      row.setLineEnd(lineEnd);
+      row.setEvidence(evidenceJson(item, promptVersion, modelLabel));
+      row.setDedupKey(key);
+      row.setStatus(FindingStatus.OPEN);
+      rows.add(row);
+    }
+    if (!rows.isEmpty()) {
+      findings.saveAll(rows);
+    }
+    return rows.size();
+  }
+
+  private String trim(String value, int max) {
+    if (value == null) {
+      return null;
+    }
+    return value.length() <= max ? value : value.substring(0, max);
+  }
+
+  private static Integer nonNegative(Integer value) {
+    return value != null && value >= 0 ? value : null;
+  }
+
+  private String evidenceJson(AiProposedFinding item, String promptVersion, String modelLabel) {
+    try {
+      Map<String, Object> evidence = new LinkedHashMap<>();
+      evidence.put("analyzer", "review-agent");
+      evidence.put("model", modelLabel);
+      evidence.put("promptVersion", promptVersion);
+      evidence.put("confidence", item.confidence());
+      evidence.put("suggestedFixHint", trim(item.suggestedFixHint(), 2000));
+      evidence.put("claimedSource", item.source());
+      return objects.writeValueAsString(evidence);
+    } catch (Exception e) {
+      return "{}";
     }
   }
 

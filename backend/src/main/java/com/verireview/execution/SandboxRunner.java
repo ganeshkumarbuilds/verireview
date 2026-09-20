@@ -102,7 +102,7 @@ public class SandboxRunner {
    * Executes build+test for an APPLIED project snapshot inside Docker.
    * Never runs on host; no network; capped resources; bounded timeout.
    */
-  public ExecutionResult executeBuild(Path projectDir) throws SandboxException {
+  public ExecutionResult executeBuild(Path projectDir) {
     return executeBuild(projectDir, null);
   }
 
@@ -114,7 +114,7 @@ public class SandboxRunner {
    * @param customCommand the shell command to run inside the container (e.g., "mvn test", "npm test", "pytest")
    *                      If null, defaults to Maven/Gradle detection
    */
-  public ExecutionResult executeBuild(Path projectDir, String customCommand) throws SandboxException {
+  public ExecutionResult executeBuild(Path projectDir, String customCommand) {
     Path work;
     try {
       work = Files.createTempDirectory("verireview-execution-");
@@ -300,14 +300,14 @@ public class SandboxRunner {
     }
   }
 
-  public static class SandboxException extends Exception {
-    SandboxException(String message) {
+  public static class SandboxException extends RuntimeException {
+    public SandboxException(String message) {
       super(message);
     }
   }
 
   public static final class SandboxTimeoutException extends SandboxException {
-    SandboxTimeoutException(String message) {
+    public SandboxTimeoutException(String message) {
       super(message);
     }
   }
