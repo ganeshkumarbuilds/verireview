@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { getFileContent, getProject, listFiles } from '../api/projects';
+import { getProjectGeneration } from '../api/generations';
+import type { GenerationResponse } from '../api/generationTypes';
+import { listExecutions } from '../api/executions';
 import {
   isTerminal,
   listFindings,
@@ -9,6 +12,7 @@ import {
   triggerAnalysis,
 } from '../api/analysis';
 import type {
+  ExecutionRunResponse,
   FileContentResponse,
   FindingResponse,
   ProjectFileResponse,
@@ -16,9 +20,22 @@ import type {
   ReviewResponse,
 } from '../api/types';
 import { apiClient, useAuth } from '../auth/AuthContext';
-import { Badge, Card } from '../components/ui';
+import {
+  Badge,
+  Card,
+  EmptyState,
+  ErrorAlert,
+  LoadingState,
+  PageHeader,
+  SkeletonList,
+  inputClass,
+  primaryButtonClass,
+  secondaryButtonClass,
+  selectClass,
+} from '../components/ui';
 import { FindingDetail } from '../components/FindingDetail';
-import { useDocumentTitle } from '../hooks/useDocumentTitle';
+import { WorkspaceCrumb } from '../components/workflow';
+import { GENERATION_PIPELINE_STAGES, GenerationPipeline } from '../components/GenerationPipeline';
 
 const POLL_MS = 3000;
 
@@ -60,7 +77,6 @@ function formatDate(value: string | null): string {
 /** Project details: metadata, file inventory, capped viewer, and the
  *  deterministic analysis loop (trigger → status → history → findings). */
 export function ProjectDetailPage() {
-  useDocumentTitle('Project details');
   const { id } = useParams<{ id: string }>();
   const { token } = useAuth();
   const [project, setProject] = useState<ProjectResponse | null>(null);
@@ -78,6 +94,9 @@ export function ProjectDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [executions, setExecutions] = useState<ExecutionRunResponse[]>([]);
+  const [runsError, setRunsError] = useState<string | null>(null);
+  const [generation, setGeneration] = useState<GenerationResponse | null>(null);
 
   const reload = useCallback(async () => {
     if (!token || !id) {
@@ -137,6 +156,33 @@ export function ProjectDetailPage() {
     void reloadAnalysis();
   }, [reload, reloadAnalysis]);
 
+  // Sandbox run history (best-effort): the executions endpoint has no
+  // pagination contract guarantees in tests, so non-array payloads are
+  // treated as "no runs" rather than failures.
+  useEffect(() => {
+    if (!token || !id) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const runs = await listExecutions(apiClient(), token, id);
+        if (!cancelled) {
+          setExecutions(Array.isArray(runs) ? runs : []);
+          setRunsError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setExecutions([]);
+          setRunsError(err instanceof ApiError ? err.message : 'Could not load run history.');
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, id, reviews.length]);
+
   useEffect(() => {
     if (selectedReviewId) {
       void reloadFindings(selectedReviewId);
@@ -144,6 +190,32 @@ export function ProjectDetailPage() {
       setFindings([]);
     }
   }, [selectedReviewId, reloadFindings]);
+
+  // Generated-project workspace: load the linked generation request, if any.
+  // Best-effort and supplementary — a missing/failed lookup hides the panel
+  // instead of blocking the review workflow. Only responses carrying a real
+  // requirement string are rendered (never synthetic placeholders).
+  useEffect(() => {
+    if (!token || !id || project?.sourceType !== 'GENERATED') {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await getProjectGeneration(apiClient(), token, id);
+        if (!cancelled) {
+          setGeneration(typeof data?.requirement === 'string' ? data : null);
+        }
+      } catch {
+        if (!cancelled) {
+          setGeneration(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, id, project]);
 
   const activeReview = reviews.find((review) => !isTerminal(review.status)) ?? null;
 
@@ -235,136 +307,246 @@ export function ProjectDetailPage() {
   const detailFinding = findings.find((finding) => finding.id === detailFindingId) ?? null;
 
   if (loading) {
-    return <p className="text-sm text-slate-500">Loading…</p>;
+    return (
+      <div className="space-y-4">
+        <LoadingState label="Loading…" />
+        <SkeletonList rows={4} />
+      </div>
+    );
   }
   if (error && !project) {
-    return (
-      <p role="alert" className="text-sm text-red-600">
-        {error}
-      </p>
-    );
+    return <ErrorAlert message={error} onRetry={() => void reload()} />;
   }
   if (!project) {
     return null;
   }
 
   return (
-    <div className="space-y-4">
-      <Link to="/projects" className="text-sm text-indigo-600 hover:underline">
-        ← Projects
-      </Link>
-      <h1 className="text-xl font-semibold text-slate-900">{project.name}</h1>
-      {error && (
-        <p role="alert" className="text-sm text-red-600">
-          {error}
-        </p>
-      )}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card title="Details">
-          <dl className="space-y-1 text-sm">
-            <div className="flex gap-2">
-              <dt className="text-slate-500">Source</dt>
-              <dd>{project.sourceType}</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="text-slate-500">Language</dt>
-              <dd>{project.language ?? '—'}</dd>
-            </div>
-            <div className="flex gap-2">
-              <dt className="text-slate-500">Files</dt>
-              <dd>{project.fileCount}</dd>
-            </div>
-            {project.description && <p className="pt-1">{project.description}</p>}
-          </dl>
-        </Card>
-        <Card title={`Files (${files.length})`}>
-          {files.length === 0 ? (
-            <p>Empty shell — upload a ZIP to fill it (Phase 5 supports ZIP only).</p>
-          ) : (
-            <ul className="max-h-64 space-y-1 overflow-y-auto">
-              {files.map((file) => (
-                <li key={file.id}>
-                  <button
-                    type="button"
-                    onClick={() => void openFile(file.path)}
-                    className="w-full truncate text-left text-sm text-indigo-600 hover:underline"
-                  >
-                    {file.path}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
+    <div className="space-y-6">
+      <WorkspaceCrumb items={[{ label: 'Projects', to: '/projects' }, { label: project.name }]} />
+      <PageHeader
+        title={project.name}
+        description={
+          project.description ??
+          `${project.sourceType} · ${project.fileCount} files · ${project.language ?? 'auto-detected language'}`
+        }
+        actions={
+          <span className="inline-flex flex-wrap items-center gap-2">
+            {selectedReview && (
+              <Badge tone={statusTone(selectedReview.status)}>{selectedReview.status}</Badge>
+            )}
+            <Link to={`/review?project=${project.id}`} className={primaryButtonClass}>
+              Open in Review
+            </Link>
+          </span>
+        }
+      />
+      {error && <ErrorAlert message={error} onRetry={() => void reload()} />}
+      <section id="workspace-overview" aria-label="Overview" className="scroll-mt-32 space-y-4">
+        <h2 className="text-lg font-bold tracking-tight text-indigo-950">Overview</h2>
+      <div className="grid gap-4 lg:grid-cols-5">
+        <div className="lg:col-span-2">
+          <Card title="Details" subtitle="Project metadata from the backend.">
+            <dl className="space-y-2 text-sm">
+              <div className="flex items-center justify-between gap-2 border-b border-indigo-50 pb-2">
+                <dt className="font-medium text-slate-500">Source</dt>
+                <dd className="font-semibold text-indigo-950">{project.sourceType}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-2 border-b border-indigo-50 pb-2">
+                <dt className="font-medium text-slate-500">Language</dt>
+                <dd className="font-semibold text-indigo-950">{project.language ?? '—'}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <dt className="font-medium text-slate-500">Files</dt>
+                <dd className="font-semibold text-indigo-950">{project.fileCount}</dd>
+              </div>
+              {project.description && (
+                <p className="rounded-lg bg-indigo-50/60 px-3 py-2 text-sm leading-relaxed text-slate-600">
+                  {project.description}
+                </p>
+              )}
+            </dl>
+          </Card>
+        </div>
+        <div className="lg:col-span-3">
+          <Card
+            title="Latest state"
+            subtitle="Where this codebase stands — and what needs attention next."
+          >
+            {selectedReview ? (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={statusTone(selectedReview.status)}>{selectedReview.status}</Badge>
+                  <span className="text-sm text-slate-600">
+                    {selectedReview.findingCount} findings ·{' '}
+                    {countBy(
+                      (finding) =>
+                        finding.severity === 'CRITICAL' || finding.severity === 'HIGH',
+                    )}{' '}
+                    crit/high · finished {formatDate(selectedReview.finishedAt)}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <a href="#workspace-analysis" className={secondaryButtonClass}>
+                    Run Analysis
+                  </a>
+                  <a href="#workspace-findings" className={secondaryButtonClass}>
+                    Review Findings
+                  </a>
+                  <a href="#workspace-files" className={secondaryButtonClass}>
+                    Open relevant files
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-slate-600">
+                  Nothing analyzed so far — start below to collect findings.
+                </p>
+                <a href="#workspace-analysis" className={secondaryButtonClass}>
+                  Go to Analysis
+                </a>
+              </div>
+            )}
+          </Card>
+        </div>
       </div>
+      {project.sourceType === 'GENERATED' && generation && (
+        <Card
+          title="Generation pipeline"
+          subtitle="This project was created by the generation workflow — review it like any other project."
+        >
+          <div className="space-y-3">
+            <p className="rounded-lg bg-indigo-50/60 px-3 py-2 text-sm leading-relaxed text-slate-600">
+              <span className="font-semibold text-indigo-950">Requirement: </span>
+              {generation.requirement}
+            </p>
+            <GenerationPipeline
+              stages={GENERATION_PIPELINE_STAGES.map((label, index) => ({
+                key: label,
+                label,
+                state: index === 0 ? 'done' : 'planned',
+                hint: index === 0 ? undefined : 'Planned — a future phase.',
+              }))}
+            />
+            <a href="#workspace-findings" className={secondaryButtonClass}>
+              Review Findings
+            </a>
+          </div>
+        </Card>
+      )}
+      </section>
+      <section id="workspace-files" aria-label="Files" className="scroll-mt-32 space-y-4">
+        <h2 className="text-lg font-bold tracking-tight text-indigo-950">Files</h2>
+          <Card title={`Files (${files.length})`} subtitle="Select a file to preview its contents.">
+            {files.length === 0 ? (
+              <EmptyState
+                title="No files yet."
+                body="Empty shell — upload a ZIP to fill it (Phase 5 supports ZIP only)."
+              />
+            ) : (
+              <ul className="max-h-64 space-y-0.5 overflow-y-auto pr-1">
+                {files.map((file) => {
+                  const isSelected = selected?.path === file.path;
+                  return (
+                    <li key={file.id}>
+                      <button
+                        type="button"
+                        onClick={() => void openFile(file.path)}
+                        aria-current={isSelected ? 'true' : undefined}
+                        className={`w-full truncate rounded-lg px-3 py-1.5 text-left font-mono text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-600 ${
+                          isSelected
+                            ? 'bg-indigo-100 font-semibold text-indigo-900'
+                            : 'text-indigo-700 hover:bg-indigo-50 hover:text-indigo-900'
+                        }`}
+                      >
+                        {file.path}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
       {selected && (
-        <Card title={selected.path}>
-          <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-xs text-slate-800">
+        <Card
+          title={selected.path}
+          subtitle={selected.truncated ? 'Preview truncated at 256 KB.' : 'File preview (capped).'}
+        >
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-xl border border-indigo-100 bg-indigo-50/50 p-4 font-mono text-xs leading-relaxed text-slate-800">
             {selected.content}
           </pre>
-          {selected.truncated && <p className="pt-1">Preview truncated at 256 KB.</p>}
+          {selected.truncated && <p className="pt-2 text-sm">Preview truncated at 256 KB.</p>}
         </Card>
       )}
+      </section>
 
-      <Card title="Deterministic analysis">
-        <div className="flex flex-wrap items-center gap-3">
+      <section id="workspace-analysis" aria-label="Analysis" className="scroll-mt-32 space-y-4">
+        <h2 className="text-lg font-bold tracking-tight text-indigo-950">Analysis</h2>
+      <Card
+        title="Deterministic analysis"
+        subtitle="Sandboxed analyzers run first; AI findings layer on top."
+        actions={
           <button
             type="button"
             onClick={() => void startAnalysis()}
             disabled={starting || activeReview !== null}
-            className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
+            className={primaryButtonClass}
           >
             {starting ? 'Starting…' : 'Start analysis'}
           </button>
+        }
+      >
+        <div className="flex flex-wrap items-center gap-3">
           {activeReview && (
             <span className="flex items-center gap-2 text-sm">
               <Badge tone={statusTone(activeReview.status)}>{activeReview.status}</Badge>
-              <span className="text-slate-500">Analysis in progress…</span>
+              <span className="text-slate-600">Analysis in progress…</span>
             </span>
           )}
           {!activeReview && reviews.length === 0 && (
-            <span className="text-sm">No analysis yet — findings appear here.</span>
+            <span className="text-sm text-slate-600">No analysis yet — findings appear here.</span>
           )}
         </div>
         {analysisError && (
-          <p role="alert" className="pt-2 text-sm text-red-600">
-            {analysisError}
-          </p>
+          <div className="mt-3">
+            <ErrorAlert message={analysisError} onRetry={() => void reloadAnalysis()} />
+          </div>
         )}
         {selectedReview && (
-          <dl className="grid gap-1 pt-3 text-sm sm:grid-cols-2">
-            <div className="flex gap-2">
-              <dt className="text-slate-500">Status</dt>
-              <dd>
+          <dl className="mt-4 grid gap-3 rounded-xl bg-indigo-50/50 p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">Status</dt>
+              <dd className="mt-1">
                 <Badge tone={statusTone(selectedReview.status)}>{selectedReview.status}</Badge>
               </dd>
             </div>
-            <div className="flex gap-2">
-              <dt className="text-slate-500">Findings</dt>
-              <dd>{selectedReview.findingCount}</dd>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">Findings</dt>
+              <dd className="mt-1 text-lg font-bold text-indigo-950">{selectedReview.findingCount}</dd>
             </div>
-            <div className="flex gap-2">
-              <dt className="text-slate-500">Finished</dt>
-              <dd>{formatDate(selectedReview.finishedAt)}</dd>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">Finished</dt>
+              <dd className="mt-1 font-medium text-slate-700">{formatDate(selectedReview.finishedAt)}</dd>
             </div>
-            <div className="flex gap-2">
-              <dt className="text-slate-500">Duration</dt>
-              <dd>
+            <div>
+              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">Duration</dt>
+              <dd className="mt-1 font-medium text-slate-700">
                 {selectedReview.durationMs == null ? '—' : `${selectedReview.durationMs} ms`}
               </dd>
             </div>
           </dl>
         )}
       {selectedReview?.error && selectedReview.status !== 'FAILED' && (
-        <p className="pt-2 text-sm text-amber-700">{selectedReview.error}</p>
+        <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{selectedReview.error}</p>
       )}
       {selectedReview && selectedReview.status === 'FAILED' && (
         <div
           role="alert"
-          className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+          className="mt-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"
         >
           <p className="font-semibold">Analysis failed</p>
-          <p className="mt-1">
+          <p className="mt-1 leading-relaxed">
             {selectedReview.error ??
               'The analysis did not complete. Start a new analysis to retry.'}
           </p>
@@ -373,46 +555,67 @@ export function ProjectDetailPage() {
       </Card>
 
       {reviews.length > 0 && (
-        <Card title={`Analysis history (${reviews.length})`}>
-          <ul className="divide-y divide-slate-200">
-            {reviews.map((review) => (
-              <li key={review.id}>
-                <button
-                  type="button"
-                  onClick={() => setSelectedReviewId(review.id)}
-                  className={`flex w-full items-center gap-3 py-2 text-left text-sm ${
-                    review.id === selectedReviewId ? 'font-medium' : ''
-                  }`}
-                >
-                  <Badge tone={statusTone(review.status)}>{review.status}</Badge>
-                  <span className="text-slate-500">{formatDate(review.createdAt)}</span>
-                  <span className="ml-auto text-slate-500">
-                    {review.findingCount} findings
-                  </span>
-                </button>
-              </li>
-            ))}
+        <Card
+          title={`Analysis history (${reviews.length})`}
+          subtitle="Select a run to inspect its findings."
+        >
+          <ul className="divide-y divide-indigo-50">
+            {reviews.map((review) => {
+              const isSelected = review.id === selectedReviewId;
+              return (
+                <li key={review.id}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedReviewId(review.id)}
+                    aria-current={isSelected ? 'true' : undefined}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-600 ${
+                      isSelected ? 'bg-indigo-50 font-semibold' : 'hover:bg-indigo-50/60'
+                    }`}
+                  >
+                    <Badge tone={statusTone(review.status)}>{review.status}</Badge>
+                    <span className="text-slate-600">{formatDate(review.createdAt)}</span>
+                    <span className="ml-auto shrink-0 font-medium text-slate-600">
+                      {review.findingCount} findings
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </Card>
       )}
+      </section>
 
+      <section id="workspace-findings" aria-label="Findings" className="scroll-mt-32 space-y-4">
+        <h2 className="text-lg font-bold tracking-tight text-indigo-950">Findings</h2>
       {selectedReview && (
-        <Card title={`Findings (${visibleFindings.length})`}>
-          <ul aria-label="Review overview" className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+        <Card
+          title={`Findings (${visibleFindings.length})`}
+          subtitle="Filter and search the selected analysis run."
+          actions={
+            <Link to={`/review?project=${project.id}`} className={secondaryButtonClass}>
+              Full review workspace
+            </Link>
+          }
+        >
+          <ul aria-label="Review overview" className="mb-4 flex flex-wrap gap-2 text-sm">
             {overviewStats.map(([label, count]) => (
-              <li key={label} className="text-slate-500">
-                <span className="font-semibold text-slate-800">{`${count} ${label}`}</span>
+              <li
+                key={label}
+                className="rounded-full border border-indigo-100 bg-indigo-50/60 px-3 py-1 text-slate-600"
+              >
+                <span className="font-bold text-indigo-950">{`${count} ${label}`}</span>
               </li>
             ))}
           </ul>
-          <div className="mb-3 flex flex-wrap gap-2">
-            <label className="flex items-center gap-1.5 text-sm">
-              <span className="text-slate-500">Severity</span>
+          <div className="mb-4 grid gap-2 rounded-xl bg-indigo-50/50 p-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="flex items-center gap-2 text-sm">
+              <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-500">Severity</span>
               <select
                 aria-label="Filter by severity"
                 value={severityFilter}
                 onChange={(event) => setSeverityFilter(event.target.value)}
-                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
+                className={selectClass}
               >
                 <option value="ALL">All</option>
                 <option value="CRITICAL">CRITICAL</option>
@@ -422,13 +625,13 @@ export function ProjectDetailPage() {
                 <option value="INFO">INFO</option>
               </select>
             </label>
-            <label className="flex items-center gap-1.5 text-sm">
-              <span className="text-slate-500">Analyzer</span>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-500">Analyzer</span>
               <select
                 aria-label="Filter by analyzer"
                 value={analyzerFilter}
                 onChange={(event) => setAnalyzerFilter(event.target.value)}
-                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
+                className={selectClass}
               >
                 <option value="ALL">All</option>
                 {analyzers.map((analyzer) => (
@@ -438,13 +641,13 @@ export function ProjectDetailPage() {
                 ))}
               </select>
             </label>
-            <label className="flex items-center gap-1.5 text-sm">
-              <span className="text-slate-500">Source</span>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-500">Source</span>
               <select
                 aria-label="Filter by source"
                 value={sourceFilter}
                 onChange={(event) => setSourceFilter(event.target.value)}
-                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
+                className={selectClass}
               >
                 <option value="ALL">All</option>
                 <option value="DETERMINISTIC">DETERMINISTIC</option>
@@ -452,57 +655,138 @@ export function ProjectDetailPage() {
                 <option value="VERIFIED">VERIFIED</option>
               </select>
             </label>
-            <label className="flex flex-1 items-center gap-1.5 text-sm">
-              <span className="text-slate-500">Search</span>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-500">Search</span>
               <input
                 type="search"
                 aria-label="Search findings"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
                 placeholder="Title, file, rule…"
-                className="w-full min-w-32 flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm"
+                className={inputClass}
               />
             </label>
           </div>
           {findings.length === 0 ? (
-            <p>
-              {selectedReview.status === 'COMPLETED'
-                ? 'No findings — this review is clean.'
-                : 'Findings will appear here once the analysis completes.'}
-            </p>
+            <EmptyState
+              title={selectedReview.status === 'COMPLETED' ? 'Clean review.' : 'No findings yet.'}
+              body={
+                selectedReview.status === 'COMPLETED'
+                  ? 'No findings — this review is clean.'
+                  : 'Findings will appear here once the analysis completes.'
+              }
+            />
           ) : visibleFindings.length === 0 ? (
-            <p>No findings match the selected filters.</p>
+            <EmptyState
+              title="No matching findings."
+              body="No findings match the selected filters."
+              action={
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSeverityFilter('ALL');
+                    setAnalyzerFilter('ALL');
+                    setSourceFilter('ALL');
+                    setSearchQuery('');
+                  }}
+                  className={secondaryButtonClass}
+                >
+                  Clear filters
+                </button>
+              }
+            />
           ) : (
-            <ul className="divide-y divide-slate-200">
+            <ul className="space-y-2">
               {visibleFindings.map((finding) => (
-                <li key={finding.id}>
+                <li
+                  key={finding.id}
+                  className="rounded-xl border border-indigo-100 bg-white shadow-sm shadow-indigo-100/50 transition-all hover:border-indigo-200 hover:shadow"
+                >
                   <button
                     type="button"
                     onClick={() => setDetailFindingId(finding.id)}
                     aria-label={`Open finding ${finding.rule ?? finding.title}`}
-                    className="block w-full space-y-1 rounded-lg py-3 text-left hover:bg-slate-50"
+                    className="block w-full space-y-1.5 rounded-t-xl px-4 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-600"
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge tone={severityTone(finding.severity)}>{finding.severity}</Badge>
                       <Badge tone="violet">{finding.analyzer ?? 'unknown'}</Badge>
-                      <span className="font-mono text-sm font-medium text-slate-800">
+                      <span className="font-mono text-sm font-semibold text-indigo-950">
                         {finding.rule ?? finding.title}
                       </span>
                     </div>
                     {finding.description && (
-                      <p className="line-clamp-2 text-sm">{finding.description}</p>
+                      <p className="line-clamp-2 text-sm leading-relaxed text-slate-600">{finding.description}</p>
                     )}
                     <p className="font-mono text-xs text-slate-500">
                       {finding.filePath ?? '—'}
                       {finding.lineStart != null ? `:${finding.lineStart}` : ''}
                     </p>
                   </button>
+                  {selectedReview && (
+                    <div className="flex justify-end border-t border-indigo-50 px-4 py-1.5">
+                      <Link
+                        to={`/projects/${id}/reviews/${selectedReview.id}/findings/${finding.id}`}
+                        aria-label={`Open detail page for ${finding.rule ?? finding.title}`}
+                        className="rounded-md text-xs font-semibold text-indigo-600 transition-colors hover:text-indigo-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
+                      >
+                        Open detail page →
+                      </Link>
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>
           )}
         </Card>
       )}
+      </section>
+
+      <section id="workspace-runs" aria-label="Runs" className="scroll-mt-32 space-y-4">
+        <h2 className="text-lg font-bold tracking-tight text-indigo-950">Runs</h2>
+        <Card
+          title={`Sandbox runs (${executions.length})`}
+          subtitle="Patch executions recorded for this project. Verification detail lives with each finding."
+        >
+          {runsError && (
+            <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+              {runsError}
+            </p>
+          )}
+          {executions.length === 0 ? (
+            <EmptyState
+              title="No sandbox runs yet."
+              body="Runs appear here after a proposed patch is executed from a finding. Start from any finding in the list above."
+              action={
+                <a href="#workspace-findings" className={secondaryButtonClass}>
+                  Go to Findings
+                </a>
+              }
+            />
+          ) : (
+            <ul className="divide-y divide-indigo-50">
+              {executions.map((run) => (
+                <li
+                  key={run.id}
+                  className="flex flex-wrap items-center gap-2 px-3 py-2.5 text-sm"
+                >
+                  <Badge tone={run.status === 'SUCCESS' ? 'green' : run.status === 'PENDING' || run.status === 'RUNNING' ? 'blue' : 'red'}>
+                    {run.status}
+                  </Badge>
+                  <Badge tone="gray">build: {run.buildStatus}</Badge>
+                  {run.exitCode != null && (
+                    <span className="text-xs tabular-nums text-slate-500">exit {run.exitCode}</span>
+                  )}
+                  {run.durationMs != null && (
+                    <span className="text-xs tabular-nums text-slate-500">{run.durationMs} ms</span>
+                  )}
+                  <span className="ml-auto text-xs text-slate-500">{formatDate(run.createdAt)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </section>
       {detailFinding && (
         <FindingDetail
           finding={detailFinding}

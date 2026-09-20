@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 /** Pill-shaped auth field with a leading icon (shared login/register look). */
 export function PillField({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (
-    <label className="flex items-center gap-3 rounded-full border border-slate-300 bg-white px-5 py-3 focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500">
+    <label className="flex items-center gap-3 rounded-full border border-indigo-200 bg-white px-5 py-3 shadow-sm transition-colors focus-within:border-indigo-600 focus-within:ring-2 focus-within:ring-indigo-600/30">
       {icon}
       {children}
     </label>
@@ -15,7 +15,7 @@ export function EnvelopeIcon() {
   return (
     <svg
       aria-hidden="true"
-      className="h-5 w-5 shrink-0 text-slate-500"
+      className="h-5 w-5 shrink-0 text-indigo-400"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -31,7 +31,7 @@ export function LockIcon() {
   return (
     <svg
       aria-hidden="true"
-      className="h-5 w-5 shrink-0 text-slate-500"
+      className="h-5 w-5 shrink-0 text-indigo-400"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -47,7 +47,7 @@ export function UserIcon() {
   return (
     <svg
       aria-hidden="true"
-      className="h-5 w-5 shrink-0 text-slate-500"
+      className="h-5 w-5 shrink-0 text-indigo-400"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"

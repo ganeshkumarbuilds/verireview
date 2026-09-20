@@ -96,9 +96,16 @@ def validate_diff(diff: str) -> list[str]:
         errors.append("diff must not claim verification (tested/verified/build passed)")
     # Path traversal check
     for line in stripped.splitlines():
+        if line.startswith("Binary files ") or line.startswith("GIT binary patch"):
+            errors.append("diff must not contain binary content")
         if line.startswith("--- a/") or line.startswith("+++ b/"):
             path = line[6:].strip().split()[0] if len(line) > 6 else ""
-            if ".." in path or path.startswith("/") or "\\" in path:
+            if (
+                ".." in path
+                or path.startswith("/")
+                or "\\" in path
+                or re.match(r"^[A-Za-z]:", path)
+            ):
                 errors.append(f"diff contains illegal path: {path}")
         if line.startswith("diff --git"):
             if ".." in line or "\\" in line:

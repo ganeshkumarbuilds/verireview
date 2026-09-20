@@ -3,6 +3,7 @@ package com.verireview.verification;
 import com.verireview.common.BaseEntity;
 import com.verireview.execution.ExecutionRun;
 import com.verireview.fix.Patch;
+import com.verireview.generation.Generation;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -30,6 +31,10 @@ public class VerificationRun extends BaseEntity {
   @ManyToOne(fetch = FetchType.LAZY)
   @JoinColumn(name = "execution_run_id")
   private ExecutionRun executionRun;
+
+  @ManyToOne(fetch = FetchType.LAZY)
+  @JoinColumn(name = "generation_id")
+  private Generation generation;
 
   @Enumerated(EnumType.STRING)
   @Column(name = "build_status", nullable = false, length = 20)
@@ -86,6 +91,14 @@ public class VerificationRun extends BaseEntity {
 
   public void setExecutionRun(ExecutionRun executionRun) {
     this.executionRun = executionRun;
+  }
+
+  public Generation getGeneration() {
+    return generation;
+  }
+
+  public void setGeneration(Generation generation) {
+    this.generation = generation;
   }
 
   public BuildStatus getBuildStatus() {

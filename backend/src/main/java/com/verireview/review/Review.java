@@ -1,6 +1,7 @@
 package com.verireview.review;
 
 import com.verireview.common.BaseEntity;
+import com.verireview.generation.Generation;
 import com.verireview.project.Project;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -41,6 +42,10 @@ public class Review extends BaseEntity {
 
   @Column(name = "error", columnDefinition = "TEXT")
   private String error;
+
+  @ManyToOne(fetch = FetchType.LAZY)
+  @JoinColumn(name = "generation_id")
+  private Generation generation;
 
   public Review() {
   }
@@ -103,5 +108,13 @@ public class Review extends BaseEntity {
 
   public void setError(String error) {
     this.error = error;
+  }
+
+  public Generation getGeneration() {
+    return generation;
+  }
+
+  public void setGeneration(Generation generation) {
+    this.generation = generation;
   }
 }

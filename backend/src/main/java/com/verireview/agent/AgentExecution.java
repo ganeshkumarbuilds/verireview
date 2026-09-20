@@ -2,6 +2,7 @@ package com.verireview.agent;
 
 import com.verireview.common.BaseEntity;
 import com.verireview.fix.FixRequest;
+import com.verireview.generation.Generation;
 import com.verireview.project.Project;
 import com.verireview.review.Review;
 import com.verireview.verification.VerificationRun;
@@ -23,8 +24,8 @@ import jakarta.persistence.Table;
 @Table(name = "agent_executions")
 public class AgentExecution extends BaseEntity {
 
-  @ManyToOne(fetch = FetchType.LAZY, optional = false)
-  @JoinColumn(name = "project_id", nullable = false)
+  @ManyToOne(fetch = FetchType.LAZY)
+  @JoinColumn(name = "project_id")
   private Project project;
 
   @Enumerated(EnumType.STRING)
@@ -64,6 +65,10 @@ public class AgentExecution extends BaseEntity {
   @ManyToOne(fetch = FetchType.LAZY)
   @JoinColumn(name = "verification_run_id")
   private VerificationRun verificationRun;
+
+  @ManyToOne(fetch = FetchType.LAZY)
+  @JoinColumn(name = "generation_id")
+  private Generation generation;
 
   public AgentExecution() {
   }
@@ -171,5 +176,13 @@ public class AgentExecution extends BaseEntity {
 
   public void setVerificationRun(VerificationRun verificationRun) {
     this.verificationRun = verificationRun;
+  }
+
+  public Generation getGeneration() {
+    return generation;
+  }
+
+  public void setGeneration(Generation generation) {
+    this.generation = generation;
   }
 }

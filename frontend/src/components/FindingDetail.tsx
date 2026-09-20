@@ -197,17 +197,17 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
       <div
         aria-hidden="true"
         onClick={onClose}
-        className="absolute inset-0 h-full w-full bg-slate-900/40"
+        className="absolute inset-0 h-full w-full bg-indigo-950/40 backdrop-blur-[2px]"
       />
-      <div className="absolute inset-y-0 right-0 flex w-full max-w-lg flex-col bg-white shadow-xl">
-        <div className="flex items-start gap-2 border-b border-slate-200 p-4">
+      <div className="absolute inset-y-0 right-0 flex w-full max-w-lg flex-col border-l border-indigo-100 bg-white shadow-2xl">
+        <div className="flex shrink-0 items-start gap-2 border-b border-indigo-100 bg-indigo-50/40 p-4">
           <div className="min-w-0 flex-1">
             <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
               <Badge tone={severityTone(finding.severity)}>{finding.severity}</Badge>
               <Badge tone={sourceTone(finding.source)}>{finding.source}</Badge>
               <Badge tone="gray">{finding.status}</Badge>
             </div>
-            <h3 className="font-mono text-sm font-semibold text-slate-900">
+            <h3 className="font-mono text-sm font-bold text-indigo-950">
               {finding.rule ?? finding.title}
             </h3>
           </div>
@@ -215,30 +215,30 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
             type="button"
             onClick={onClose}
             aria-label="Close finding details"
-            className="rounded-lg px-2 py-1 text-lg leading-none text-slate-500 hover:bg-slate-100"
+            className="rounded-lg px-2 py-1 text-xl leading-none text-slate-500 transition-colors hover:bg-indigo-50 hover:text-indigo-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
           >
             ×
           </button>
         </div>
 
-        <div className="flex-1 space-y-4 overflow-y-auto p-4 text-sm">
+        <div className="flex-1 space-y-5 overflow-y-auto p-4 text-sm sm:p-5">
           <section>
-            <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
+            <h4 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
               Message
             </h4>
-            <p className="text-slate-800">{finding.description || finding.title}</p>
+            <p className="leading-relaxed text-slate-800">{finding.description || finding.title}</p>
           </section>
 
           <section>
-            <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
+            <h4 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
               Location
             </h4>
-            <p className="font-mono text-xs text-slate-700">{lineRef}</p>
+            <p className="rounded-lg bg-indigo-50/60 px-3 py-2 font-mono text-xs text-indigo-950">{lineRef}</p>
             {finding.filePath && (
               <button
                 type="button"
                 onClick={() => onViewFile(finding.filePath as string)}
-                className="mt-1 text-sm text-indigo-600 hover:underline"
+                className="mt-1.5 rounded-md text-sm font-medium text-indigo-700 transition-colors hover:text-indigo-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
               >
                 View in file
               </button>
@@ -246,11 +246,11 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
           </section>
 
           <section>
-            <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
+            <h4 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
               Remediation guidance
             </h4>
             {meta.suggestedFixHint ? (
-              <p className="text-slate-800">{meta.suggestedFixHint}</p>
+              <p className="leading-relaxed text-slate-800">{meta.suggestedFixHint}</p>
             ) : (
               <p className="text-slate-500">
                 No remediation guidance recorded for this finding.
@@ -259,61 +259,61 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
           </section>
 
           <section>
-            <h4 className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
+            <h4 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
               Evidence
             </h4>
-            <dl className="space-y-1 text-sm">
+            <dl className="space-y-1.5 rounded-xl border border-indigo-100 bg-indigo-50/40 p-3 text-sm">
               <div className="flex gap-2">
-                <dt className="text-slate-500">Analyzer</dt>
-                <dd>{meta.analyzer ?? finding.analyzer ?? '—'}</dd>
+                <dt className="shrink-0 font-medium text-slate-500">Analyzer</dt>
+                <dd className="ml-auto text-right font-medium text-slate-800">{meta.analyzer ?? finding.analyzer ?? '—'}</dd>
               </div>
               {meta.toolSeverity && (
                 <div className="flex gap-2">
-                  <dt className="text-slate-500">Tool severity</dt>
-                  <dd>{meta.toolSeverity}</dd>
+                  <dt className="shrink-0 font-medium text-slate-500">Tool severity</dt>
+                  <dd className="ml-auto text-right font-medium text-slate-800">{meta.toolSeverity}</dd>
                 </div>
               )}
               {meta.confidence != null && (
                 <div className="flex gap-2">
-                  <dt className="text-slate-500">Confidence</dt>
-                  <dd>{Math.round(meta.confidence * 100)}%</dd>
+                  <dt className="shrink-0 font-medium text-slate-500">Confidence</dt>
+                  <dd className="ml-auto text-right font-medium text-slate-800">{Math.round(meta.confidence * 100)}%</dd>
                 </div>
               )}
               {meta.model && (
                 <div className="flex gap-2">
-                  <dt className="text-slate-500">Model</dt>
-                  <dd className="break-all">{meta.model}</dd>
+                  <dt className="shrink-0 font-medium text-slate-500">Model</dt>
+                  <dd className="ml-auto break-all text-right font-medium text-slate-800">{meta.model}</dd>
                 </div>
               )}
               <div className="flex gap-2">
-                <dt className="text-slate-500">Category</dt>
-                <dd>{finding.category}</dd>
+                <dt className="shrink-0 font-medium text-slate-500">Category</dt>
+                <dd className="ml-auto text-right font-medium text-slate-800">{finding.category}</dd>
               </div>
             </dl>
           </section>
 
-          <section className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+          <section className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
+            <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-indigo-500">
               Fix request
             </h4>
 
             {fixLoading ? (
-              <p className="text-sm text-slate-500">Loading fix requests…</p>
+              <p className="py-2 text-sm text-slate-500">Loading fix requests…</p>
             ) : fixError ? (
-              <p role="alert" className="text-sm text-red-600">
+              <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
                 {fixError}
               </p>
             ) : fixRequests.length === 0 ? (
-              <p className="text-sm text-slate-500">No fix requests yet.</p>
+              <p className="py-1 text-sm text-slate-500">No fix requests yet.</p>
             ) : (
               <ul className="mb-3 space-y-2">
                 {fixRequests.map((req) => (
                   <li
                     key={req.id}
-                    className="flex items-start justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2"
+                    className="flex items-start justify-between gap-2 rounded-xl border border-indigo-100 bg-white px-3 py-2.5 shadow-sm"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <Badge tone={fixStatusTone(req.status)}>{req.status}</Badge>
                         <span className="text-xs text-slate-500">{formatDate(req.createdAt)}</span>
                       </div>
@@ -328,20 +328,20 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
             )}
 
             {submitSuccess && (
-              <p role="status" className="mb-2 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              <p role="status" className="mb-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
                 {submitSuccess}
               </p>
             )}
 
             {hasActiveRequest ? (
-              <p className="text-sm text-amber-700">
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
                 An active fix request already exists for this finding.
               </p>
             ) : (
               <button
                 type="button"
                 onClick={() => setDialogOpen(true)}
-                className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500"
+                className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-indigo-200 transition-colors hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
               >
                 Fix this issue
               </button>
@@ -360,29 +360,29 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
 
       {dialogOpen && (
         <div
-          className="absolute inset-0 z-10 flex items-center justify-center bg-slate-900/40 p-4"
+          className="absolute inset-0 z-10 flex items-center justify-center bg-indigo-950/40 p-4 backdrop-blur-[2px]"
           role="dialog"
           aria-label="Fix request dialog"
         >
-          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
-            <h3 className="text-base font-semibold text-slate-900">Fix this issue</h3>
-            <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <p className="font-mono text-sm font-medium text-slate-800">
+          <div className="w-full max-w-md rounded-2xl border border-indigo-100 bg-white p-5 shadow-2xl sm:p-6">
+            <h3 className="text-base font-bold tracking-tight text-indigo-950">Fix this issue</h3>
+            <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+              <p className="font-mono text-sm font-semibold text-indigo-950">
                 {finding.rule ?? finding.title}
               </p>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 font-mono text-xs text-slate-500">
                 {finding.filePath ?? '—'}
                 {finding.lineStart != null ? `:${finding.lineStart}` : ''}
                 {' · '}
                 {finding.severity} · {finding.analyzer ?? 'unknown'}
               </p>
               {finding.description && (
-                <p className="mt-2 line-clamp-3 text-sm text-slate-600">{finding.description}</p>
+                <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-slate-600">{finding.description}</p>
               )}
             </div>
 
             <label className="mt-4 block">
-              <span className="mb-1 block text-sm font-medium text-slate-700">
+              <span className="mb-1 block text-sm font-semibold text-slate-700">
                 Scope note <span className="font-normal text-slate-400">(optional)</span>
               </span>
               <textarea
@@ -392,15 +392,15 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
                 placeholder="Add context for the fix (e.g., preferred approach, constraints)…"
                 maxLength={5000}
                 rows={3}
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 transition-colors hover:border-indigo-300 focus:border-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-600/30"
               />
-              <span className="mt-1 block text-right text-xs text-slate-400">
+              <span className="mt-1 block text-right text-xs tabular-nums text-slate-400">
                 {scopeNote.length}/5000
               </span>
             </label>
 
             {submitError && (
-              <p role="alert" className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">
+              <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
                 {submitError}
               </p>
             )}
@@ -413,7 +413,7 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
                   setSubmitError(null);
                 }}
                 disabled={submitting}
-                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -421,7 +421,7 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
                 type="button"
                 onClick={() => void handleSubmit()}
                 disabled={submitting}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-indigo-200 transition-colors hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-50"
               >
                 {submitting ? 'Submitting…' : 'Submit request'}
               </button>

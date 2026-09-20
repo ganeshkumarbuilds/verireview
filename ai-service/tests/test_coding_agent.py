@@ -70,6 +70,40 @@ def test_validate_diff_rejects_invalid():
     assert any("verification" in e.lower() for e in validate_diff(bad))
 
 
+def test_validate_diff_rejects_traversal_absolute_and_binary():
+    def with_paths(path):
+        return (
+            f"diff --git a/{path} b/{path}\n"
+            f"--- a/{path}\n"
+            f"+++ b/{path}\n"
+            "@@ -1 +1 @@\n"
+            "+x"
+        )
+
+    assert any("illegal path" in e for e in validate_diff(with_paths("../evil.sh")))
+    assert any("illegal path" in e for e in validate_diff(with_paths("src/../../etc/x")))
+    assert any("illegal path" in e for e in validate_diff(with_paths("/etc/passwd")))
+    assert any("illegal path" in e for e in validate_diff(with_paths("C:/Windows/evil")))
+
+    binary = "diff --git a/img.png b/img.png\nBinary files a/img.png and b/img.png differ"
+    assert any("binary" in e.lower() for e in validate_diff(binary))
+
+
+def test_validate_diff_rejects_excessive_changes():
+    many_files = "".join(
+        f"diff --git a/F{i}.java b/F{i}.java\n"
+        f"--- a/F{i}.java\n"
+        f"+++ b/F{i}.java\n"
+        "@@ -1 +1 @@\n-x\n+y\n"
+        for i in range(6)
+    )
+    assert any("limit is 5" in e for e in validate_diff(many_files))
+
+    many_lines = "diff --git a/Big.java b/Big.java\n--- a/Big.java\n+++ b/Big.java\n@@ -1 +1 @@\n"
+    many_lines += "".join(f"+line {i}\n" for i in range(201))
+    assert any("changed lines" in e for e in validate_diff(many_lines))
+
+
 def test_parse_valid_output():
     payload = {"diff": "diff --git a/A.java b/A.java\n--- a/A.java\n+++ b/A.java\n@@ -1 +1 @@\n- x\n+ y", "explanation": "fix"}
     diff, exp, errors = parse_coding_output(json.dumps(payload))

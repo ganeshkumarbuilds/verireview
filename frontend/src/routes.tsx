@@ -1,7 +1,9 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Route, Routes } from 'react-router-dom';
 import { RequireAuth } from './auth/AuthContext';
 import { Layout } from './components/Layout';
 import { DashboardPage } from './pages/DashboardPage';
+import { FindingDetailPage } from './pages/FindingDetailPage';
+import { GeneratePage } from './pages/GeneratePage';
 import { HistoryPage } from './pages/HistoryPage';
 import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
@@ -9,11 +11,12 @@ import { NotFoundPage } from './pages/NotFoundPage';
 import { ProjectDetailPage } from './pages/ProjectDetailPage';
 import { ProjectsPage } from './pages/ProjectsPage';
 import { RegisterPage } from './pages/RegisterPage';
+import { ReviewPage } from './pages/ReviewPage';
 
 /** Route table. `/`, `/login`, and `/register` render standalone;
- *  the workspace (dashboard, projects, history) lives under Layout.
- *  Reviews are project-scoped in the API, so `/review` redirects to the
- *  project list. Project routes require a session. */
+ *  the workspace (dashboard, projects, review, history) lives under Layout.
+ *  Review is project-scoped in the API; the workspace reads `?project=`.
+ *  Finding detail is addressable per review so fixes stay linkable. */
 export function AppRoutes() {
   return (
     <Routes>
@@ -38,7 +41,30 @@ export function AppRoutes() {
             </RequireAuth>
           }
         />
-        <Route path="review" element={<Navigate to="/projects" replace />} />
+        <Route
+          path="projects/:projectId/reviews/:reviewId/findings/:findingId"
+          element={
+            <RequireAuth>
+              <FindingDetailPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="review"
+          element={
+            <RequireAuth>
+              <ReviewPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="generate"
+          element={
+            <RequireAuth>
+              <GeneratePage />
+            </RequireAuth>
+          }
+        />
         <Route path="history" element={<HistoryPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

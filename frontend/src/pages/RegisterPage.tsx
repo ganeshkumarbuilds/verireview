@@ -5,13 +5,11 @@ import { ApiError } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { AuthLayout } from '../components/AuthLayout';
 import { EnvelopeIcon, LockIcon, PillField, UserIcon } from '../components/FieldIcons';
-import { useDocumentTitle } from '../hooks/useDocumentTitle';
 
 const pillInput =
-  'w-full bg-transparent text-[15px] text-slate-900 placeholder:text-slate-500 focus:outline-none';
+  'w-full bg-transparent text-[15px] text-slate-900 placeholder:text-slate-500 focus:outline-none focus-visible:outline-none';
 
 export function RegisterPage() {
-  useDocumentTitle('Register');
   const { register } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
@@ -36,9 +34,9 @@ export function RegisterPage() {
 
   return (
     <AuthLayout>
-      <div className="rounded-3xl border border-slate-200 bg-white px-6 py-10 shadow-sm sm:px-12">
-        <h1 className="text-center text-4xl font-bold tracking-tight">Register</h1>
-        <p className="mt-2 text-center text-[15px] text-slate-500">
+      <div className="rounded-3xl border border-indigo-100 bg-white px-6 py-10 shadow-md shadow-indigo-100 sm:px-12">
+        <h1 className="text-center text-4xl font-bold tracking-tight text-indigo-950">Register</h1>
+        <p className="mt-2 text-center text-[15px] text-indigo-950/60">
           Create your account to continue
         </p>
         <form onSubmit={handleSubmit} aria-label="Register form" className="mt-8 space-y-4">
@@ -82,21 +80,21 @@ export function RegisterPage() {
             />
           </PillField>
           {error && (
-            <p role="alert" className="text-center text-sm text-red-600">
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-center text-sm text-red-600">
               {error}
             </p>
           )}
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded-full bg-indigo-500 py-3 text-lg font-medium text-white hover:bg-indigo-400 disabled:opacity-60"
+            className="w-full rounded-full bg-indigo-600 py-3 text-lg font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 disabled:opacity-60"
           >
             {busy ? 'Creating account…' : 'Register'}
           </button>
         </form>
-        <p className="mt-6 text-center text-[15px] text-slate-500">
+        <p className="mt-6 text-center text-[15px] text-indigo-950/60">
           Have an account?{' '}
-          <Link to="/login" className="text-indigo-500 hover:underline">
+          <Link to="/login" className="font-medium text-indigo-600 hover:text-indigo-700 hover:underline">
             Log in
           </Link>
         </p>

@@ -54,22 +54,24 @@ public class PatchService {
     if (proposal == null || proposal.diff() == null || proposal.diff().isBlank()) {
       throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI coding returned empty diff");
     }
-    // Strict validation: diff must look like unified diff and not claim verification
+    // Strict gate: malformed, absolute, traversal, binary, or oversized diffs
+    // are rejected here — nothing is persisted and nothing is applied.
+    final UnifiedDiffValidator.DiffStats stats;
+    try {
+      stats = UnifiedDiffValidator.validate(proposal.diff());
+    } catch (UnifiedDiffValidator.DiffValidationException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage());
+    }
     String diff = proposal.diff().trim();
-    if (!diff.contains("diff --git") || !diff.contains("---") || !diff.contains("+++") || !diff.contains("@@")) {
-      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI coding returned invalid diff format");
-    }
-    if (diff.toLowerCase().contains("verified") || diff.toLowerCase().contains("tests passed") || diff.toLowerCase().contains("build passed")) {
-      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI diff must not claim verification");
-    }
 
     Project project = fixRequest.getFinding().getReview().getProject();
 
     Patch patch = new Patch(fixRequest, diff);
     patch.setProject(project);
-    patch.setFilesChanged(Math.max(0, proposal.filesChanged()));
-    patch.setAdditions(Math.max(0, proposal.additions()));
-    patch.setDeletions(Math.max(0, proposal.deletions()));
+    // Authoritative counts derived from the diff itself, never AI-reported numbers.
+    patch.setFilesChanged(stats.filesChanged());
+    patch.setAdditions(stats.additions());
+    patch.setDeletions(stats.deletions());
     patch.setStatus(PatchStatus.PROPOSED);
 
     patches.save(patch);

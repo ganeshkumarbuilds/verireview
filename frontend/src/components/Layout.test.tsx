@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { AuthProvider } from '../auth/AuthContext';
@@ -47,14 +47,22 @@ describe('shell layout', () => {
     }
   });
 
-  it('toggles the sidebar from the navbar button', () => {
-    // jsdom applies no stylesheets, so assert the responsive classes directly.
+  it('toggles the mobile navigation menu from the navbar button', () => {
     renderAt('/dashboard');
-    const closed = screen.getByRole('complementary', { name: 'Primary' });
-    expect(closed.className).toContain('hidden');
+    expect(
+      screen.queryByRole('navigation', { name: 'Mobile' }),
+    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Toggle navigation' }));
-    expect(screen.getByRole('complementary', { name: 'Primary' }).className).not.toContain(
-      'hidden',
+    expect(screen.getByRole('navigation', { name: 'Mobile' })).toBeInTheDocument();
+  });
+
+  it('logs out back to the home page', async () => {
+    renderAt('/dashboard', true);
+    fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: 'Generate. Review. Fix. Verify.' }),
+      ).toBeInTheDocument(),
     );
   });
 });
@@ -65,6 +73,7 @@ describe('placeholder pages', () => {
     ['/dashboard', 'Dashboard', false],
     ['/projects', 'Projects', true],
     ['/review', 'Login', false],
+    ['/generate', 'Login', false],
     ['/history', 'History', false],
     ['/login', 'Login', false],
     ['/register', 'Register', false],

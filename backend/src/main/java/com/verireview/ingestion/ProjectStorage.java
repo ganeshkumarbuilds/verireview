@@ -50,6 +50,17 @@ public class ProjectStorage {
     return root.resolve(projectId.toString());
   }
 
+  /**
+   * Isolated per-iteration workspace for generated files. Lives beside (never
+   * inside) project directories so unreviewed output cannot leak into the
+   * Review workflow; callers still jail every file with
+   * {@link #resolveJailed(Path, String)} and clean up via
+   * {@link #deleteQuietly(Path)}.
+   */
+  public Path generationWorkspaceDir(UUID generationId, int iteration) {
+    return root.resolve("_generations").resolve(generationId.toString()).resolve("iter-" + iteration);
+  }
+
   /** Moves a validated quarantine tree into its final project directory. */
   public Path moveToProject(Path quarantine, UUID projectId) throws IOException {
     Path target = projectDir(projectId);

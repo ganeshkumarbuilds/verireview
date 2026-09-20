@@ -289,27 +289,65 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
   const executionTerminal = execution != null && !isActiveExecution(execution.status);
   const canPropose = patchState === 'empty' && fixRequest.status === 'REQUESTED';
 
+  // Presentation-only stepper: derived from existing patch/execution/
+  // verification state, never stored or sent anywhere.
+  const patchDone = patchState === 'ready' && patch !== null && patch.status !== 'REJECTED';
+  const applyDone = patch?.status === 'APPLIED';
+  const stepState = (done: boolean, current: boolean): string =>
+    done
+      ? 'bg-indigo-600 text-white'
+      : current
+        ? 'bg-indigo-100 text-indigo-800 ring-1 ring-inset ring-indigo-600/30'
+        : 'bg-white text-slate-400 ring-1 ring-inset ring-slate-200';
+  const steps = [
+    { label: 'Fix', done: patchDone || applyDone, current: patchState === 'empty' && canPropose },
+    { label: 'Apply', done: applyDone, current: patch?.status === 'PROPOSED' },
+    {
+      label: 'Execute',
+      done: executionTerminal,
+      current: executionActive || (applyDone && !execution),
+    },
+    { label: 'Verify', done: verification !== null, current: executionTerminal && !verification },
+  ];
+
   return (
-    <section aria-label="Fix apply execute verify workflow" className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+    <section aria-label="Fix apply execute verify workflow" className="rounded-xl border border-indigo-100 bg-white p-4 shadow-sm">
+      <h4 className="mb-3 text-xs font-bold uppercase tracking-wider text-indigo-500">
         Fix → Apply → Execute → Verify
       </h4>
+      <ol aria-hidden="true" className="mb-4 flex items-center gap-1">
+        {steps.map((step, index) => (
+          <li key={step.label} className="flex min-w-0 flex-1 items-center gap-1">
+            <span
+              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 truncate rounded-full px-2 py-1 text-[11px] font-semibold transition-colors ${stepState(step.done, step.current)}`}
+            >
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-white/30 text-[10px] font-bold">
+                {step.done ? '✓' : index + 1}
+              </span>
+              <span className="truncate">{step.label}</span>
+            </span>
+            {index < steps.length - 1 && (
+              <span className="h-px w-2 shrink-0 bg-indigo-200" />
+            )}
+          </li>
+        ))}
+      </ol>
 
       {actionError && (
-        <p role="alert" className="mb-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">
+        <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
           {actionError}
         </p>
       )}
 
       {/* Step 1–2: patch */}
-      {patchState === 'loading' && <p className="text-sm text-slate-500">Loading patch…</p>}
+      {patchState === 'loading' && <p className="py-2 text-sm text-slate-500">Loading patch…</p>}
       {patchState === 'error' && (
         <div className="space-y-2">
-          <p role="alert" className="text-sm text-red-600">{patchError}</p>
+          <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{patchError}</p>
           <button
             type="button"
             onClick={() => void loadPatch()}
-            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
           >
             Retry
           </button>
@@ -323,12 +361,12 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
               type="button"
               onClick={() => void handlePropose()}
               disabled={busy !== null}
-              className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
+              className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-indigo-200 transition-colors hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-50"
             >
               {busy === 'propose' ? 'Proposing…' : 'Propose patch'}
             </button>
           ) : (
-            <p className="text-sm text-slate-500">
+            <p className="rounded-lg bg-indigo-50/60 px-3 py-2 text-sm text-slate-600">
               A patch can be proposed while the fix request is REQUESTED (current: {fixRequest.status}).
             </p>
           )}
@@ -336,7 +374,7 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
       )}
       {patchState === 'ready' && patch && (
         <div className="space-y-3">
-          <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+          <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-3">
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={patchTone(patch.status)}>{patch.status}</Badge>
               <span className="text-xs text-slate-500">
@@ -344,13 +382,13 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
               </span>
             </div>
             {patch.validationError && (
-              <p className="mt-1 text-xs text-red-600">{patch.validationError}</p>
+              <p className="mt-1.5 rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-600">{patch.validationError}</p>
             )}
             <details className="mt-2">
-              <summary className="cursor-pointer text-sm text-indigo-600 hover:underline">
+              <summary className="cursor-pointer rounded-md text-sm font-medium text-indigo-700 transition-colors hover:text-indigo-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2">
                 View diff
               </summary>
-              <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-800">
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-indigo-100 bg-white p-3 font-mono text-xs leading-relaxed text-slate-800">
                 {patch.diff}
               </pre>
             </details>
@@ -359,20 +397,20 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
                 type="button"
                 onClick={() => void handleApply()}
                 disabled={busy !== null}
-                className="mt-2 w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
+                className="mt-3 w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-indigo-200 transition-colors hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-50"
               >
                 {busy === 'apply' ? 'Applying…' : 'Apply patch'}
               </button>
             )}
             {patch.status === 'REJECTED' && (
-              <p className="mt-2 text-sm text-red-600">This patch was rejected and cannot be executed.</p>
+              <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">This patch was rejected and cannot be executed.</p>
             )}
           </div>
 
           {/* Step 3: execution */}
           {patch.status === 'APPLIED' && (
-            <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-3">
+              <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
                 Sandbox execution
               </p>
               {!execution && (
@@ -382,39 +420,42 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
                     type="button"
                     onClick={() => void handleExecute()}
                     disabled={busy !== null}
-                    className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
+                    className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-indigo-200 transition-colors hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-50"
                   >
                     {busy === 'execute' ? 'Starting…' : 'Run in sandbox'}
                   </button>
                 </div>
               )}
               {execution && (
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge tone={executionTone(execution.status)}>{execution.status}</Badge>
                     <Badge tone={buildTone(execution.buildStatus)}>build: {execution.buildStatus}</Badge>
                     {execution.exitCode != null && (
-                      <span className="text-xs text-slate-500">exit {execution.exitCode}</span>
+                      <span className="text-xs tabular-nums text-slate-500">exit {execution.exitCode}</span>
                     )}
                     {execution.durationMs != null && (
-                      <span className="text-xs text-slate-500">{execution.durationMs} ms</span>
+                      <span className="text-xs tabular-nums text-slate-500">{execution.durationMs} ms</span>
                     )}
                   </div>
                   {executionActive && (
-                    <p className="text-sm text-slate-500">Execution in progress…</p>
+                    <p className="flex items-center gap-2 text-sm text-slate-500">
+                      <span aria-hidden="true" className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+                      Execution in progress…
+                    </p>
                   )}
                   {executionTerminal && (execution.stdout || execution.stderr) && (
                     <details>
-                      <summary className="cursor-pointer text-sm text-indigo-600 hover:underline">
+                      <summary className="cursor-pointer rounded-md text-sm font-medium text-indigo-700 transition-colors hover:text-indigo-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2">
                         View logs
                       </summary>
                       {execution.stdout && (
-                        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-800">
+                        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-indigo-100 bg-white p-3 font-mono text-xs leading-relaxed text-slate-800">
                           {truncateLog(execution.stdout)}
                         </pre>
                       )}
                       {execution.stderr && (
-                        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-red-200 bg-red-50 p-2 font-mono text-xs text-red-800">
+                        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-red-200 bg-red-50 p-3 font-mono text-xs leading-relaxed text-red-800">
                           {truncateLog(execution.stderr)}
                         </pre>
                       )}
@@ -425,7 +466,7 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
                       type="button"
                       onClick={() => void handleExecute()}
                       disabled={busy !== null}
-                      className="mt-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      className="mt-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-50"
                     >
                       {busy === 'execute' ? 'Starting…' : 'Re-run in sandbox'}
                     </button>
@@ -437,12 +478,12 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
 
           {/* Step 4: verification */}
           {executionTerminal && (
-            <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-3">
+              <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
                 Verification
               </p>
               {verificationError && (
-                <p role="alert" className="mb-1 text-sm text-red-600">{verificationError}</p>
+                <p role="alert" className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{verificationError}</p>
               )}
               {!verification && (
                 <div className="space-y-2">
@@ -451,29 +492,29 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
                     type="button"
                     onClick={() => void handleVerify()}
                     disabled={busy !== null}
-                    className="w-full rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+                    className="w-full rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2 disabled:opacity-50"
                   >
                     {busy === 'verify' ? 'Verifying…' : 'Verify'}
                   </button>
                 </div>
               )}
               {verification && (
-                <div className="space-y-1">
+                <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge tone={verdictTone(verification.verdict)}>{verification.verdict}</Badge>
                     <Badge tone={buildTone(verification.buildStatus)}>build: {verification.buildStatus}</Badge>
-                    <span className="text-xs text-slate-500">
+                    <span className="text-xs tabular-nums text-slate-500">
                       tests {verification.testsPassed}/{verification.testsTotal} passed
                       {verification.testsFailed > 0 && ` · ${verification.testsFailed} failed`}
                       {verification.testsSkipped > 0 && ` · ${verification.testsSkipped} skipped`}
                     </span>
                   </div>
                   {verification.verdict === 'VERIFIED' ? (
-                    <p className="text-sm text-emerald-700">
+                    <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
                       Backend-verified: build passed, tests passed, no new CRITICAL/HIGH findings.
                     </p>
                   ) : verification.verdict === 'REJECTED' ? (
-                    <p className="text-sm text-red-600">
+                    <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
                       Rejected by backend policy: build, tests, or new CRITICAL/HIGH findings failed.
                     </p>
                   ) : (
@@ -481,10 +522,10 @@ export function FixWorkflow({ fixRequest, pollMs = DEFAULT_POLL_MS, onFixRequest
                   )}
                   {verification.logRef && (
                     <details>
-                      <summary className="cursor-pointer text-sm text-indigo-600 hover:underline">
+                      <summary className="cursor-pointer rounded-md text-sm font-medium text-indigo-700 transition-colors hover:text-indigo-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2">
                         View verification evidence
                       </summary>
-                      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-2 font-mono text-xs text-slate-800">
+                      <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-xl border border-indigo-100 bg-white p-3 font-mono text-xs leading-relaxed text-slate-800">
                         {truncateLog(verification.logRef)}
                       </pre>
                     </details>

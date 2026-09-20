@@ -107,7 +107,7 @@ describe('ProjectDetailPage analysis', () => {
       }
       return pageOf([]);
     });
-    await waitFor(() => expect(screen.getByText('demo')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'demo' })).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Start analysis' })).toBeInTheDocument();
     expect(screen.getByText(/No analysis yet/)).toBeInTheDocument();
   });
@@ -136,7 +136,7 @@ describe('ProjectDetailPage analysis', () => {
           : [],
       );
     });
-    await waitFor(() => expect(screen.getByText('demo')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'demo' })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Start analysis' }));
     await waitFor(() =>
       expect(calls.some((call) => call.startsWith('POST') && call.endsWith('/analysis'))).toBe(
@@ -300,5 +300,89 @@ describe('Phase 8 review experience', () => {
     renderWithFindings(FAILED_REVIEW, []);
     await waitFor(() => expect(screen.getByText('Analysis failed')).toBeInTheDocument());
     expect(screen.getByText('Sandbox image missing.')).toBeInTheDocument();
+  });
+});
+
+describe('ProjectDetailPage generation workspace', () => {
+  const GENERATED_PROJECT = {
+    ...PROJECT,
+    sourceType: 'GENERATED',
+  };
+
+  const GENERATION = {
+    id: 'g1',
+    name: 'demo',
+    requirement: 'A todo API with tests.',
+    description: null,
+    backend: 'PYTHON_FASTAPI',
+    frontend: 'NONE',
+    database: 'NONE',
+    databaseConfig: null,
+    aiConfig: { provider: 'OPENROUTER', model: 'test/model', baseUrl: null, keyConfigured: true },
+    status: 'COMPLETED',
+    error: null,
+    projectId: 'p1',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+  };
+
+  it('shows the generation pipeline for generated projects without fake progress', async () => {
+    renderDetail((url) => {
+      if (url.endsWith('/projects/p1/generation')) {
+        return new Response(JSON.stringify(GENERATION), { status: 200 });
+      }
+      if (url.endsWith('/projects/p1')) {
+        return new Response(JSON.stringify(GENERATED_PROJECT), { status: 200 });
+      }
+      if (url.includes('/files')) {
+        return pageOf([]);
+      }
+      return pageOf([]);
+    });
+    await waitFor(() =>
+      expect(screen.getByText('Generation pipeline')).toBeInTheDocument(),
+    );
+    expect(screen.getByText('A todo API with tests.')).toBeInTheDocument();
+    // Seven agent stages stay visibly planned — Requirement is the only done one.
+    expect(screen.getAllByText('Planned — a future phase.')).toHaveLength(7);
+    // Requirement is done; agent stages stay visibly planned, never running.
+    expect(screen.queryByText(/in progress/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Review Findings' })).toHaveAttribute(
+      'href',
+      '#workspace-findings',
+    );
+  });
+
+  it('hides the pipeline panel for existing review projects', async () => {
+    renderDetail((url) => {
+      if (url.endsWith('/projects/p1')) {
+        return new Response(JSON.stringify(PROJECT), { status: 200 });
+      }
+      if (url.includes('/files')) {
+        return pageOf([]);
+      }
+      return pageOf([]);
+    });
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'demo' })).toBeInTheDocument());
+    expect(screen.queryByText('Generation pipeline')).not.toBeInTheDocument();
+  });
+
+  it('hides the pipeline panel when no generation is linked', async () => {
+    renderDetail((url) => {
+      if (url.endsWith('/projects/p1/generation')) {
+        return new Response(JSON.stringify({ message: 'No generation found for project' }), {
+          status: 404,
+        });
+      }
+      if (url.endsWith('/projects/p1')) {
+        return new Response(JSON.stringify(GENERATED_PROJECT), { status: 200 });
+      }
+      if (url.includes('/files')) {
+        return pageOf([]);
+      }
+      return pageOf([]);
+    });
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'demo' })).toBeInTheDocument());
+    expect(screen.queryByText('Generation pipeline')).not.toBeInTheDocument();
   });
 });

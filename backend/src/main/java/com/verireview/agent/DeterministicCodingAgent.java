@@ -5,6 +5,7 @@ import com.verireview.agent.dto.AiCodingRequest;
 import com.verireview.agent.dto.AiCodingResult;
 import com.verireview.agent.dto.AiFileSnapshot;
 import com.verireview.fix.FixRequest;
+import com.verireview.fix.UnifiedDiffValidator;
 import com.verireview.ingestion.ProjectStorage;
 import com.verireview.project.Project;
 import com.verireview.project.ProjectFile;
@@ -80,20 +81,21 @@ public class DeterministicCodingAgent implements CodingAgent {
 
     AiCodingResult result = codingClient.coding(request);
 
-    // Re-validate diff strictly before returning (defense in depth)
-    String diff = result.diff() != null ? result.diff().trim() : "";
-    if (diff.isBlank() || !diff.contains("diff --git") || !diff.contains("---") || !diff.contains("+++") || !diff.contains("@@")) {
-      throw new AiServiceException(AiServiceException.Kind.MALFORMED, "AI coding returned invalid diff");
-    }
-    if (diff.toLowerCase().contains("verified") || diff.toLowerCase().contains("tests passed") || diff.toLowerCase().contains("build passed")) {
-      throw new AiServiceException(AiServiceException.Kind.MALFORMED, "AI diff must not claim verification");
+    // Re-validate strictly before returning (defense in depth): paths must
+    // stay project-relative and the proposal must stay within size caps.
+    // Stats are re-derived from the diff so AI-reported counts can't be spoofed.
+    final UnifiedDiffValidator.DiffStats stats;
+    try {
+      stats = UnifiedDiffValidator.validate(result.diff());
+    } catch (UnifiedDiffValidator.DiffValidationException e) {
+      throw new AiServiceException(AiServiceException.Kind.MALFORMED, e.getMessage());
     }
 
     return new Proposal(
-        diff,
-        Math.max(0, result.filesChanged()),
-        Math.max(0, result.additions()),
-        Math.max(0, result.deletions()));
+        result.diff().trim(),
+        stats.filesChanged(),
+        stats.additions(),
+        stats.deletions());
   }
 
   private List<AiFileSnapshot> loadSnapshots(Project project) {

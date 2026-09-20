@@ -244,6 +244,66 @@ class PatchTest extends AbstractPersistenceTest {
         .andExpect(status().isBadGateway());
   }
 
+  @Test
+  void traversalDiffReturnsBadGatewayAndNoPatch() throws Exception {
+    assertAttackerDiffRejected(diffWithPaths("../evil.sh"));
+    assertAttackerDiffRejected(diffWithPaths("src/../../etc/cron"));
+  }
+
+  @Test
+  void absoluteDiffReturnsBadGatewayAndNoPatch() throws Exception {
+    assertAttackerDiffRejected(diffWithPaths("/etc/passwd"));
+    assertAttackerDiffRejected(diffWithPaths("C:/Windows/evil"));
+  }
+
+  @Test
+  void excessiveDiffReturnsBadGatewayAndNoPatch() throws Exception {
+    // Too many files (limit 5)
+    StringBuilder manyFiles = new StringBuilder();
+    for (int i = 0; i < 6; i++) {
+      manyFiles.append("diff --git a/F").append(i).append(".java b/F").append(i).append(".java\n")
+          .append("--- a/F").append(i).append(".java\n")
+          .append("+++ b/F").append(i).append(".java\n")
+          .append("@@ -1 +1 @@\n-x\n+y\n");
+    }
+    assertAttackerDiffRejected(manyFiles.toString());
+
+    // Too many changed lines (limit 200)
+    StringBuilder manyLines = new StringBuilder(
+        "diff --git a/Big.java b/Big.java\n--- a/Big.java\n+++ b/Big.java\n@@ -1 +1 @@\n");
+    for (int i = 0; i < 201; i++) {
+      manyLines.append("+line ").append(i).append('\n');
+    }
+    assertAttackerDiffRejected(manyLines.toString());
+  }
+
+  private void assertAttackerDiffRejected(String attackerDiff) throws Exception {
+    String token = access(register());
+    User owner = tokenOwner(token);
+    String findingId = findingFor(owner);
+    String fixId = createFixRequest(token, findingId);
+
+    when(codingAiClient.coding(any()))
+        .thenReturn(new AiCodingResult(fixId, "coding", "coding/v1", attackerDiff, 1, 1, 0, "evil", ""));
+
+    mockMvc.perform(post("/api/v1/fix-requests/" + fixId + "/patch")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isBadGateway());
+
+    // Nothing persisted, FixRequest untouched (still REQUESTED, never applied/executed/verified)
+    assertThat(patches.findByFixRequestIdOrderByCreatedAtDesc(UUID.fromString(fixId))).isEmpty();
+    FixRequest fr = fixRequests.findById(UUID.fromString(fixId)).orElseThrow();
+    assertThat(fr.getStatus()).isEqualTo(FixRequestStatus.REQUESTED);
+  }
+
+  private static String diffWithPaths(String path) {
+    return "diff --git a/" + path + " b/" + path + "\n"
+        + "--- a/" + path + "\n"
+        + "+++ b/" + path + "\n"
+        + "@@ -1 +1 @@\n"
+        + "+x";
+  }
+
   // Helpers
   private String findingFor(User owner) {
     Project project = projects.save(new Project(owner, "fix-" + UUID.randomUUID(), ProjectSourceType.PASTE));

@@ -9,7 +9,7 @@ body,
 }
 
 body {
-  background-color: var(--color-slate-50);
+  background-color: var(--color-indigo-50);
   color: var(--color-slate-900);
 }
 
@@ -23,4 +23,46 @@ a {
 
 button:disabled {
   cursor: not-allowed;
+}
+
+/* Consistent professional focus baseline (components add ring utilities;
+   this keeps native elements visible for keyboard users). Lives in
+   @layer base so Tailwind utilities (e.g. focus-visible:outline-none on
+   inputs nested inside ringed pill wrappers) correctly override it —
+   unlayered rules would beat all layered utilities in the cascade. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-indigo-600);
+    outline-offset: 2px;
+  }
+}
+
+::selection {
+  background-color: var(--color-indigo-200);
+}
+
+/* Subtle professional scrollbars inside panels and code viewers. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--color-indigo-200);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

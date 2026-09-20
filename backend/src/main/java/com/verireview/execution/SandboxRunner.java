@@ -38,6 +38,10 @@ public class SandboxRunner {
   private final long executionTimeoutSeconds;
   private final long maxOutputBytes;
 
+  public long getExecutionTimeoutSeconds() {
+    return executionTimeoutSeconds;
+  }
+
   public SandboxRunner(
       @Value("${app.analysis.image:verireview-analysis:phase6}") String image,
       @Value("${app.analysis.timeout-seconds:300}") long timeoutSeconds,
@@ -99,6 +103,18 @@ public class SandboxRunner {
    * Never runs on host; no network; capped resources; bounded timeout.
    */
   public ExecutionResult executeBuild(Path projectDir) throws SandboxException {
+    return executeBuild(projectDir, null);
+  }
+
+  /**
+   * Executes a custom build command for a generation workspace inside Docker.
+   * Never runs on host; no network; capped resources; bounded timeout.
+   *
+   * @param projectDir the project/workspace directory to copy into the container
+   * @param customCommand the shell command to run inside the container (e.g., "mvn test", "npm test", "pytest")
+   *                      If null, defaults to Maven/Gradle detection
+   */
+  public ExecutionResult executeBuild(Path projectDir, String customCommand) throws SandboxException {
     Path work;
     try {
       work = Files.createTempDirectory("verireview-execution-");
@@ -113,16 +129,21 @@ public class SandboxRunner {
         throw new SandboxException("Could not stage execution workspace: " + e.getMessage());
       }
       long start = System.currentTimeMillis();
-      ExecutionResult result = runExecutionContainer(snapshot);
+      ExecutionResult result = runExecutionContainer(snapshot, customCommand);
       long duration = System.currentTimeMillis() - start;
-      // Adjust duration if needed
       return new ExecutionResult(result.exitCode(), result.stdout(), result.stderr(), duration, result.timedOut());
     } finally {
       deleteQuietly(work);
     }
   }
 
-  private ExecutionResult runExecutionContainer(Path snapshot) throws SandboxException {
+  private ExecutionResult runExecutionContainer(Path snapshot, String customCommand) throws SandboxException {
+    String shellCommand;
+    if (customCommand != null && !customCommand.isBlank()) {
+      shellCommand = "cd /project && " + customCommand;
+    } else {
+      shellCommand = "cd /project && if [ -f pom.xml ]; then mvn -B test -o 2>&1 || mvn -B test 2>&1; elif [ -f build.gradle ]; then gradle test 2>&1; elif [ -f build.gradle.kts ]; then gradle test 2>&1; else echo 'no build file found' >&2; exit 1; fi";
+    }
     List<String> command = new ArrayList<>(List.of(
         "docker", "run", "--rm",
         "--network", "none",
@@ -131,7 +152,7 @@ public class SandboxRunner {
         "--pids-limit", pidsLimit,
         "-v", snapshot.toAbsolutePath() + ":/project:ro",
         executionImage,
-        "sh", "-c", "cd /project && if [ -f pom.xml ]; then mvn -B test -o 2>&1 || mvn -B test 2>&1; elif [ -f build.gradle ]; then gradle test 2>&1; elif [ -f build.gradle.kts ]; then gradle test 2>&1; else echo 'no build file found' >&2; exit 1; fi"));
+        "sh", "-c", shellCommand));
     Process process;
     long start = System.currentTimeMillis();
     try {

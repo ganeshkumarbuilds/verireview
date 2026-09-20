@@ -36,9 +36,13 @@ import org.springframework.web.multipart.MultipartFile;
 public class ProjectController {
 
   private final ProjectService projects;
+  private final com.verireview.generation.GenerationService generations;
 
-  public ProjectController(ProjectService projects) {
+  public ProjectController(
+      ProjectService projects,
+      com.verireview.generation.GenerationService generations) {
     this.projects = projects;
+    this.generations = generations;
   }
 
   @PostMapping
@@ -116,5 +120,17 @@ public class ProjectController {
       @PathVariable("id") UUID id,
       @RequestParam("path") String path) {
     return ResponseEntity.ok(projects.readFile(principal.getId(), id, path));
+  }
+
+  /**
+   * Latest generation linked to a project, for the generated-project
+   * workspace panel. Owner-checked through the project (404 otherwise);
+   * 404 when the project has no generation yet.
+   */
+  @GetMapping("/{id}/generation")
+  public ResponseEntity<com.verireview.generation.dto.GenerationResponse> generation(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id) {
+    return ResponseEntity.ok(generations.forProject(principal.getId(), id));
   }
 }

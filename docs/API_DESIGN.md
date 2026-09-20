@@ -83,14 +83,22 @@
 | GET | `/verification-runs/{runId}` | Detail: build status, test summary, deltas, verdict, log excerpts, duration. |
 | GET | `/verification-runs/{runId}/tests?status=` | Per-test results (paged). |
 
-### Generation (`/generate`)
+### Generation (`/generations`)
+
+Implemented contract (Generate workflow): the wizard collects requirement,
+explicit stack, optional database config, and per-run AI credentials; the
+backend queues the job and the frontend polls real state
+`QUEUED → PLANNING → GENERATING → REVIEWING → COMPLETED / FAILED`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/generate/plans` | `{ requirement, techPreferences? }` → 202 + plan draft (Planning Agent). |
-| GET | `/generate/plans/{planId}` | Plan detail. |
-| POST | `/generate/plans/{planId}/approve` | Approve (optional edits) → scaffolds project async → 202 + project id. |
-| POST | `/generate/plans/{planId}/clarify` | Answer clarification questions (if plan returned needsClarification). |
+| POST | `/generations` | `{ name, requirement, description?, backend, frontend, database, databaseConfig?, aiConfig, draft? }` → 201 + generation (`DRAFT` when `draft: true`, else `QUEUED`). Secrets (`databaseConfig.password`, `aiConfig.apiKey`) travel once, are held in memory only, and never appear in any response. |
+| GET | `/generations` | List own generations (paged). Secrets masked (`passwordConfigured`, `keyConfigured` flags only). |
+| GET | `/generations/{id}` | Generation state + masked config + `projectId` once `COMPLETED`. Owner only (else 404). Also carries `iteration`, `maxIterations`, `revisionNumber`, `revisionCount`, and nullable `artifact` facts (never storage paths). |
+| POST | `/generations/{id}/revisions` | Append a task modification as a new numbered revision (drafts only, else 409). Body `{ requirement }`; response is the revision, never secrets. |
+| GET | `/generations/{id}/revisions` | Ordered revision history for a generation. Owner only (else 404). |
+
+Rules: explicit stack enums only (`JAVA_SPRING_BOOT`/`PYTHON_FASTAPI`/`NODEJS`, `REACT_TYPESCRIPT`/`NONE`, `POSTGRESQL`/`MYSQL`/`MONGODB`/`NONE`, `OPENROUTER`/`CUSTOM`); `databaseConfig` required iff database ≠ `NONE`; `baseUrl` required iff provider is `CUSTOM`. Generated code must use env-var placeholders — embedded secrets fail the run. Output becomes a normal `GENERATED` project consumable by the existing Project/Review flow. No sandbox execution in this phase.
 
 ### Agent executions & Audit (observability of the workflow)
 
