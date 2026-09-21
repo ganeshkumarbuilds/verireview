@@ -54,9 +54,10 @@ public enum GenerationStatus {
       case REVIEWING -> EnumSet.of(FIXING, REVIEWED, COMPLETED, FAILED, CANCELLED);
       case FIXING -> EnumSet.of(REBUILDING, FAILED, CANCELLED);
       case REBUILDING -> EnumSet.of(TESTING, REVERIFYING, FAILED, CANCELLED);
-      case REVERIFYING -> EnumSet.of(REVIEWING, FAILED, CANCELLED);
+      case REVERIFYING -> EnumSet.of(VERIFIED, FAILED, CANCELLED);
       case VERIFIED -> EnumSet.of(REVIEWING, FAILED, CANCELLED);
-      case REVIEWED, COMPLETED, FAILED, CANCELLED -> EnumSet.noneOf(GenerationStatus.class);
+      case REVIEWED -> EnumSet.of(REBUILDING, FAILED, CANCELLED);
+      case COMPLETED, FAILED, CANCELLED -> EnumSet.noneOf(GenerationStatus.class);
     };
   }
 

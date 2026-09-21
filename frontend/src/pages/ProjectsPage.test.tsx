@@ -29,20 +29,39 @@ describe('ProjectsPage', () => {
     expect(screen.getByText(/Your projects \(1\)/)).toBeInTheDocument();
   });
 
-  it('creates a shell from the form', async () => {
-    const calls: string[] = [];
-    renderProjects(async (url: string | URL | Request, init?: RequestInit) => {
-      calls.push(String(url));
-      if (init?.method === 'POST') {
-        return new Response(JSON.stringify({ id: 'p9', name: 'fresh' }), { status: 201 });
+  it('starts a generation from the quick form and links to its progress', async () => {
+    const calls: { url: string; method: string; body: string }[] = [];
+    renderProjects((async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      calls.push({ url: target, method: init?.method ?? 'GET', body: String(init?.body ?? '') });
+      if (target.endsWith('/generations') && (init?.method ?? 'GET') === 'POST') {
+        return new Response(JSON.stringify({ id: 'g1', name: 'todo-api' }), { status: 201 });
       }
       return new Response(pageOf([]), { status: 200 });
-    });
+    }) as typeof fetch);
     await waitFor(() => expect(screen.getByText(/No projects yet/)).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'fresh' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create project' }));
-    await waitFor(() =>
-      expect(calls.some((url) => url.endsWith('/projects') && !url.includes('import'))).toBe(true),
-    );
+
+    fireEvent.change(screen.getByLabelText('Quick project name'), { target: { value: 'todo-api' } });
+    fireEvent.change(screen.getByLabelText('Quick backend stack'), { target: { value: 'PYTHON_FASTAPI' } });
+    fireEvent.change(screen.getByLabelText('Quick frontend stack'), { target: { value: 'NONE' } });
+    fireEvent.change(screen.getByLabelText('Quick database'), { target: { value: 'NONE' } });
+    fireEvent.change(screen.getByLabelText('Quick project task'), {
+      target: { value: 'A minimal todo REST API with create and list endpoints plus tests.' },
+    });
+    fireEvent.change(screen.getByLabelText('Quick AI provider'), { target: { value: 'OPENROUTER' } });
+    fireEvent.change(screen.getByLabelText('Quick AI model'), { target: { value: 'test/model' } });
+    fireEvent.change(screen.getByLabelText('Quick AI API key'), { target: { value: 'sk-live-key' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
+
+    await waitFor(() => expect(screen.getByText(/Generation started for/)).toBeInTheDocument());
+    const progress = screen.getByRole('link', { name: 'View generation progress' });
+    expect(progress).toHaveAttribute('href', '/generate?genId=g1');
+
+    const post = calls.find((call) => call.method === 'POST' && call.url.endsWith('/generations'));
+    expect(post?.body).toContain('todo-api');
+    expect(post?.body).toContain('sk-live-key');
+    expect(calls.every((call) => !call.url.includes('sk-live-key'))).toBe(true);
+    // Single-use secrets are cleared from the form after submit.
+    expect(screen.queryByDisplayValue('sk-live-key')).not.toBeInTheDocument();
   });
 });

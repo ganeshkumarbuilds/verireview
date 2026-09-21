@@ -47,6 +47,9 @@ import org.springframework.transaction.annotation.Transactional;
  * Persists the full design chain (user → project → review → finding →
  * fix → patch → run → test result, plus repo/file/agent/audit rows) and
  * proves relationships and JSONB round-trip against real PostgreSQL.
+ *
+ * A Patch is project-owned in this legacy/project workflow. Generation
+ * patches use generation_id instead; the database requires exactly one owner.
  */
 @Transactional
 class DomainPersistenceTest extends AbstractPersistenceTest {
@@ -111,7 +114,13 @@ class DomainPersistenceTest extends AbstractPersistenceTest {
     findings.save(finding);
 
     FixRequest fix = fixRequests.save(new FixRequest(finding, owner));
-    Patch patch = patches.save(new Patch(fix, "--- a\n+++ b\n"));
+
+    Patch patch = new Patch(fix, "--- a\n+++ b\n");
+    // V15 requires every Patch to have exactly one owner. This is the
+    // project-owned path exercised by this persistence test.
+    patch.setProject(project);
+    patch = patches.save(patch);
+
     VerificationRun run = runs.save(new VerificationRun(patch));
     TestResult result = testResults.save(
         new TestResult(run, "Suite", "testX", TestStatus.PASSED));
@@ -133,7 +142,6 @@ class DomainPersistenceTest extends AbstractPersistenceTest {
     assertThat(reloaded.getReview().getId()).isEqualTo(review.getId());
     assertThat(reloaded.getReview().getProject().getId()).isEqualTo(project.getId());
     assertThat(reloaded.getReview().getProject().getOwner().getId()).isEqualTo(owner.getId());
-    // PostgreSQL jsonb normalizes formatting on write; compare whitespace-insensitively.
     assertThat(reloaded.getEvidence().replace(" ", ""))
         .isEqualTo("{\"rule\":\"SpotBugs:SQL_INJECTION\"}");
     assertThat(reloaded.getStatus()).isEqualTo(FindingStatus.OPEN);

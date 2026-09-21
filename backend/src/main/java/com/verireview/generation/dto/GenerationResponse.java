@@ -10,9 +10,13 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Generation state for polling. Secrets are NEVER exposed: the database
- * password is replaced by {@code databasePasswordConfigured} and the AI key
- * by {@code aiKeyConfigured}.
+ * Backend-authoritative generation state for polling and the generation
+ * control-center UI.
+ *
+ * <p>Secrets are NEVER exposed: database passwords and AI keys are represented
+ * only by configured flags. Workflow statistics, agent execution state,
+ * verification state, review state, and artifact readiness are derived by the
+ * backend and are not client-controlled.
  */
 public record GenerationResponse(
     UUID id,
@@ -33,6 +37,12 @@ public record GenerationResponse(
     long revisionCount,
     ArtifactView artifact,
     PlanView plan,
+    WorkflowStatsView workflowStats,
+    VerificationView verification,
+    ReviewView review,
+    List<AgentStepView> agentWorkflow,
+    boolean downloadReady,
+    boolean previewReady,
     Instant createdAt,
     Instant updatedAt) {
 
@@ -60,6 +70,58 @@ public record GenerationResponse(
       int fileCount,
       long totalChars,
       String sha256,
+      Instant createdAt) {
+  }
+
+  /**
+   * Meaningful issue/fix counts for the generation workspace.
+   *
+   * <p>The counts are produced by the backend from persisted findings and
+   * their statuses. They must never be calculated solely by the frontend.
+   */
+  public record WorkflowStatsView(
+      int totalFindings,
+      int openFindings,
+      int fixedFindings,
+      int bugCount,
+      int issueCount,
+      int errorCount) {
+  }
+
+  /**
+   * Latest backend verification result for the current generation iteration.
+   */
+  public record VerificationView(
+      String verdict,
+      String buildStatus,
+      int testsTotal,
+      int testsPassed,
+      int testsFailed,
+      int testsSkipped,
+      Long durationMs,
+      String logRef) {
+  }
+
+  /**
+   * Latest review result for the current generation iteration.
+   */
+  public record ReviewView(
+      String status,
+      int findingCount,
+      String error) {
+  }
+
+  /**
+   * One persisted agent execution shown in the workflow timeline.
+   *
+   * <p>No prompt, model secret, API key, source contents, or internal storage
+   * path is exposed here.
+   */
+  public record AgentStepView(
+      String agentType,
+      String status,
+      Long durationMs,
+      String error,
       Instant createdAt) {
   }
 

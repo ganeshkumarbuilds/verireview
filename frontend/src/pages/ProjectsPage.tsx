@@ -3,8 +3,15 @@ import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { listFindings, listReviews } from '../api/analysis';
-import { createProject, listProjects, uploadZip } from '../api/projects';
+import { listProjects, uploadZip } from '../api/projects';
+import { createGeneration } from '../api/generations';
 import type { FindingResponse, ProjectResponse, ReviewResponse } from '../api/types';
+import type {
+  GenerationAiProvider,
+  GenerationBackend,
+  GenerationDatabase,
+  GenerationFrontend,
+} from '../api/generationTypes';
 import { apiClient, useAuth } from '../auth/AuthContext';
 import {
   Badge,
@@ -16,6 +23,7 @@ import {
   SkeletonList,
   inputClass,
   primaryButtonClass,
+  selectClass,
 } from '../components/ui';
 import {
   ProjectAvatar,
@@ -29,10 +37,22 @@ interface ProjectCardData {
   findings: FindingResponse[];
 }
 
+const DB_DEFAULT_PORTS: Record<string, string> = {
+  POSTGRESQL: '5432',
+  MYSQL: '3306',
+  MONGODB: '27017',
+};
+
 /**
- * Projects workspace: list, manual shells, and ZIP uploads.
- * Renders behind RequireAuth; every call is owner-scoped server-side.
- * Cards show real backend state only (latest analysis + finding summary).
+ * Projects workspace: two creation sections only — (1) generate a new project
+ * with AI, (2) upload an existing codebase — followed by the project list.
+ *
+ * The quick generation form collects the same contract as the full wizard
+ * (name, requirement incl. tech stack, stack, database config, AI config)
+ * through the same `createGeneration` API, then links to the canonical
+ * `/generate?genId=` status view where Planner → Coding → Verify → Review
+ * progress renders from real backend state. Secrets travel in the request
+ * body only and inputs are cleared after submit.
  */
 export function ProjectsPage() {
   const { token } = useAuth();
@@ -40,8 +60,27 @@ export function ProjectsPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
+
+  // --- Quick generation form (section 1) ---
+  const [genName, setGenName] = useState('');
+  const [genRequirement, setGenRequirement] = useState('');
+  const [genBackend, setGenBackend] = useState<GenerationBackend | ''>('');
+  const [genFrontend, setGenFrontend] = useState<GenerationFrontend | ''>('');
+  const [genDatabase, setGenDatabase] = useState<GenerationDatabase | ''>('');
+  const [genDbHost, setGenDbHost] = useState('');
+  const [genDbPort, setGenDbPort] = useState('');
+  const [genDbName, setGenDbName] = useState('');
+  const [genDbUser, setGenDbUser] = useState('');
+  const [genDbPassword, setGenDbPassword] = useState('');
+  const [genAiProvider, setGenAiProvider] = useState<GenerationAiProvider | ''>('');
+  const [genApiKey, setGenApiKey] = useState('');
+  const [genModel, setGenModel] = useState('');
+  const [genBaseUrl, setGenBaseUrl] = useState('');
+  const [genBusy, setGenBusy] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [createdGen, setCreatedGen] = useState<{ id: string; name: string } | null>(null);
+
+  // --- Upload form (section 2) ---
   const [zipName, setZipName] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -87,25 +126,94 @@ export function ProjectsPage() {
     void reload();
   }, [reload]);
 
-  const handleCreate = async (event: FormEvent) => {
+  const genWantsDb = genDatabase !== '' && genDatabase !== 'NONE';
+
+  const validateQuickForm = (): string | null => {
+    if (!genName.trim()) {
+      return 'Please enter a project name.';
+    }
+    if (genName.trim().length > 200) {
+      return 'Project name must be 200 characters or fewer.';
+    }
+    if (genRequirement.trim().length < 20) {
+      return 'Please explain your task in at least 20 characters.';
+    }
+    if (!genBackend || !genFrontend || !genDatabase) {
+      return 'Please choose a backend, frontend, and database option.';
+    }
+    if (genWantsDb) {
+      if (!genDbHost.trim()) {
+        return 'Please enter the database host.';
+      }
+      const port = Number(genDbPort);
+      if (!genDbPort.trim() || !Number.isInteger(port) || port < 1 || port > 65535) {
+        return 'Please enter a valid database port (1–65535).';
+      }
+      if (!genDbName.trim() || !genDbUser.trim() || !genDbPassword) {
+        return 'Please enter the database name, username, and password.';
+      }
+    }
+    if (!genAiProvider) {
+      return 'Please choose an AI provider.';
+    }
+    if (!genApiKey) {
+      return 'Please enter your AI API key.';
+    }
+    if (genAiProvider === 'CUSTOM' && !genBaseUrl.trim()) {
+      return 'Please enter the base URL for your custom provider.';
+    }
+    if (!genModel.trim()) {
+      return 'Please enter the AI model name.';
+    }
+    return null;
+  };
+
+  const handleQuickGenerate = async (event: FormEvent) => {
     event.preventDefault();
-    if (!token || !name.trim()) {
+    if (!token || genBusy) {
       return;
     }
-    setBusy(true);
-    setError(null);
+    const problem = validateQuickForm();
+    if (problem) {
+      setGenError(problem);
+      return;
+    }
+    setGenBusy(true);
+    setGenError(null);
+    setCreatedGen(null);
     try {
-      await createProject(apiClient(), token, {
-        name: name.trim(),
-        description: description.trim() || undefined,
+      const created = await createGeneration(apiClient(), token, {
+        name: genName.trim(),
+        requirement: genRequirement.trim(),
+        backend: genBackend as GenerationBackend,
+        frontend: genFrontend as GenerationFrontend,
+        database: genDatabase as GenerationDatabase,
+        ...(genWantsDb
+          ? {
+              databaseConfig: {
+                host: genDbHost.trim(),
+                port: Number(genDbPort),
+                name: genDbName.trim(),
+                username: genDbUser.trim(),
+                password: genDbPassword,
+              },
+            }
+          : {}),
+        aiConfig: {
+          provider: genAiProvider as GenerationAiProvider,
+          apiKey: genApiKey,
+          baseUrl: genBaseUrl.trim() || undefined,
+          model: genModel.trim(),
+        },
       });
-      setName('');
-      setDescription('');
-      await reload();
+      setCreatedGen({ id: created.id, name: created.name });
+      // Secrets are single-use: clear them the moment the run is accepted.
+      setGenApiKey('');
+      setGenDbPassword('');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not create the project.');
+      setGenError(err instanceof ApiError ? err.message : 'Could not start generation.');
     } finally {
-      setBusy(false);
+      setGenBusy(false);
     }
   };
 
@@ -132,7 +240,7 @@ export function ProjectsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Projects"
-        description="Your codebases. Create an empty shell or import a ZIP, then open a project to analyze and review it. Every project is private to your account."
+        description="Generate a new application with AI, or bring an existing codebase into VeriReview for analysis and review."
         actions={
           <Link to="/generate" className={primaryButtonClass}>
             Generate project
@@ -140,91 +248,329 @@ export function ProjectsPage() {
         }
       />
       {error && <ErrorAlert message={error} onRetry={() => void reload()} />}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card
-          title="New project shell"
-          subtitle="Start empty, then upload code or trigger an analysis later."
-        >
-          <form onSubmit={handleCreate} aria-label="Create project form" className="space-y-3">
-            <div>
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Project name
-              </p>
-              <input
-                aria-label="Project name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="e.g. billing-service"
-                maxLength={200}
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Description <span className="font-normal normal-case">(optional)</span>
-              </p>
-              <input
-                aria-label="Project description"
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-                placeholder="What does this project do?"
-                className={inputClass}
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={busy || !name.trim()}
-              className={primaryButtonClass}
+
+      <Card
+        title="1 · Generate a new project"
+        subtitle="Describe your task and tech stack, add database and AI credentials, then follow Planner → Coding → Verify → Review progress."
+      >
+        {createdGen ? (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+            <p className="text-sm font-semibold text-emerald-900">
+              Generation started for “{createdGen.name}”.
+            </p>
+            <p className="mt-1 text-sm leading-relaxed text-emerald-800">
+              Watch the Planner, Coding, Verify, and Review agents work through the real
+              pipeline — findings, fix approval, and the verified download all live there.
+            </p>
+            <Link
+              to={`/generate?genId=${encodeURIComponent(createdGen.id)}`}
+              className={`${primaryButtonClass} mt-3 inline-flex`}
             >
-              {busy ? 'Working…' : 'Create project'}
-            </button>
-          </form>
-        </Card>
-        <Card
-          title="Upload ZIP (max 50 MB, 2000 files)"
-          subtitle="Import a codebase snapshot for sandboxed analysis."
-        >
-          <form onSubmit={handleUpload} aria-label="Upload ZIP form" className="space-y-3">
-            <div>
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Project name
-              </p>
-              <input
-                aria-label="Upload project name"
-                value={zipName}
-                onChange={(event) => setZipName(event.target.value)}
-                placeholder="e.g. billing-service"
-                maxLength={200}
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                ZIP file
-              </p>
-              <input
-                aria-label="ZIP file"
-                type="file"
-                accept=".zip"
-                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-                className="w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-indigo-700 file:transition-colors hover:file:bg-indigo-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
-              />
-              {file && (
-                <p className="mt-1 truncate text-xs text-slate-500">
-                  Selected: {file.name} · {(file.size / 1024 / 1024).toFixed(2)} MB
+              View generation progress
+            </Link>
+          </div>
+        ) : (
+          <form onSubmit={handleQuickGenerate} aria-label="Quick generation form" className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Project name
                 </p>
-              )}
+                <input
+                  aria-label="Quick project name"
+                  value={genName}
+                  onChange={(event) => setGenName(event.target.value)}
+                  placeholder="e.g. todo-api"
+                  maxLength={200}
+                  autoComplete="off"
+                  className={inputClass}
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Backend
+                  </p>
+                  <select
+                    aria-label="Quick backend stack"
+                    value={genBackend}
+                    onChange={(event) => setGenBackend(event.target.value as GenerationBackend | '')}
+                    className={selectClass}
+                  >
+                    <option value="">Select…</option>
+                    <option value="JAVA_SPRING_BOOT">Java Spring Boot</option>
+                    <option value="PYTHON_FASTAPI">Python FastAPI</option>
+                    <option value="NODEJS">Node.js</option>
+                  </select>
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Frontend
+                  </p>
+                  <select
+                    aria-label="Quick frontend stack"
+                    value={genFrontend}
+                    onChange={(event) => setGenFrontend(event.target.value as GenerationFrontend | '')}
+                    className={selectClass}
+                  >
+                    <option value="">Select…</option>
+                    <option value="REACT_TYPESCRIPT">React + TS</option>
+                    <option value="NONE">None</option>
+                  </select>
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Database
+                  </p>
+                  <select
+                    aria-label="Quick database"
+                    value={genDatabase}
+                    onChange={(event) => {
+                      const next = event.target.value as GenerationDatabase | '';
+                      setGenDatabase(next);
+                      if (next !== '' && next !== 'NONE' && !genDbPort) {
+                        setGenDbPort(DB_DEFAULT_PORTS[next] ?? '');
+                      }
+                    }}
+                    className={selectClass}
+                  >
+                    <option value="">Select…</option>
+                    <option value="POSTGRESQL">PostgreSQL</option>
+                    <option value="MYSQL">MySQL</option>
+                    <option value="MONGODB">MongoDB</option>
+                    <option value="NONE">None</option>
+                  </select>
+                </div>
+              </div>
             </div>
-            <button
-              type="submit"
-              disabled={busy || !file || !zipName.trim()}
-              className={primaryButtonClass}
-            >
-              {busy ? 'Working…' : 'Upload and import'}
-            </button>
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Task / project description
+              </p>
+              <textarea
+                aria-label="Quick project task"
+                value={genRequirement}
+                onChange={(event) => setGenRequirement(event.target.value)}
+                placeholder="Explain your task or project along with your tech stack: what should it do, which endpoints and data model do you need, which frontend, backend, and database should it use…"
+                rows={4}
+                maxLength={20000}
+                className={inputClass}
+              />
+              <p className="mt-1 text-right text-xs tabular-nums text-slate-400">
+                {genRequirement.trim().length}/20 minimum
+              </p>
+            </div>
+            {genWantsDb && (
+              <div className="grid gap-3 rounded-xl border border-indigo-100 bg-indigo-50/40 p-3 sm:grid-cols-3">
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    DB host
+                  </p>
+                  <input
+                    aria-label="Quick database host"
+                    value={genDbHost}
+                    onChange={(event) => setGenDbHost(event.target.value)}
+                    placeholder="e.g. localhost"
+                    maxLength={500}
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    DB port
+                  </p>
+                  <input
+                    aria-label="Quick database port"
+                    value={genDbPort}
+                    onChange={(event) => setGenDbPort(event.target.value)}
+                    placeholder="e.g. 5432"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    DB name
+                  </p>
+                  <input
+                    aria-label="Quick database name"
+                    value={genDbName}
+                    onChange={(event) => setGenDbName(event.target.value)}
+                    placeholder="e.g. todos"
+                    maxLength={200}
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    DB username
+                  </p>
+                  <input
+                    aria-label="Quick database username"
+                    value={genDbUser}
+                    onChange={(event) => setGenDbUser(event.target.value)}
+                    placeholder="e.g. app"
+                    maxLength={200}
+                    autoComplete="off"
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    DB password
+                  </p>
+                  <input
+                    aria-label="Quick database password"
+                    type="password"
+                    value={genDbPassword}
+                    onChange={(event) => setGenDbPassword(event.target.value)}
+                    placeholder="Sent once — never stored"
+                    maxLength={500}
+                    autoComplete="new-password"
+                    className={inputClass}
+                  />
+                </div>
+                <div className="flex items-end">
+                  <p className="text-xs leading-relaxed text-slate-500">
+                    Credentials travel in the request body only and are cleared after submit.
+                  </p>
+                </div>
+              </div>
+            )}
+            <div className="grid gap-3 rounded-xl border border-indigo-100 bg-indigo-50/40 p-3 sm:grid-cols-4">
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  AI provider
+                </p>
+                <select
+                  aria-label="Quick AI provider"
+                  value={genAiProvider}
+                  onChange={(event) => setGenAiProvider(event.target.value as GenerationAiProvider | '')}
+                  className={selectClass}
+                >
+                  <option value="">Select…</option>
+                  <option value="OPENROUTER">OpenRouter</option>
+                  <option value="CUSTOM">Custom</option>
+                </select>
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  AI model
+                </p>
+                <input
+                  aria-label="Quick AI model"
+                  value={genModel}
+                  onChange={(event) => setGenModel(event.target.value)}
+                  placeholder="e.g. openai/gpt-4o-mini"
+                  maxLength={200}
+                  autoComplete="off"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  AI API key
+                </p>
+                <input
+                  aria-label="Quick AI API key"
+                  type="password"
+                  value={genApiKey}
+                  onChange={(event) => setGenApiKey(event.target.value)}
+                  placeholder="Sent once — never stored"
+                  maxLength={2000}
+                  autoComplete="off"
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Base URL {genAiProvider === 'CUSTOM' ? '' : '(custom only)'}
+                </p>
+                <input
+                  aria-label="Quick AI base URL"
+                  value={genBaseUrl}
+                  onChange={(event) => setGenBaseUrl(event.target.value)}
+                  placeholder="https://…"
+                  maxLength={500}
+                  inputMode="url"
+                  autoComplete="off"
+                  disabled={genAiProvider !== 'CUSTOM'}
+                  className={inputClass}
+                />
+              </div>
+            </div>
+            {genError && (
+              <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                {genError}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="submit" disabled={genBusy} className={primaryButtonClass}>
+                {genBusy ? 'Starting…' : 'Generate project'}
+              </button>
+              <Link to="/generate" className="text-sm font-semibold text-indigo-700 hover:text-indigo-900">
+                Need drafts or fine-tuning? Open the full wizard →
+              </Link>
+            </div>
+            <div className="flex flex-wrap gap-2 text-xs font-semibold text-indigo-700">
+              <span className="rounded-full bg-indigo-50 px-2.5 py-1 ring-1 ring-indigo-100">Plan</span>
+              <span className="rounded-full bg-indigo-50 px-2.5 py-1 ring-1 ring-indigo-100">Generate</span>
+              <span className="rounded-full bg-indigo-50 px-2.5 py-1 ring-1 ring-indigo-100">Build &amp; Test</span>
+              <span className="rounded-full bg-indigo-50 px-2.5 py-1 ring-1 ring-indigo-100">Verify</span>
+              <span className="rounded-full bg-indigo-50 px-2.5 py-1 ring-1 ring-indigo-100">Review</span>
+            </div>
           </form>
-        </Card>
-      </div>
+        )}
+      </Card>
+
+      <Card
+        title="2 · Upload an existing codebase"
+        subtitle="Import a codebase snapshot for sandboxed analysis. Maximum 50 MB and 2,000 files."
+      >
+        <form onSubmit={handleUpload} aria-label="Upload ZIP form" className="space-y-3">
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Project name
+            </p>
+            <input
+              aria-label="Upload project name"
+              value={zipName}
+              onChange={(event) => setZipName(event.target.value)}
+              placeholder="e.g. billing-service"
+              maxLength={200}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              ZIP file
+            </p>
+            <input
+              aria-label="ZIP file"
+              type="file"
+              accept=".zip"
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              className="w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-indigo-700 file:transition-colors hover:file:bg-indigo-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
+            />
+            {file && (
+              <p className="mt-1 truncate text-xs text-slate-500">
+                Selected: {file.name} · {(file.size / 1024 / 1024).toFixed(2)} MB
+              </p>
+            )}
+          </div>
+          <button
+            type="submit"
+            disabled={busy || !file || !zipName.trim()}
+            className={primaryButtonClass}
+          >
+            {busy ? 'Working…' : 'Upload and import'}
+          </button>
+        </form>
+      </Card>
+
       <Card
         title={`Your projects (${total})`}
         subtitle="Status, finding summary, and last analysis — select a project to open its workspace."
@@ -237,7 +583,7 @@ export function ProjectsPage() {
         ) : projects.length === 0 ? (
           <EmptyState
             title="No projects yet."
-            body="Create a shell or upload a ZIP above to get started."
+            body="Generate a new project above, or upload an existing codebase."
           />
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">

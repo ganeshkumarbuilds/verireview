@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import {
   createGeneration,
+  createGenerationFixRequests,
   getGeneration,
   isTerminalGeneration,
   startGeneration as startSavedGeneration,
   updateGeneration,
+  downloadGeneration,
 } from '../api/generations';
 import type {
   CreateGenerationInput,
@@ -20,7 +22,6 @@ import { apiClient, useAuth } from '../auth/AuthContext';
 import {
   Badge,
   Card,
-  EmptyState,
   LoadingState,
   PageHeader,
   inputClass,
@@ -29,7 +30,6 @@ import {
   selectClass,
 } from '../components/ui';
 import { WorkspaceCrumb } from '../components/workflow';
-import { GENERATION_PIPELINE_STAGES, GenerationPipeline } from '../components/GenerationPipeline';
 
 const POLL_MS = 3000;
 const MASKED_SECRET = '••••••••';
@@ -57,8 +57,18 @@ const AI_PROVIDERS: { value: GenerationAiProvider; label: string; hint: string }
   { value: 'CUSTOM', label: 'Custom (OpenAI-compatible)', hint: 'Any OpenAI-compatible base URL.' },
 ];
 
-const STATUS_ORDER = ['QUEUED', 'PLANNING', 'GENERATING', 'REVIEWING', 'COMPLETED'];
-const DRAFT_STATUS_ORDER = ['READY', 'PLANNING', 'GENERATING', 'REVIEWING', 'COMPLETED'];
+const PIPELINE_STAGES = [
+  { key: 'planning', label: 'Planner Agent', statuses: ['PLANNING'] },
+  { key: 'coding', label: 'Coding Agent', statuses: ['CODING', 'GENERATING'] },
+  { key: 'build', label: 'Build & Test', statuses: ['BUILDING', 'TESTING'] },
+  { key: 'verified', label: 'Verified Agent', statuses: ['VERIFYING', 'REVERIFYING', 'VERIFIED'] },
+  { key: 'review', label: 'Review Agent', statuses: ['REVIEWING', 'REVIEWED'] },
+];
+
+const STATUS_ORDER = [
+  'QUEUED', 'PLANNING', 'CODING', 'BUILDING', 'TESTING',
+  'VERIFYING', 'VERIFIED', 'REVIEWING', 'REVIEWED', 'COMPLETED',
+];
 
 /** Fixed four-step wizard: Requirement → Stack → AI configuration → Review. */
 const STEPS = ['Requirement', 'Stack', 'AI configuration', 'Review'];
@@ -112,9 +122,6 @@ export function GeneratePage() {
   const [dbPassword, setDbPassword] = useState('');
   const [dbSsl, setDbSsl] = useState('');
 
-  const [buildTool, setBuildTool] = useState('');
-  const [additionalTech, setAdditionalTech] = useState('');
-
   const [aiProvider, setAiProvider] = useState<GenerationAiProvider | ''>('');
   const [aiKey, setAiKey] = useState('');
   const [aiBaseUrl, setAiBaseUrl] = useState('');
@@ -124,7 +131,6 @@ export function GeneratePage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [generationId, setGenerationId] = useState<string | null>(null);
   const [generation, setGeneration] = useState<GenerationResponse | null>(null);
-  const [startedFromDraft, setStartedFromDraft] = useState(false);
   const [draftRequirement, setDraftRequirement] = useState<string | null>(null);
   const [taskFeedback, setTaskFeedback] = useState<{ kind: 'saved' | 'error'; text: string } | null>(null);
   const [savingTask, setSavingTask] = useState(false);
@@ -132,11 +138,16 @@ export function GeneratePage() {
   const [startApiKey, setStartApiKey] = useState('');
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [fixing, setFixing] = useState(false);
+  const [fixError, setFixError] = useState<string | null>(null);
+  const [fixResult, setFixResult] = useState<{ created: number; skippedOpen: number } | null>(null);
+  const [searchParams] = useSearchParams();
 
   const wantsDb = database !== '' && database !== 'NONE';
 
-  const steps = STEPS;
-
+  
   const portPlaceholder = DATABASES.find((d) => d.value === database)?.port ?? '';
 
   function validateStep(target: number): string | null {
@@ -183,12 +194,6 @@ export function GeneratePage() {
           return 'Please enter the database password.';
         }
       }
-      if (buildTool.length > 200) {
-        return 'Build tool must be 200 characters or fewer.';
-      }
-      if (additionalTech.length > 500) {
-        return 'Additional technologies must be 500 characters or fewer.';
-      }
       return null;
     }
     if (target === 3) {
@@ -221,7 +226,7 @@ export function GeneratePage() {
       return;
     }
     setStepError(null);
-    setStep((current) => Math.min(current + 1, steps.length));
+    setStep((current) => Math.min(current + 1, STEPS.length));
   };
 
   const goBack = () => {
@@ -360,7 +365,6 @@ export function GeneratePage() {
         apiKey: startApiKey,
       });
       setGeneration(started);
-      setStartedFromDraft(true);
       setStartPassword('');
       setStartApiKey('');
     } catch (err) {
@@ -371,6 +375,76 @@ export function GeneratePage() {
       setStarting(false);
     }
   };
+
+  const handleDownload = async () => {
+    if (!token || !generation || downloading) return;
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      const blob = await downloadGeneration(apiClient(), token, generation.id);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${generation.name}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err) {
+      setDownloadError(err instanceof ApiError ? err.message : 'Download failed.');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  /**
+   * User-approved entry to the fix loop. Creates a FixRequest per open
+   * finding through the backend approval gate — no source code is changed
+   * here. Patches are proposed and applied per finding through the existing
+   * fix/patch flow, followed by rebuild + reverify + rereview.
+   */
+  const handleFixIssues = async () => {
+    if (!token || !generation || fixing) return;
+    setFixing(true);
+    setFixError(null);
+    setFixResult(null);
+    try {
+      const result = await createGenerationFixRequests(apiClient(), token, generation.id);
+      setFixResult({ created: result.created.length, skippedOpen: result.skippedOpen });
+      setGeneration(await getGeneration(apiClient(), token, generation.id));
+    } catch (err) {
+      setFixError(err instanceof ApiError ? err.message : 'Could not create fix requests.');
+    } finally {
+      setFixing(false);
+    }
+  };
+
+  // Deep-link: /generate?genId=<id> loads an existing generation (e.g. after
+  // creating it from the Projects quick form) instead of starting the wizard.
+  useEffect(() => {
+    if (!token || generationId) {
+      return undefined;
+    }
+    const linked = searchParams.get('genId');
+    if (!linked) {
+      return undefined;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const existing = await getGeneration(apiClient(), token, linked);
+        if (!cancelled) {
+          setGenerationId(existing.id);
+          setGeneration(existing);
+        }
+      } catch {
+        // Stay on the wizard: an unknown id must not blank the page.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, generationId, searchParams]);
 
   // Poll only on generation identity/status transitions: depending on the
   // `generation` object itself would re-fire on every poll, because each
@@ -409,21 +483,20 @@ export function GeneratePage() {
   const running = generationId !== null;
   const isDraft = generation?.status === 'DRAFT';
   const terminal = generation !== null && isTerminalGeneration(generation.status);
-  const completed = generation?.status === 'COMPLETED';
   const failed = generation?.status === 'FAILED';
-  const progressOrder = startedFromDraft ? DRAFT_STATUS_ORDER : STATUS_ORDER;
+  const statusIndex = STATUS_ORDER.indexOf(generation?.status ?? '');
 
   return (
     <div className="space-y-6">
       <WorkspaceCrumb items={[{ label: 'Generate project' }]} />
       <PageHeader
-        title="Generate project"
-        description="Describe a requirement, choose the stack, and let the AI service draft a starter project. Every step is validated before generation starts."
+        title="Generate a verified project"
+        description="Give VeriReview the requirement, stack, environment, and AI configuration. Planner, Coding, Verified, and Review agents work from real backend state."
       />
 
       {!running && (
         <ol aria-label="Generation steps" className="flex flex-wrap items-center gap-1.5">
-          {steps.map((label, index) => {
+          {STEPS.map((label, index) => {
             const number = index + 1;
             const active = number === step;
             const done = number < step;
@@ -480,7 +553,7 @@ export function GeneratePage() {
                 aria-label="Requirement"
                 value={requirement}
                 onChange={(event) => setRequirement(event.target.value)}
-                placeholder="Describe the project in detail: features, endpoints, data model…"
+                placeholder="Explain your task or project along with your tech stack: features, endpoints, data model, frontend, backend, database…"
                 rows={6}
                 maxLength={20000}
                 className={inputClass}
@@ -704,45 +777,7 @@ export function GeneratePage() {
                 </div>
               </fieldset>
             )}
-            <fieldset>
-              <legend className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Build &amp; extras <span className="font-normal normal-case">(optional)</span>
-              </legend>
-              <p className="mb-2 text-xs leading-relaxed text-slate-500">
-                Optional context for an upcoming planning phase — not submitted
-                with this request.
-              </p>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div>
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Build tool
-                  </p>
-                  <input
-                    aria-label="Build tool"
-                    value={buildTool}
-                    onChange={(event) => setBuildTool(event.target.value)}
-                    placeholder="e.g. Maven, Gradle, pip, npm"
-                    maxLength={200}
-                    autoComplete="off"
-                    className={inputClass}
-                  />
-                </div>
-                <div>
-                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Additional technologies
-                  </p>
-                  <input
-                    aria-label="Additional technologies"
-                    value={additionalTech}
-                    onChange={(event) => setAdditionalTech(event.target.value)}
-                    placeholder="e.g. Redis, Stripe, S3"
-                    maxLength={500}
-                    autoComplete="off"
-                    className={inputClass}
-                  />
-                </div>
-              </div>
-            </fieldset>
+
           </div>
         </Card>
       )}
@@ -835,7 +870,7 @@ export function GeneratePage() {
         </Card>
       )}
 
-      {!running && step === steps.length && (
+      {!running && step === STEPS.length && (
         <Card title="Review" subtitle="Read-only summary. Secrets stay masked.">
           <dl className="space-y-3 text-sm">
             <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-3">
@@ -872,24 +907,6 @@ export function GeneratePage() {
                 <dd className="mt-1 font-medium text-slate-800">{databaseLabel(database)}</dd>
               </div>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-xl border border-indigo-100 p-3">
-                <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Build tool
-                </dt>
-                <dd className="mt-1 font-medium text-slate-800">
-                  {buildTool.trim() ? buildTool.trim() : '—'}
-                </dd>
-              </div>
-              <div className="rounded-xl border border-indigo-100 p-3">
-                <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Additional technologies
-                </dt>
-                <dd className="mt-1 font-medium text-slate-800">
-                  {additionalTech.trim() ? additionalTech.trim() : '—'}
-                </dd>
-              </div>
-            </div>
             {wantsDb && (
               <div className="rounded-xl border border-indigo-100 p-3">
                 <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
@@ -917,6 +934,9 @@ export function GeneratePage() {
               </dd>
             </div>
           </dl>
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-600">
+            <strong>Quality gate:</strong> file creation alone does not make a project ready. Build, verification, and review must complete successfully before the generated project is treated as verified.
+          </div>
           {submitError && (
             <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
               {submitError}
@@ -962,7 +982,7 @@ export function GeneratePage() {
         </Card>
       )}
 
-      {!running && step < steps.length && (
+      {!running && step < STEPS.length && (
         <div className="flex flex-wrap justify-between gap-2">
           <button
             type="button"
@@ -985,17 +1005,14 @@ export function GeneratePage() {
           actions={<Badge tone={statusTone(generation.status)}>{generation.status}</Badge>}
         >
           <div className="space-y-4">
-            <GenerationPipeline
-              stages={GENERATION_PIPELINE_STAGES.map((label, index) => ({
-                key: label,
-                label,
-                state: index === 0 ? 'active' : 'planned',
-                hint:
-                  index === 0
-                    ? 'Edit the task below before generation starts.'
-                    : 'Planned — a future phase.',
-              }))}
-            />
+            <div className="grid gap-2 sm:grid-cols-5">
+              {PIPELINE_STAGES.map((stage) => (
+                <div key={stage.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-semibold text-slate-700">{stage.label}</p>
+                  <p className="mt-1 text-xs text-slate-400">Waiting</p>
+                </div>
+              ))}
+            </div>
             <div>
               <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
                 Task / requirements
@@ -1105,61 +1122,243 @@ export function GeneratePage() {
               </p>
             </div>
           )}
-          <ol aria-label="Generation progress" className="mb-4 flex flex-wrap items-center gap-1.5">
-            {progressOrder.map((status, index) => {
-              const reached =
-                progressOrder.indexOf(generation.status) >= index ||
-                (failed && index < progressOrder.length - 1);
-              const current = generation.status === status;
+          <div aria-label="Generation agent workflow" className="mb-4 grid gap-2 sm:grid-cols-5">
+            {PIPELINE_STAGES.map((stage) => {
+              const stageIndex = PIPELINE_STAGES.findIndex((item) => item.key === stage.key);
+              const persistedStep = generation.agentWorkflow?.find((item) =>
+                stage.statuses.includes(item.agentType) || item.agentType.toLowerCase().includes(stage.key)
+              );
+              const currentStage = stage.statuses.includes(generation.status);
+              const completedStage = persistedStep?.status === 'COMPLETED'
+                || (!persistedStep && !currentStage && statusIndex > stageIndex);
+              const failedStage = persistedStep?.status === 'FAILED'
+                || (failed && currentStage);
               return (
-                <li key={status} className="flex items-center gap-1.5">
-                  {index > 0 && (
-                    <span aria-hidden="true" className="h-px w-3 bg-indigo-200" />
-                  )}
-                  <span
-                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                      current
-                        ? 'bg-indigo-600 text-white'
-                        : reached
-                          ? 'bg-indigo-100 text-indigo-800'
-                          : 'bg-white text-slate-400 ring-1 ring-inset ring-slate-200'
-                    }`}
-                  >
-                    {status}
-                  </span>
-                </li>
+                <div
+                  key={stage.key}
+                  className={`rounded-xl border p-3 ${
+                    currentStage
+                      ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300'
+                      : completedStage
+                        ? 'border-emerald-200 bg-emerald-50'
+                        : failedStage
+                          ? 'border-red-200 bg-red-50'
+                          : 'border-slate-200 bg-slate-50'
+                  }`}
+                >
+                  <p className="text-xs font-bold text-slate-800">{stage.label}</p>
+                  <p className={`mt-1 text-xs font-semibold ${
+                    currentStage ? 'text-indigo-700' : completedStage ? 'text-emerald-700' : failedStage ? 'text-red-700' : 'text-slate-400'
+                  }`}>
+                    {currentStage ? 'Working' : completedStage ? 'Completed' : failedStage ? 'Failed' : 'Waiting'}
+                  </p>
+                </div>
               );
             })}
-            {failed && (
-              <li>
-                <span className="rounded-full bg-red-600 px-3 py-1 text-xs font-semibold text-white">
-                  FAILED
-                </span>
-              </li>
-            )}
-          </ol>
+          </div>
+          <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Current operation</p>
+            <p className="mt-1 text-sm font-semibold text-slate-800">{generation.status}</p>
+            <p className="mt-1 text-xs text-slate-500">This status is read directly from the generation record.</p>
+          </div>
           {!terminal && (
             <LoadingState label={`${generation.status}… polling for real backend state.`} />
           )}
-          {completed && generation.projectId && (
-            <div className="space-y-3">
-              <EmptyState
-                title="Project generated."
-                body="The output is a normal VeriReview project — open its workspace to run analysis and review."
-                action={
-                  <>
-                    <Link to={`/projects/${generation.projectId}`} className={primaryButtonClass}>
-                      Open project workspace
-                    </Link>
-                    <Link
-                      to={`/review?project=${generation.projectId}`}
-                      className={secondaryButtonClass}
-                    >
-                      Review findings
-                    </Link>
-                  </>
-                }
-              />
+          
+          {/* Detailed Pipeline Progress */}
+          {(generation.workflowStats || generation.verification || generation.review || generation.agentWorkflow) && (
+            <div className="space-y-4">
+              {/* Agent Workflow Timeline */}
+              {generation.agentWorkflow && generation.agentWorkflow.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Agent Pipeline</h4>
+                  <div className="space-y-1.5">
+                    {generation.agentWorkflow.map((step, index) => (
+                      <div key={index} className="flex items-center gap-3 rounded-lg border border-indigo-100 bg-white px-3 py-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white bg-indigo-600">
+                          {index + 1}
+                        </span>
+                        <span className="flex-1 font-mono text-sm font-semibold text-indigo-950">{step.agentType}</span>
+                        <Badge tone={step.status === 'COMPLETED' ? 'green' : step.status === 'RUNNING' ? 'blue' : step.status === 'FAILED' ? 'red' : 'gray'}>
+                          {step.status}
+                        </Badge>
+                        {step.durationMs && (
+                          <span className="text-xs tabular-nums text-slate-500">{step.durationMs} ms</span>
+                        )}
+                        {step.error && (
+                          <span className="text-xs text-red-600 ml-2">{step.error}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Verification Results */}
+              {generation.verification && (
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
+                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Verification</h4>
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500">Verdict</p>
+                      <Badge tone={generation.verification.verdict === 'VERIFIED' ? 'green' : generation.verification.verdict === 'REJECTED' ? 'red' : 'amber'}>
+                        {generation.verification.verdict}
+                      </Badge>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500">Build</p>
+                      <Badge tone={generation.verification.buildStatus === 'SUCCESS' ? 'green' : generation.verification.buildStatus === 'FAILURE' ? 'red' : 'blue'}>
+                        {generation.verification.buildStatus}
+                      </Badge>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500">Tests</p>
+                      <p className="font-mono text-sm text-slate-800">
+                        {generation.verification.testsPassed}/{generation.verification.testsTotal} passed
+                        {generation.verification.testsFailed > 0 && ` · ${generation.verification.testsFailed} failed`}
+                        {generation.verification.testsSkipped > 0 && ` · ${generation.verification.testsSkipped} skipped`}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500">Duration</p>
+                      <p className="font-mono text-sm text-slate-800">
+                        {generation.verification.durationMs ? `${generation.verification.durationMs} ms` : '—'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Review Results */}
+              {generation.review && (
+                <div className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
+                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Review</h4>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500">Status</p>
+                      <Badge tone={generation.review.status === 'COMPLETED' ? 'green' : generation.review.status === 'FAILED' ? 'red' : 'amber'}>
+                        {generation.review.status}
+                      </Badge>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500">Findings</p>
+                      <p className="font-mono text-sm text-slate-800">{generation.review.findingCount}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500">Error</p>
+                      <p className="font-mono text-sm text-slate-800">{generation.review.error ?? '—'}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Workflow Stats */}
+              {generation.workflowStats && (
+                <div className="rounded-xl border border-amber-100 bg-amber-50/40 p-4">
+                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Findings Summary</h4>
+                  <p className="mb-2 text-xs text-slate-500">
+                    Found {generation.workflowStats.totalFindings} · Fixed {generation.workflowStats.fixedFindings} · Open {generation.workflowStats.openFindings} — counts come from the backend review, never invented.
+                  </p>
+                  <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                    <div className="rounded-lg bg-white p-2 text-center">
+                      <p className="text-2xl font-bold text-slate-800">{generation.workflowStats.totalFindings}</p>
+                      <p className="text-xs text-slate-500">Total</p>
+                    </div>
+                    <div className="rounded-lg bg-white p-2 text-center">
+                      <p className="text-2xl font-bold text-red-600">{generation.workflowStats.bugCount}</p>
+                      <p className="text-xs text-slate-500">Bugs</p>
+                    </div>
+                    <div className="rounded-lg bg-white p-2 text-center">
+                      <p className="text-2xl font-bold text-amber-600">{generation.workflowStats.issueCount}</p>
+                      <p className="text-xs text-slate-500">Issues</p>
+                    </div>
+                    <div className="rounded-lg bg-white p-2 text-center">
+                      <p className="text-2xl font-bold text-blue-600">{generation.workflowStats.errorCount}</p>
+                      <p className="text-xs text-slate-500">Errors</p>
+                    </div>
+                    <div className="rounded-lg bg-white p-2 text-center">
+                      <p className="text-2xl font-bold text-emerald-600">{generation.workflowStats.fixedFindings}</p>
+                      <p className="text-xs text-slate-500">Fixed</p>
+                    </div>
+                    <div className="rounded-lg bg-white p-2 text-center">
+                      <p className="text-2xl font-bold text-red-600">{generation.workflowStats.openFindings}</p>
+                      <p className="text-xs text-slate-500">Open</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Download / Fix Actions */}
+              {(generation.status === 'REVIEWED' || generation.status === 'COMPLETED' || generation.status === 'VERIFIED') && (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-sm leading-relaxed text-slate-600">
+                      Review complete. {generation.workflowStats && generation.workflowStats.openFindings > 0
+                        ? `${generation.workflowStats.openFindings} unresolved finding(s) must be fixed before download.`
+                        : generation.downloadReady
+                        ? 'All checks passed. Project is ready for download.'
+                        : 'Verification and review completed. Download available if all gates pass.'
+                      }
+                    </p>
+                    {generation.workflowStats && generation.workflowStats.openFindings > 0 && (
+                      <p className="mt-2 text-sm text-amber-700">
+                        ⚠ {generation.workflowStats.openFindings} open finding(s). Approving fixes
+                        creates one FixRequest per open finding — code only changes through the
+                        existing patch + rebuild flow, never silently.
+                      </p>
+                    )}
+                  </div>
+
+                  {generation.status === 'REVIEWED' && generation.workflowStats && generation.workflowStats.openFindings > 0 && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleFixIssues()}
+                        disabled={fixing}
+                        className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {fixing ? 'Requesting fixes…' : 'Fix issues & optimize'}
+                      </button>
+                      {fixResult && (
+                        <p role="status" className="text-sm text-emerald-700">
+                          {fixResult.created} fix request(s) created
+                          {fixResult.skippedOpen > 0 && ` · ${fixResult.skippedOpen} already open — skipped`}.
+                          Propose and apply patches per finding, then rebuild to reverify.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {fixError && (
+                    <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                      {fixError}
+                    </p>
+                  )}
+                  
+                  <div className="flex flex-wrap gap-2">
+                    {generation.downloadReady && (
+                      <button
+                        type="button"
+                        onClick={handleDownload}
+                        disabled={downloading}
+                        className={primaryButtonClass}
+                      >
+                        {downloading ? 'Downloading…' : 'Download ZIP'}
+                      </button>
+                    )}
+                    {!generation.downloadReady && (!generation.workflowStats || generation.workflowStats.openFindings === 0) && (
+                      <span className="flex items-center px-3 py-2 text-sm text-slate-500">
+                        Download unavailable — verification or review not yet complete
+                      </span>
+                    )}
+                  </div>
+                  
+                  {downloadError && (
+                    <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                      {downloadError}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           )}
           {failed && (
@@ -1173,7 +1372,7 @@ export function GeneratePage() {
                   setGenerationId(null);
                   setGeneration(null);
                   setSubmitError(null);
-                  setStep(steps.length);
+                  setStep(STEPS.length);
                 }}
                 className={secondaryButtonClass}
               >

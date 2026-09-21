@@ -28,6 +28,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
@@ -57,7 +58,16 @@ class PatchTest extends AbstractPersistenceTest {
   @Autowired private FindingRepository findings;
   @Autowired private FixRequestRepository fixRequests;
   @Autowired private PatchRepository patches;
-  @Autowired private CodingAgent codingAgent;
+
+  /**
+   * The project patch workflow must use the deterministic CodingAgent.
+   * GenerationCodingAgent is a separate CodingAgent implementation for
+   * generation workspaces, so the injection must be explicit.
+   */
+  @Autowired
+  @Qualifier("deterministicCodingAgent")
+  private CodingAgent codingAgent;
+
   @MockitoBean private CodingAiClient codingAiClient;
 
   private static final String VALID_DIFF =
@@ -96,7 +106,6 @@ class PatchTest extends AbstractPersistenceTest {
     Finding finding = findings.save(new Finding(review, FindingCategory.SECURITY, FindingSeverity.HIGH, FindingSource.DETERMINISTIC, "SQL concat"));
     FixRequest fr = fixRequests.save(new FixRequest(finding, owner));
 
-    // Capture file count before
     long beforeCount = patches.count();
 
     CodingAgent.Proposal proposal = codingAgent.propose(fr);
@@ -105,7 +114,7 @@ class PatchTest extends AbstractPersistenceTest {
     assertThat(proposal.diff()).contains("FIX");
     assertThat(proposal.diff()).doesNotContain("VERIFIED");
     assertThat(proposal.filesChanged()).isEqualTo(1);
-    assertThat(patches.count()).isEqualTo(beforeCount); // not yet persisted
+    assertThat(patches.count()).isEqualTo(beforeCount);
   }
 
   @Test
@@ -129,13 +138,11 @@ class PatchTest extends AbstractPersistenceTest {
     String patchId = objects.readTree(result.getResponse().getContentAsString()).get("id").asText();
     assertThat(patchId).isNotBlank();
 
-    // GET via fixRequest
     mockMvc.perform(get("/api/v1/fix-requests/" + fixId + "/patch")
             .header("Authorization", "Bearer " + token))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.id").value(patchId));
 
-    // GET via patch id
     mockMvc.perform(get("/api/v1/patches/" + patchId)
             .header("Authorization", "Bearer " + token))
         .andExpect(status().isOk())
@@ -143,11 +150,9 @@ class PatchTest extends AbstractPersistenceTest {
 
     assertThat(auditLogs.findAll().stream().anyMatch(r -> "PATCH_PROPOSED".equals(r.getAction()))).isTrue();
 
-    // Verify FixRequest transitioned to IN_PROGRESS
     FixRequest updated = fixRequests.findById(UUID.fromString(fixId)).orElseThrow();
     assertThat(updated.getStatus()).isEqualTo(FixRequestStatus.IN_PROGRESS);
 
-    // Verify Patch linked to project
     Patch patch = patches.findById(UUID.fromString(patchId)).orElseThrow();
     assertThat(patch.getProject()).isNotNull();
     assertThat(patch.getProject().getId()).isEqualTo(updated.getFinding().getReview().getProject().getId());
@@ -165,7 +170,6 @@ class PatchTest extends AbstractPersistenceTest {
             .header("Authorization", "Bearer " + otherToken))
         .andExpect(status().isNotFound());
 
-    // Owner proposes, then other tries to fetch
     MvcResult result = mockMvc.perform(post("/api/v1/fix-requests/" + fixId + "/patch")
             .header("Authorization", "Bearer " + ownerToken))
         .andExpect(status().isCreated())
@@ -258,7 +262,6 @@ class PatchTest extends AbstractPersistenceTest {
 
   @Test
   void excessiveDiffReturnsBadGatewayAndNoPatch() throws Exception {
-    // Too many files (limit 5)
     StringBuilder manyFiles = new StringBuilder();
     for (int i = 0; i < 6; i++) {
       manyFiles.append("diff --git a/F").append(i).append(".java b/F").append(i).append(".java\n")
@@ -268,7 +271,6 @@ class PatchTest extends AbstractPersistenceTest {
     }
     assertAttackerDiffRejected(manyFiles.toString());
 
-    // Too many changed lines (limit 200)
     StringBuilder manyLines = new StringBuilder(
         "diff --git a/Big.java b/Big.java\n--- a/Big.java\n+++ b/Big.java\n@@ -1 +1 @@\n");
     for (int i = 0; i < 201; i++) {
@@ -290,7 +292,6 @@ class PatchTest extends AbstractPersistenceTest {
             .header("Authorization", "Bearer " + token))
         .andExpect(status().isBadGateway());
 
-    // Nothing persisted, FixRequest untouched (still REQUESTED, never applied/executed/verified)
     assertThat(patches.findByFixRequestIdOrderByCreatedAtDesc(UUID.fromString(fixId))).isEmpty();
     FixRequest fr = fixRequests.findById(UUID.fromString(fixId)).orElseThrow();
     assertThat(fr.getStatus()).isEqualTo(FixRequestStatus.REQUESTED);
@@ -304,7 +305,6 @@ class PatchTest extends AbstractPersistenceTest {
         + "+x";
   }
 
-  // Helpers
   private String findingFor(User owner) {
     Project project = projects.save(new Project(owner, "fix-" + UUID.randomUUID(), ProjectSourceType.PASTE));
     Review review = reviews.save(new Review(project));

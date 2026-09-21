@@ -2,8 +2,11 @@ package com.verireview.fix;
 
 import com.verireview.audit.AuditService;
 import com.verireview.fix.dto.PatchResponse;
+import com.verireview.generation.Generation;
 import com.verireview.ingestion.ProjectStorage;
 import com.verireview.project.Project;
+import com.verireview.user.User;
+import com.verireview.user.UserRepository;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -22,8 +25,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Controlled patch application (Phase 10A). Applies a PROPOSED patch to a
- * project snapshot directory with strict validation, jailed paths, backup,
- * and atomicity. Never runs code or builds.
+ * project snapshot directory OR generation workspace with strict validation,
+ * jailed paths, backup, and atomicity. Never runs code or builds.
  */
 @Service
 public class PatchApplicationService {
@@ -34,16 +37,19 @@ public class PatchApplicationService {
   private final PatchService patchService;
   private final ProjectStorage storage;
   private final AuditService audits;
+  private final UserRepository users;
 
   public PatchApplicationService(
       PatchRepository patches,
       PatchService patchService,
       ProjectStorage storage,
-      AuditService audits) {
+      AuditService audits,
+      UserRepository users) {
     this.patches = patches;
     this.patchService = patchService;
     this.storage = storage;
     this.audits = audits;
+    this.users = users;
   }
 
   @Transactional
@@ -55,43 +61,65 @@ public class PatchApplicationService {
           HttpStatus.CONFLICT, "Patch must be in PROPOSED state to be applied");
     }
 
-    Project project = patch.getProject() != null
-        ? patch.getProject()
-        : patch.getFixRequest().getFinding().getReview().getProject();
+    // Determine target: project or generation workspace
+    Project project = patch.getProject();
+    Generation generation = patch.getGeneration();
+    Path targetDir;
+    UUID ownerIdForAudit;
+    String entityType;
+    String entityId;
 
-    // Owner check already done via ownedPatch, but double-check project not deleted
-    if (project.getDeletedAt() != null) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found");
-    }
-
-    Path projectDir = storage.projectDir(project.getId());
-    if (!Files.isDirectory(projectDir)) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Project storage not found");
+    if (generation != null) {
+      // Generation patch: apply to generation workspace
+      targetDir = storage.generationWorkspaceDir(generation.getId(), generation.getIteration());
+      if (!Files.isDirectory(targetDir)) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Generation workspace not found");
+      }
+      User actor = users.getReferenceById(generation.getOwner().getId());
+      entityType = "generation";
+      entityId = generation.getId().toString();
+      ownerIdForAudit = actor.getId();
+    } else if (project != null) {
+      // Project patch: apply to project directory
+      targetDir = storage.projectDir(project.getId());
+      if (!Files.isDirectory(targetDir)) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Project storage not found");
+      }
+      // Double-check project not deleted
+      if (project.getDeletedAt() != null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found");
+      }
+      User actor = users.getReferenceById(project.getOwner().getId());
+      entityType = "project";
+      entityId = project.getId().toString();
+      ownerIdForAudit = actor.getId();
+    } else {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch has no associated project or generation");
     }
 
     String diff = patch.getDiff();
     // Strict validation before any FS mutation
-    List<FilePatch> filePatches = parseAndValidate(projectDir, diff);
+    List<FilePatch> filePatches = parseAndValidate(targetDir, diff);
 
     // Create backup snapshot
     Path backupDir = null;
     try {
       backupDir = Files.createTempDirectory("patch-backup-" + patchId);
       Path backupSnapshot = backupDir.resolve("snapshot");
-      copyDirectory(projectDir, backupSnapshot);
+      copyDirectory(targetDir, backupSnapshot);
 
       // Apply each file patch
       try {
         for (FilePatch fp : filePatches) {
-          applyFilePatch(projectDir, fp);
+          applyFilePatch(targetDir, fp);
         }
       } catch (ResponseStatusException e) {
         // Restore on failure
-        restoreBackup(projectDir, backupSnapshot);
+        restoreBackup(targetDir, backupSnapshot);
         // Keep patch non-APPLIED, record validation error if needed but don't change status
         throw e;
       } catch (Exception e) {
-        restoreBackup(projectDir, backupSnapshot);
+        restoreBackup(targetDir, backupSnapshot);
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Failed to apply patch: " + e.getMessage());
       }
 
@@ -99,11 +127,12 @@ public class PatchApplicationService {
       patch.setStatus(PatchStatus.APPLIED);
       patches.save(patch);
 
+      User actor = users.getReferenceById(ownerIdForAudit);
       audits.record(
-          project.getOwner(),
+          actor,
           "PATCH_APPLIED",
-          "patch",
-          patch.getId().toString());
+          entityType,
+          entityId);
 
       return PatchService.toResponse(patch);
     } catch (IOException e) {
@@ -118,33 +147,37 @@ public class PatchApplicationService {
   private Patch ownedPatch(UUID ownerId, UUID patchId) {
     Patch patch = patches.findById(patchId)
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch not found"));
-    Project project = patch.getFixRequest() != null && patch.getFixRequest().getFinding() != null
-        ? patch.getFixRequest().getFinding().getReview().getProject()
-        : patch.getProject();
-    if (project == null) {
-      // fallback via patch.project
-      project = patch.getProject();
-    }
-    if (project == null) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch not found");
-    }
-    Project ownerProject = patch.getFixRequest().getFinding().getReview().getProject();
-    if (ownerProject.getDeletedAt() != null || !ownerProject.getOwner().getId().equals(ownerId)) {
-      // Also check direct project link if present
-      if (patch.getProject() != null) {
-        if (patch.getProject().getDeletedAt() != null || !patch.getProject().getOwner().getId().equals(ownerId)) {
+
+    // Check ownership via FixRequest -> Finding -> Review -> Project or Generation
+    if (patch.getFixRequest() != null && patch.getFixRequest().getFinding() != null
+        && patch.getFixRequest().getFinding().getReview() != null) {
+      var review = patch.getFixRequest().getFinding().getReview();
+      if (review.getGeneration() != null) {
+        // Generation patch: check generation ownership
+        Generation generation = review.getGeneration();
+        if (!generation.getOwner().getId().equals(ownerId)) {
           throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch not found");
         }
-      } else {
-        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch not found");
+        return patch;
+      } else if (review.getProject() != null) {
+        // Project patch: check project ownership
+        Project project = review.getProject();
+        if (project.getDeletedAt() != null || !project.getOwner().getId().equals(ownerId)) {
+          throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch not found");
+        }
+        return patch;
       }
     }
-    // Ensure we use the canonical owner check via FixRequest path
-    Project canonical = patch.getFixRequest().getFinding().getReview().getProject();
-    if (canonical.getDeletedAt() != null || !canonical.getOwner().getId().equals(ownerId)) {
-      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch not found");
+
+    // Fallback: check direct project link
+    if (patch.getProject() != null) {
+      if (patch.getProject().getDeletedAt() != null || !patch.getProject().getOwner().getId().equals(ownerId)) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch not found");
+      }
+      return patch;
     }
-    return patch;
+
+    throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch not found");
   }
 
   private List<FilePatch> parseAndValidate(Path projectDir, String diff) {

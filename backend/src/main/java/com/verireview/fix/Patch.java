@@ -1,6 +1,7 @@
 package com.verireview.fix;
 
 import com.verireview.common.BaseEntity;
+import com.verireview.generation.Generation;
 import com.verireview.project.Project;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -26,6 +27,10 @@ public class Patch extends BaseEntity {
   @ManyToOne(fetch = FetchType.LAZY)
   @JoinColumn(name = "project_id")
   private Project project;
+
+  @ManyToOne(fetch = FetchType.LAZY)
+  @JoinColumn(name = "generation_id")
+  private Generation generation;
 
   @Column(name = "diff", nullable = false, columnDefinition = "TEXT")
   private String diff;
@@ -68,6 +73,14 @@ public class Patch extends BaseEntity {
 
   public void setProject(Project project) {
     this.project = project;
+  }
+
+  public Generation getGeneration() {
+    return generation;
+  }
+
+  public void setGeneration(Generation generation) {
+    this.generation = generation;
   }
 
   public String getDiff() {

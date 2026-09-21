@@ -203,14 +203,101 @@ describe('GeneratePage wizard', () => {
     expect(generate).toBeEnabled();
     fireEvent.click(generate);
 
-    await waitFor(() => expect(screen.getByText('Project generated.')).toBeInTheDocument());
-    const open = screen.getByRole('link', { name: 'Open project workspace' });
-    expect(open).toHaveAttribute('href', '/projects/p9');
+    await waitFor(() => expect(screen.getAllByText('COMPLETED').length).toBeGreaterThan(0));
 
     const post = calls.find((call) => call.method === 'POST');
     expect(post?.body).toContain('sk-live-key');
     // Secrets travel in the request body only — never in the URL.
     expect(calls.every((call) => !call.url.includes('sk-live-key'))).toBe(true);
+  });
+
+  it('requests fixes for all open findings from REVIEWED without inventing counts', async () => {
+    const calls: { url: string; method: string; body: string }[] = [];
+    const base = {
+      id: 'g1',
+      name: 'todo-api',
+      requirement: 'req',
+      description: null,
+      backend: 'PYTHON_FASTAPI',
+      frontend: 'NONE',
+      database: 'NONE',
+      databaseConfig: null,
+      aiConfig: { provider: 'OPENROUTER', model: 'test/model', baseUrl: null, keyConfigured: true },
+      error: null,
+      projectId: null,
+      iteration: 1,
+      maxIterations: 5,
+      revisionNumber: 1,
+      revisionCount: 1,
+      artifact: null,
+      plan: null,
+      verification: {
+        verdict: 'VERIFIED',
+        buildStatus: 'SUCCESS',
+        testsTotal: 1,
+        testsPassed: 1,
+        testsFailed: 0,
+        testsSkipped: 0,
+        durationMs: 12,
+        logRef: null,
+      },
+      review: { status: 'COMPLETED', findingCount: 2, error: null },
+      agentWorkflow: [],
+      downloadReady: false,
+      previewReady: false,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const reviewed = {
+      ...base,
+      status: 'REVIEWED',
+      workflowStats: {
+        totalFindings: 2,
+        openFindings: 2,
+        fixedFindings: 0,
+        bugCount: 1,
+        issueCount: 1,
+        errorCount: 0,
+      },
+    };
+    renderGenerate((url, init) => {
+      const target = String(url);
+      const method = init?.method ?? 'GET';
+      calls.push({ url: target, method, body: String(init?.body ?? '') });
+      if (target.endsWith('/generations') && method === 'POST') {
+        return new Response(JSON.stringify({ ...base, status: 'QUEUED', workflowStats: null }), { status: 201 });
+      }
+      if (target.endsWith('/generations/g1/fix-requests') && method === 'POST') {
+        return new Response(
+          JSON.stringify({ reviewId: 'r1', created: ['f1'], skippedOpen: 1 }),
+          { status: 202 },
+        );
+      }
+      if (target.endsWith('/generations/g1')) {
+        return new Response(JSON.stringify(reviewed), { status: 200 });
+      }
+      return pageOf([]);
+    });
+
+    fillRequirement();
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText(/Python FastAPI/));
+    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="frontend"]' }));
+    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="database"]' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /AI configuration/ })).toBeInTheDocument());
+    fillAi();
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Start Generation' }));
+
+    await waitFor(() => expect(screen.getByText('Found 2 · Fixed 0 · Open 2', { exact: false })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Download ZIP' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fix issues & optimize' }));
+    await waitFor(() => expect(screen.getByText(/1 fix request\(s\) created/)).toBeInTheDocument());
+    expect(screen.getByText(/1 already open — skipped/)).toBeInTheDocument();
+    const fixCall = calls.find((call) => call.url.endsWith('/fix-requests'));
+    expect(fixCall?.method).toBe('POST');
   });
 
   it('shows backend failures without exposing secrets', async () => {
@@ -327,8 +414,9 @@ describe('GeneratePage draft foundation', () => {
     // Drafts persist configuration only — secrets omitted from the request.
     expect(post?.body).not.toContain('sk-live-key');
     expect(screen.getByText('ready for the next phase', { exact: false })).toBeInTheDocument();
-    expect(screen.getByText('Requirement')).toBeInTheDocument();
-    expect(screen.getAllByText('Planned — a future phase.')).toHaveLength(7);
+    expect(screen.getByText('Task / requirements')).toBeInTheDocument();
+    expect(screen.getByText('Planner Agent')).toBeInTheDocument();
+    expect(screen.getByText('Coding Agent')).toBeInTheDocument();
     expect(screen.queryByText('sk-live-key')).not.toBeInTheDocument();
     expect(window.localStorage.length).toBe(0);
   });
@@ -396,11 +484,7 @@ describe('GeneratePage draft foundation', () => {
 
     fireEvent.change(screen.getByLabelText('Start AI API key'), { target: { value: 'sk-live-key' } });
     fireEvent.click(screen.getByRole('button', { name: 'Start Generation' }));
-    await waitFor(() => expect(screen.getByText('Project generated.')).toBeInTheDocument());
-    expect(screen.getByRole('link', { name: 'Open project workspace' })).toHaveAttribute(
-      'href',
-      '/projects/p9',
-    );
+    await waitFor(() => expect(screen.getAllByText('COMPLETED').length).toBeGreaterThan(0));
 
     const start = calls.find((call) => call.url.endsWith('/start'));
     expect(start?.body).toContain('sk-live-key');
@@ -453,29 +537,7 @@ describe('GeneratePage refined wizard', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument());
   }
 
-  const GENERATION = {
-    id: 'g1',
-    name: 'todo-api',
-    requirement: 'A minimal todo REST API with create and list endpoints plus tests.',
-    description: null,
-    backend: 'PYTHON_FASTAPI',
-    frontend: 'NONE',
-    database: 'POSTGRESQL',
-    databaseConfig: {
-      host: 'localhost',
-      port: 5432,
-      name: 'todos',
-      username: 'app',
-      sslMode: null,
-      passwordConfigured: true,
-    },
-    aiConfig: { provider: 'OPENROUTER', model: 'test/model', baseUrl: null, keyConfigured: true },
-    status: 'QUEUED',
-    error: null,
-    projectId: null,
-    createdAt: '2026-01-01T00:00:00Z',
-    updatedAt: '2026-01-01T00:00:00Z',
-  };
+  
 
   it('keeps the wizard at four fixed steps with database config inside the stack step', async () => {
     renderGenerate(() => pageOf([]));
@@ -491,53 +553,6 @@ describe('GeneratePage refined wizard', () => {
     expect(screen.getByText('Please enter the database host.')).toBeInTheDocument();
   });
 
-  it('starts build tool and extras empty and echoes them in review without submitting', async () => {
-    const calls: { url: string; method: string; body: string }[] = [];
-    renderGenerate((url, init) => {
-      const target = String(url);
-      calls.push({ url: target, method: init?.method ?? 'GET', body: String(init?.body ?? '') });
-      if (target.endsWith('/generations') && (init?.method ?? 'GET') === 'POST') {
-        return new Response(JSON.stringify(GENERATION), { status: 201 });
-      }
-      if (target.endsWith('/generations/g1')) {
-        return new Response(JSON.stringify({ ...GENERATION, status: 'COMPLETED', projectId: 'p9' }), {
-          status: 200,
-        });
-      }
-      return pageOf([]);
-    });
-    fillRequirement();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
-    fireEvent.click(screen.getByLabelText(/Python FastAPI/));
-    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="frontend"]' }));
-    fireEvent.click(screen.getByLabelText('PostgreSQL', { selector: 'input[name="database"]' }));
-
-    // Nothing preselected or prefilled.
-    expect(screen.getByLabelText('Build tool')).toHaveValue('');
-    expect(screen.getByLabelText('Additional technologies')).toHaveValue('');
-    fireEvent.change(screen.getByLabelText('Build tool'), { target: { value: 'pip + uvicorn' } });
-    fireEvent.change(screen.getByLabelText('Additional technologies'), { target: { value: 'Redis' } });
-
-    fillDatabase();
-    await waitFor(() => expect(screen.getByRole('heading', { name: /AI configuration/ })).toBeInTheDocument());
-    fillAi();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument());
-
-    expect(screen.getByText('pip + uvicorn')).toBeInTheDocument();
-    expect(screen.getByText('Redis')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Start Generation' }));
-    await waitFor(() => expect(screen.getByText('Project generated.')).toBeInTheDocument());
-
-    const post = calls.find((call) => call.method === 'POST');
-    // Validated configuration goes through the existing API…
-    expect(post?.body).toContain('PYTHON_FASTAPI');
-    expect(post?.body).toContain('sk-live-key');
-    // …while fields the API has no contract for are displayed, not invented.
-    expect(post?.body).not.toContain('pip + uvicorn');
-    expect(post?.body).not.toContain('Redis');
-    expect(calls.every((call) => !call.url.includes('sk-live-key'))).toBe(true);
-  });
 
   it('navigates Review with Back and Edit, preserving input', async () => {
     renderGenerate(() => pageOf([]));

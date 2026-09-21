@@ -16,6 +16,8 @@ import com.verireview.agent.dto.AiProposedFinding;
 import com.verireview.agent.dto.AiReviewResult;
 import com.verireview.audit.AuditService;
 import com.verireview.execution.SandboxRunner;
+import com.verireview.fix.Patch;
+import com.verireview.fix.PatchStatus;
 import com.verireview.fix.UnifiedDiffValidator;
 import com.verireview.ingestion.ProjectStorage;
 import com.verireview.project.Project;
@@ -126,11 +128,13 @@ public class GenerationRunner {
   }
 
   /**
-   * Phase C pipeline: snapshot → iteration budget → PLANNING → CODING →
+   * Generation pipeline: snapshot → iteration budget → PLANNING → CODING →
    * BUILDING → VERIFYING → VERIFIED → REVIEWING → REVIEWED.
-   * Files land in an isolated generation workspace; build runs in the Docker sandbox;
-   * Verified Agent evaluates evidence; Review Agent reviews the generated project.
-   * On success the run parks at REVIEWED — COMPLETED, fix loop belong to later phases.
+   * After an applied generation patch, the rebuild path is:
+   * REVIEWED → REBUILDING → REVERIFYING → VERIFIED/FAILED.
+   * Files land in an isolated generation workspace; builds run in the Docker sandbox;
+   * Verified Agent evaluates evidence; Review Agent reviews generated projects.
+   * Re-review after a successful patch re-verification belongs to the next phase.
    */
   @Async("generationExecutor")
   public void runAsync(UUID generationId) {
@@ -138,8 +142,9 @@ public class GenerationRunner {
     if (snapshot == null) {
       return;
     }
-    // Single delivery: secrets live in memory only for this run.
-    GenerationSecrets secrets = generations.takeSecrets(generationId);
+    // Secrets live in memory for the entire generation lifecycle (including fix loops).
+    // They are cleared only when the generation reaches a terminal state.
+    GenerationSecrets secrets = generations.peekSecrets(generationId);
     if (secrets == null || secrets.aiApiKey() == null) {
       fail(generationId, snapshot.ownerId(),
           "Generation credentials are no longer available. Please create a new generation.");
@@ -181,6 +186,47 @@ public class GenerationRunner {
     } catch (Exception e) {
       // Never include request bodies or secrets in state: messages only.
       log.warn("Generation {} failed: {}", generationId, e.toString());
+      fail(generationId, snapshot.ownerId(), truncate(messageOf(e), 2000));
+    }
+  }
+
+  /**
+   * Triggers the rebuild and re-verification flow for a generation after a patch
+   * has been applied. This is called externally (e.g., from a controller) when
+   * the user wants to rebuild after applying a patch.
+   *
+   * @param generationId the generation to rebuild
+   * @param patchId the patch that was applied and triggered this rebuild
+   */
+  @Async("generationExecutor")
+  public void triggerRebuildAndReverify(UUID generationId, UUID patchId) {
+    GenerationService.GenerationSnapshot snapshot = generations.snapshot(generationId);
+    if (snapshot == null) {
+      return;
+    }
+    try {
+      // Patch ownership/state is validated before dispatch. Keep the runner
+      // responsible for the asynchronous rebuild/re-verification lifecycle.
+      Patch patch = generations.getPatch(patchId);
+      if (patch.getGeneration() == null || !patch.getGeneration().getId().equals(generationId)) {
+        fail(generationId, snapshot.ownerId(), "Patch not found for this generation");
+        return;
+      }
+      if (patch.getStatus() != PatchStatus.APPLIED) {
+        fail(generationId, snapshot.ownerId(), "Patch must be in APPLIED state to trigger rebuild");
+        return;
+      }
+
+      Generation gen = generations.findById(generationId);
+      int iteration = gen.getIteration();
+
+      // REVIEWED -> REBUILDING is the authoritative beginning of the
+      // patch-triggered rebuild lifecycle.
+      generations.markStatus(generationId, GenerationStatus.REBUILDING, null);
+      runRebuildAndReverify(generationId, snapshot, iteration);
+
+    } catch (Exception e) {
+      log.warn("Generation {} rebuild failed: {}", generationId, e.toString());
       fail(generationId, snapshot.ownerId(), truncate(messageOf(e), 2000));
     }
   }
@@ -612,6 +658,47 @@ public class GenerationRunner {
           millisSince(startedNanos), null);
       fail(generationId, snapshot.ownerId(), "Review error: " + e.getMessage());
     }
+  }
+
+  /**
+   * Runs the rebuild and re-verification flow for a generation after a patch
+   * has been applied. Uses the current iteration and the modified generation
+   * workspace.
+   *
+   * @param generationId the generation to rebuild
+   * @param snapshot the generation snapshot
+   * @param patchId the patch that was applied and triggered this rebuild
+   */
+  private void runRebuildAndReverify(UUID generationId,
+      GenerationService.GenerationSnapshot snapshot, int iteration) {
+    // The caller has already transitioned REVIEWED -> REBUILDING.
+    UUID evidenceId = runBuilding(generationId, snapshot, iteration);
+    GenerationExecutionEvidence evidence = generations.executionEvidence()
+        .findById(evidenceId).orElseThrow();
+
+    if (evidence.getBuildStatus() != GenerationExecutionEvidence.BuildStatus.SUCCESS) {
+      fail(generationId, snapshot.ownerId(),
+          "Rebuild failed: " + evidence.getFailureReason());
+      return;
+    }
+
+    // REBUILDING -> REVERIFYING before invoking the read-only Verified Agent.
+    generations.markStatus(generationId, GenerationStatus.REVERIFYING, null);
+
+    /*
+     * verification_runs currently enforces exactly one owner:
+     * generation_id OR patch_id. A generation rebuild verification therefore
+     * remains generation-owned. The applied patch is preserved independently
+     * by the Patch/FixRequest records and is not written into both ownership
+     * columns.
+     */
+    UUID verificationRunId = generations.createVerificationRun(
+        generationId, iteration, evidenceId);
+
+    runVerifying(generationId, snapshot, iteration, evidence, verificationRunId);
+
+    // Successful verification transitions to VERIFIED inside runVerifying().
+    // The Review Agent is intentionally not invoked here; re-review is Task 8.
   }
 
   /**

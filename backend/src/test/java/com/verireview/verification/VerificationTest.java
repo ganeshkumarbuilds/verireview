@@ -109,7 +109,7 @@ class VerificationTest extends AbstractPersistenceTest {
     // Simulate new CRITICAL finding after patch
     Project project = projects.findById(fixture.projectId).orElseThrow();
     Review review = reviews.findAll().stream()
-        .filter(r -> r.getProject().getId().equals(project.getId()))
+        .filter(r -> r.getProject() != null && r.getProject().getId().equals(project.getId()))
         .findFirst().orElseThrow();
     Finding critical = new Finding(review, FindingCategory.SECURITY, FindingSeverity.CRITICAL, FindingSource.DETERMINISTIC, "New critical");
     critical.setFilePath("src/New.java");

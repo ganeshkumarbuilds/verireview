@@ -26,4 +26,7 @@ public interface FindingRepository extends JpaRepository<Finding, UUID> {
 
   List<Finding> findByReviewProjectIdAndSeverityInAndCreatedAtAfter(
       UUID projectId, List<FindingSeverity> severities, Instant after);
+
+  boolean existsByReviewIdAndCategoryInAndStatus(UUID reviewId, List<FindingCategory> categories,
+      FindingStatus status);
 }

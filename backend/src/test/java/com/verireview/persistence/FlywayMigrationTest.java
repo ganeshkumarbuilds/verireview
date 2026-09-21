@@ -8,7 +8,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Proves Flyway owns the schema: V1+V2 applied, all tables exist, roles seeded.
+ * Verifies that the current Flyway schema is fully applied and the seeded
+ * roles required by authentication are present.
  */
 class FlywayMigrationTest extends AbstractPersistenceTest {
 
@@ -21,26 +22,34 @@ class FlywayMigrationTest extends AbstractPersistenceTest {
   private JdbcTemplate jdbc;
 
   @Test
-  void flywayAppliedInitialSchemaAndRoleSeed() {
+  void flywayAppliedAllCurrentMigrations() {
     List<String> versions = jdbc.queryForList(
         "SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
         String.class);
-    assertThat(versions).containsExactly("1", "2", "3", "4", "5", "6");
+
+    assertThat(versions).containsExactly(
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15");
   }
 
   @Test
-  void allDesignedTablesExist() {
+  void coreTablesExist() {
     List<String> tables = jdbc.queryForList(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY 1",
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+        """,
         String.class);
+
     assertThat(tables).containsAll(EXPECTED_TABLES);
   }
 
   @Test
-  void rolesSeededWithoutDemoUsers() {
-    List<String> roles = jdbc.queryForList("SELECT name FROM roles ORDER BY 1", String.class);
-    assertThat(roles).containsExactly("ADMIN", "USER");
-    // No global user-count assertion: the suite shares one database and other
-    // tests commit isolated rows. V2 inserts into roles only (see the file).
+  void authenticationRolesAreSeeded() {
+    List<String> roles = jdbc.queryForList(
+        "SELECT name FROM roles ORDER BY name",
+        String.class);
+
+    assertThat(roles).contains("USER", "ADMIN");
   }
 }

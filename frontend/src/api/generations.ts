@@ -93,3 +93,48 @@ export async function listGenerations(
 export function isTerminalGeneration(status: string): boolean {
   return status === 'COMPLETED' || status === 'FAILED' || status === 'CANCELLED';
 }
+
+/** Downloads the generated project ZIP (backend-authoritative gate). */
+export async function downloadGeneration(
+  client: ApiClient,
+  token: string,
+  id: string,
+): Promise<Blob> {
+  const response = await fetch(`${client.baseUrl}/api/v1/generations/${encodeURIComponent(id)}/download`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error || 'Download failed');
+  }
+  return response.blob();
+}
+
+/**
+ * Approval gate for the generation fix loop: creates FixRequests for every
+ * OPEN finding of the generation's latest review. Records permission only —
+ * the backend never mutates source code here. Only REVIEWED generations
+ * qualify (409 otherwise).
+ */
+export interface BulkFixRequestsResponse {
+  reviewId: string;
+  created: string[];
+  skippedOpen: number;
+}
+
+export async function createGenerationFixRequests(
+  client: ApiClient,
+  token: string,
+  id: string,
+  scopeNote?: string,
+): Promise<BulkFixRequestsResponse> {
+  return client.request<BulkFixRequestsResponse>(
+    `/generations/${encodeURIComponent(id)}/fix-requests`,
+    {
+      method: 'POST',
+      headers: bearer(token),
+      body: JSON.stringify(scopeNote ? { scopeNote } : {}),
+    },
+  );
+}

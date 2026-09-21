@@ -14,10 +14,15 @@ export type GenerationStatus =
   | 'PLANNING'
   | 'GENERATING'
   | 'CODING'
-  | 'REVIEWING'
-  | 'FIXING'
+  | 'BUILDING'
   | 'TESTING'
   | 'VERIFYING'
+  | 'VERIFIED'
+  | 'REVIEWING'
+  | 'REVIEWED'
+  | 'REBUILDING'
+  | 'REVERIFYING'
+  | 'FIXING'
   | 'COMPLETED'
   | 'FAILED'
   | 'CANCELLED';
@@ -107,6 +112,71 @@ export interface GenerationResponse {
   status: GenerationStatus;
   error: string | null;
   projectId: string | null;
+  iteration: number;
+  maxIterations: number;
+  revisionNumber: number;
+  revisionCount: number;
+  artifact: ArtifactView | null;
+  plan: PlanView | null;
+  workflowStats: WorkflowStatsView | null;
+  verification: VerificationView | null;
+  review: ReviewView | null;
+  agentWorkflow: AgentStepView[];
+  downloadReady: boolean;
+  previewReady: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ArtifactView {
+  id: string;
+  iteration: number;
+  fileCount: number;
+  totalChars: number;
+  sha256: string;
+  createdAt: string;
+}
+
+export interface PlanView {
+  iteration: number;
+  fileCount: number;
+  architecture: string;
+  dependencies: string[];
+  directories: string[];
+  apis: string;
+  steps: string[];
+}
+
+export interface WorkflowStatsView {
+  totalFindings: number;
+  openFindings: number;
+  fixedFindings: number;
+  bugCount: number;
+  issueCount: number;
+  errorCount: number;
+}
+
+export interface VerificationView {
+  verdict: string;
+  buildStatus: string;
+  testsTotal: number;
+  testsPassed: number;
+  testsFailed: number;
+  testsSkipped: number;
+  durationMs: number | null;
+  logRef: string | null;
+}
+
+export interface ReviewView {
+  status: string;
+  findingCount: number;
+  error: string | null;
+}
+
+export interface AgentStepView {
+  agentType: string;
+  status: string;
+  durationMs: number | null;
+  error: string | null;
+  createdAt: string;
 }

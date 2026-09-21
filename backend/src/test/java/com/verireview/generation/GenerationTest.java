@@ -8,6 +8,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.verireview.agent.GenerationAiClient;
+import com.verireview.agent.ReviewAiClient;
+import com.verireview.agent.VerifiedAgentClient;
+import com.verireview.agent.dto.AiProposedFinding;
+import com.verireview.agent.dto.AiReviewResult;
+import com.verireview.verification.VerificationVerdict;
 import com.verireview.agent.dto.AiGenerationFilesResult;
 import com.verireview.agent.dto.AiGenerationPlanResult;
 import com.verireview.ingestion.ProjectStorage;
@@ -29,6 +34,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -46,6 +53,8 @@ class GenerationTest extends AbstractPersistenceTest {
   @Autowired private ObjectMapper objects;
   @Autowired private ProjectStorage storage;
   @MockitoBean private GenerationAiClient generationAiClient;
+  @MockitoBean private VerifiedAgentClient verifiedAgentClient;
+  @MockitoBean private ReviewAiClient reviewAiClient;
 
   private static final String PLAN_FILE = "src/main/java/app/App.java";
 
@@ -62,6 +71,20 @@ class GenerationTest extends AbstractPersistenceTest {
             List.of(new AiGenerationFilesResult.GeneratedFile(
                 PLAN_FILE, "class App {}", "java")),
             "files ok"));
+    VerifiedAgentClient.VerifiedAgentResult verified = mock(VerifiedAgentClient.VerifiedAgentResult.class);
+    when(verified.testsTotal()).thenReturn(1);
+    when(verified.testsPassed()).thenReturn(1);
+    when(verified.testsFailed()).thenReturn(0);
+    when(verified.testsSkipped()).thenReturn(0);
+    when(verified.verdictEnum()).thenReturn(VerificationVerdict.VERIFIED);
+    when(verified.logRef()).thenReturn("test-verification");
+    when(verified.reason()).thenReturn("verified");
+    when(verifiedAgentClient.evaluate(any(), anyInt(), any(), any())).thenReturn(verified);
+
+    AiReviewResult review = mock(AiReviewResult.class);
+    when(review.findings()).thenReturn(List.of());
+    when(review.promptVersion()).thenReturn("test-review");
+    when(reviewAiClient.review(any())).thenReturn(review);
   }
 
   @Test
@@ -132,14 +155,14 @@ class GenerationTest extends AbstractPersistenceTest {
   }
 
   @Test
-  void runStopsAtCodingWithWorkspaceFiles() throws Exception {
+  void runCompletesVerifiedReviewPipelineWithWorkspaceFiles() throws Exception {
     String token = access(register());
     String id = createGeneration(token, validBody("gen-" + UUID.randomUUID()));
 
     // Phase B ends at CODING: files validated into an isolated workspace,
     // metadata persisted — no project, no COMPLETED, no verification claims.
     JsonNode settled = pollUntilSettled(token, id);
-    assertThat(settled.get("status").asText()).isEqualTo("CODING");
+    assertThat(settled.get("status").asText()).isEqualTo("REVIEWED");
     assertThat(settled.get("projectId").isNull()).isTrue();
     assertThat(settled.get("iteration").asInt()).isEqualTo(1);
     assertThat(settled.get("artifact").get("fileCount").asInt()).isEqualTo(1);
@@ -262,7 +285,7 @@ class GenerationTest extends AbstractPersistenceTest {
     assertThat(started.getResponse().getContentAsString()).doesNotContain("sk-test-key");
 
     JsonNode terminal = pollUntilSettled(token, id);
-    assertThat(terminal.get("status").asText()).isEqualTo("CODING");
+    assertThat(terminal.get("status").asText()).isEqualTo("REVIEWED");
     assertThat(terminal.get("projectId").isNull()).isTrue();
   }
 
@@ -327,6 +350,64 @@ class GenerationTest extends AbstractPersistenceTest {
             .contentType(MediaType.APPLICATION_JSON)
             .content("{\"requirement\":\"too late\"}"))
         .andExpect(status().isConflict());
+  }
+
+  @Test
+  void bulkFixRequestsApproveAllOpenFindingsWithoutMutatingCode() throws Exception {
+    AiReviewResult withFindings = mock(AiReviewResult.class);
+    when(withFindings.findings()).thenReturn(List.of(
+        new AiProposedFinding("BUG", "HIGH", "Null guard missing", "Add a null guard",
+            "src/main/java/app/App.java", 1, 2, null, "AI", "add guard", 0.9),
+        new AiProposedFinding("CODE_QUALITY", "MEDIUM", "Long method", "Split the method",
+            "src/main/java/app/App.java", 1, 5, null, "AI", "split method", 0.7)));
+    when(withFindings.promptVersion()).thenReturn("test-review");
+    when(reviewAiClient.review(any())).thenReturn(withFindings);
+
+    String token = access(register());
+    String id = createGeneration(token, validBody("gen-" + UUID.randomUUID()));
+    JsonNode settled = pollUntilSettled(token, id);
+    assertThat(settled.get("status").asText()).isEqualTo("REVIEWED");
+    assertThat(settled.get("workflowStats").get("openFindings").asInt()).isEqualTo(2);
+
+    MvcResult bulk = mockMvc.perform(post("/api/v1/generations/" + id + "/fix-requests")
+            .header("Authorization", "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"scopeNote\":\"fix all open findings\"}"))
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.created.length()").value(2))
+        .andExpect(jsonPath("$.skippedOpen").value(0))
+        .andReturn();
+    assertThat(bulk.getResponse().getContentAsString()).doesNotContain("sk-test-key");
+
+    // Idempotent: findings with open requests are skipped, never duplicated.
+    mockMvc.perform(post("/api/v1/generations/" + id + "/fix-requests")
+            .header("Authorization", "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{}"))
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.created.length()").value(0))
+        .andExpect(jsonPath("$.skippedOpen").value(2));
+  }
+
+  @Test
+  void bulkFixRequestsRequireReviewedStatusAndOwnership() throws Exception {
+    String ownerToken = access(register());
+    String draftId = createGeneration(ownerToken, draftBody("gen-" + UUID.randomUUID()));
+
+    // Drafts are not fixable: the fix loop starts from REVIEWED.
+    mockMvc.perform(post("/api/v1/generations/" + draftId + "/fix-requests")
+            .header("Authorization", "Bearer " + ownerToken)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{}"))
+        .andExpect(status().isConflict());
+
+    // Foreign owners see 404, never 403.
+    String otherToken = access(register());
+    mockMvc.perform(post("/api/v1/generations/" + draftId + "/fix-requests")
+            .header("Authorization", "Bearer " + otherToken)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{}"))
+        .andExpect(status().isNotFound());
   }
 
   @Test
@@ -416,8 +497,8 @@ class GenerationTest extends AbstractPersistenceTest {
           .andReturn();
       JsonNode root = objects.readTree(result.getResponse().getContentAsString());
       String status = root.get("status").asText();
-      // Phase B parks successful runs at CODING (build/verify arrive later).
-      if (status.equals("CODING") || status.equals("COMPLETED") || status.equals("FAILED")) {
+      // Successful runs settle after build, verification, and review.
+      if (status.equals("REVIEWED") || status.equals("COMPLETED") || status.equals("FAILED")) {
         return root;
       }
       if (System.currentTimeMillis() > deadline) {
