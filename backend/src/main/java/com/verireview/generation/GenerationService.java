@@ -177,8 +177,9 @@ public class GenerationService {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "Generation name is already used");
     }
     boolean draft = Boolean.TRUE.equals(request.draft());
-    checkStackCoherence(request.database(), request.databaseConfig() != null,
-        request.aiConfig().provider(), request.aiConfig().baseUrl());
+    checkStackCoherence(request.backend(), request.database(), request.databaseConfig() != null,
+        request.aiConfig().provider(), request.aiConfig().baseUrl(), request.aiConfig().apiKey(),
+        request.aiConfig().model(), draft);
     if (!draft) {
       requireSecrets(request);
     }
@@ -200,7 +201,9 @@ public class GenerationService {
       generation.setDbSslMode(blankToNull(db.sslMode()));
     }
     generation.setAiProvider(request.aiConfig().provider());
-    generation.setAiModel(request.aiConfig().model().trim());
+    String model = request.aiConfig().model() == null ? "" : request.aiConfig().model().trim();
+    generation.setAiModel(model.isEmpty() && request.aiConfig().provider() == GenerationAiProvider.NONE
+        ? "template" : model);
     generation.setAiBaseUrl(blankToNull(request.aiConfig().baseUrl()));
     generation.setStatus(draft ? GenerationStatus.DRAFT : GenerationStatus.QUEUED);
     try {
@@ -246,7 +249,8 @@ public class GenerationService {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "Database password is required to start");
     }
-    if (apiKey == null || apiKey.isBlank()) {
+    if (generation.getAiProvider() != GenerationAiProvider.NONE
+        && (apiKey == null || apiKey.isBlank())) {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "AI API key is required to start");
     }
@@ -401,8 +405,8 @@ public class GenerationService {
   }
 
   private void checkStackCoherence(
-      GenerationDatabase database, boolean hasDatabaseConfig,
-      GenerationAiProvider provider, String baseUrl) {
+      GenerationBackend backend, GenerationDatabase database, boolean hasDatabaseConfig,
+      GenerationAiProvider provider, String baseUrl, String apiKey, String model, boolean draft) {
     boolean wantsDb = database != GenerationDatabase.NONE;
     if (wantsDb && !hasDatabaseConfig) {
       throw new ResponseStatusException(
@@ -412,9 +416,33 @@ public class GenerationService {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "Database configuration must be omitted when no database is selected");
     }
+    if (provider == GenerationAiProvider.NONE) {
+      if (apiKey != null && !apiKey.isBlank()) {
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST, "API key must be omitted when provider is NONE");
+      }
+      if (baseUrl != null && !baseUrl.isBlank()) {
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST, "Base URL must be omitted when provider is NONE");
+      }
+      if (backend != GenerationBackend.JAVA_SPRING_BOOT) {
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST, "Provider NONE currently supports Java Spring Boot templates only");
+      }
+      return;
+    }
+    if (model == null || model.isBlank()) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "AI model is required");
+    }
     if (provider == GenerationAiProvider.CUSTOM && (baseUrl == null || baseUrl.isBlank())) {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "Base URL is required for a custom provider");
+    }
+    if (!draft && (apiKey == null || apiKey.isBlank())) {
+      // Drafts may omit secrets (re-supplied at start); dispatched runs may not.
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "AI API key is required");
     }
   }
 
@@ -425,7 +453,8 @@ public class GenerationService {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "Database password is required");
     }
-    if (request.aiConfig().apiKey() == null || request.aiConfig().apiKey().isBlank()) {
+    if (request.aiConfig().provider() != GenerationAiProvider.NONE
+        && (request.aiConfig().apiKey() == null || request.aiConfig().apiKey().isBlank())) {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "AI API key is required");
     }
@@ -1157,7 +1186,7 @@ public class GenerationService {
         generation.getAiProvider(),
         generation.getAiModel(),
         generation.getAiBaseUrl(),
-        sealed);
+        sealed && generation.getAiProvider() != GenerationAiProvider.NONE);
     GenerationResponse.ArtifactView artifactView = artifact == null ? null
         : new GenerationResponse.ArtifactView(
             artifact.getId(),

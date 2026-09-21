@@ -6,7 +6,7 @@
 export type GenerationBackend = 'JAVA_SPRING_BOOT' | 'PYTHON_FASTAPI' | 'NODEJS';
 export type GenerationFrontend = 'REACT_TYPESCRIPT' | 'NONE';
 export type GenerationDatabase = 'POSTGRESQL' | 'MYSQL' | 'MONGODB' | 'NONE';
-export type GenerationAiProvider = 'OPENROUTER' | 'CUSTOM';
+export type GenerationAiProvider = 'OPENROUTER' | 'CUSTOM' | 'NONE';
 export type GenerationStatus =
   | 'DRAFT'
   | 'READY'
@@ -38,7 +38,8 @@ export interface GenerationDatabaseInput {
 
 export interface GenerationAiInput {
   provider: GenerationAiProvider;
-  apiKey: string;
+  /** Omitted for drafts and for the NONE provider (template fallback). */
+  apiKey?: string;
   baseUrl?: string;
   model: string;
 }

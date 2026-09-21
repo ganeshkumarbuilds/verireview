@@ -290,7 +290,7 @@ describe('GeneratePage wizard', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Start Generation' }));
 
-    await waitFor(() => expect(screen.getByText('Found 2 · Fixed 0 · Open 2', { exact: false })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Issues found 2 · Issues fixed 0', { exact: false })).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Download ZIP' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Fix issues & optimize' }));
@@ -298,6 +298,64 @@ describe('GeneratePage wizard', () => {
     expect(screen.getByText(/1 already open — skipped/)).toBeInTheDocument();
     const fixCall = calls.find((call) => call.url.endsWith('/fix-requests'));
     expect(fixCall?.method).toBe('POST');
+  });
+
+  it('supports the NONE provider without an API key', async () => {
+    const calls: { url: string; method: string; body: string }[] = [];
+    const queued = {
+      id: 'g1',
+      name: 'todo-api',
+      requirement: 'req',
+      description: null,
+      backend: 'JAVA_SPRING_BOOT',
+      frontend: 'NONE',
+      database: 'NONE',
+      databaseConfig: null,
+      aiConfig: { provider: 'NONE', model: 'template', baseUrl: null, keyConfigured: false },
+      status: 'QUEUED',
+      error: null,
+      projectId: null,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    renderGenerate((url, init) => {
+      const target = String(url);
+      const method = init?.method ?? 'GET';
+      calls.push({ url: target, method, body: String(init?.body ?? '') });
+      if (target.endsWith('/generations') && method === 'POST') {
+        return new Response(JSON.stringify(queued), { status: 201 });
+      }
+      if (target.endsWith('/generations/g1')) {
+        return new Response(
+          JSON.stringify({ ...queued, status: 'FAILED', error: 'done' }),
+          { status: 200 },
+        );
+      }
+      return pageOf([]);
+    });
+
+    fillRequirement();
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText(/Java Spring Boot/));
+    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="frontend"]' }));
+    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="database"]' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /AI configuration/ })).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText(/None — template starter/));
+    expect(screen.getByLabelText('AI API key')).toBeDisabled();
+    expect(screen.getByLabelText('AI model')).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument());
+    expect(screen.getByText('None — template starter', { exact: false })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start Generation' }));
+    await waitFor(() =>
+      expect(calls.some((call) => call.method === 'POST' && call.url.endsWith('/generations'))).toBe(true),
+    );
+    const post = calls.find((call) => call.method === 'POST' && call.url.endsWith('/generations'));
+    expect(post?.body).toContain('"provider":"NONE"');
+    expect(post?.body).not.toContain('apiKey');
+    expect(post?.body).not.toContain('sk-live-key');
   });
 
   it('shows backend failures without exposing secrets', async () => {

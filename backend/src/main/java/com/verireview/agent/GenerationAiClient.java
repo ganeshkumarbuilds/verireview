@@ -125,9 +125,23 @@ public class GenerationAiClient {
     }
     if (response.statusCode() != 200) {
       throw new AiServiceException(AiServiceException.Kind.BAD_STATUS,
-          "AI generation service answered HTTP " + response.statusCode());
+          "AI generation service answered HTTP " + response.statusCode()
+              + truncateBody(response.body()));
     }
     return response.body();
+  }
+
+  /**
+   * Appends the service's own error detail (e.g. FastAPI 422 field errors)
+   * so a rejection names the offending field instead of a bare status code.
+   * Responses carry results, never the per-run key — still, cap the length.
+   */
+  private static String truncateBody(String body) {
+    if (body == null || body.isBlank()) {
+      return "";
+    }
+    String detail = body.length() <= 2000 ? body : body.substring(0, 2000) + "…[truncated]";
+    return ": " + detail;
   }
 
   private AiGenerationPlanResult parsePlan(String body, String expectedId) {

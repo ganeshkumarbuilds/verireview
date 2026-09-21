@@ -23,7 +23,9 @@ class PlanRequest(BaseModel):
     db_username: str | None = Field(default=None, max_length=200)
     db_ssl_mode: str | None = Field(default=None, max_length=50)
     ai_provider: str = Field(min_length=1, max_length=30)
-    api_key: str = Field(min_length=1, max_length=2000)
+    # No min_length: blank keys must reach the provider factory, which
+    # refuses them with an explicit error (never a bare 422).
+    api_key: str = Field(max_length=2000)
     base_url: str | None = Field(default=None, max_length=500)
     model: str = Field(min_length=1, max_length=200)
 
@@ -64,7 +66,9 @@ class FilesRequest(BaseModel):
     db_username: str | None = Field(default=None, max_length=200)
     db_ssl_mode: str | None = Field(default=None, max_length=50)
     ai_provider: str = Field(min_length=1, max_length=30)
-    api_key: str = Field(min_length=1, max_length=2000)
+    # No min_length: blank keys must reach the provider factory, which
+    # refuses them with an explicit error (never a bare 422).
+    api_key: str = Field(max_length=2000)
     base_url: str | None = Field(default=None, max_length=500)
     model: str = Field(min_length=1, max_length=200)
     plan: list[PlannedFile] = Field(min_length=1, max_length=80)

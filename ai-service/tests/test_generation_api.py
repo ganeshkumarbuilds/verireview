@@ -98,3 +98,13 @@ def test_plan_endpoint_requires_key():
     # Pydantic accepts blank here; the provider factory must refuse it.
     response = client.post("/internal/generate/plan", json=body)
     assert response.status_code == 500
+
+
+def test_plan_endpoint_empty_key_fails_explicitly_not_422():
+    body = _plan_body()
+    body["api_key"] = ""
+    # Empty keys must reach the provider guard (explicit 500), never a bare
+    # 422 that hides which field failed.
+    response = client.post("/internal/generate/plan", json=body)
+    assert response.status_code == 500
+    assert "api key" in response.text.lower()

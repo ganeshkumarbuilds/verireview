@@ -156,6 +156,12 @@ export function ProjectsPage() {
     if (!genAiProvider) {
       return 'Please choose an AI provider.';
     }
+    if (genAiProvider === 'NONE') {
+      if (genBackend !== 'JAVA_SPRING_BOOT') {
+        return 'The None provider currently supports Java Spring Boot templates only.';
+      }
+      return null;
+    }
     if (!genApiKey) {
       return 'Please enter your AI API key.';
     }
@@ -199,12 +205,17 @@ export function ProjectsPage() {
               },
             }
           : {}),
-        aiConfig: {
-          provider: genAiProvider as GenerationAiProvider,
-          apiKey: genApiKey,
-          baseUrl: genBaseUrl.trim() || undefined,
-          model: genModel.trim(),
-        },
+        aiConfig: genAiProvider === 'NONE'
+          ? {
+              provider: genAiProvider as GenerationAiProvider,
+              model: 'template',
+            }
+          : {
+              provider: genAiProvider as GenerationAiProvider,
+              apiKey: genApiKey,
+              baseUrl: genBaseUrl.trim() || undefined,
+              model: genModel.trim(),
+            },
       });
       setCreatedGen({ id: created.id, name: created.name });
       // Secrets are single-use: clear them the moment the run is accepted.
@@ -454,6 +465,7 @@ export function ProjectsPage() {
                   <option value="">Select…</option>
                   <option value="OPENROUTER">OpenRouter</option>
                   <option value="CUSTOM">Custom</option>
+                  <option value="NONE">None — template</option>
                 </select>
               </div>
               <div>
@@ -464,9 +476,10 @@ export function ProjectsPage() {
                   aria-label="Quick AI model"
                   value={genModel}
                   onChange={(event) => setGenModel(event.target.value)}
-                  placeholder="e.g. openai/gpt-4o-mini"
+                  placeholder={genAiProvider === 'NONE' ? 'template (automatic)' : 'e.g. openai/gpt-4o-mini'}
                   maxLength={200}
                   autoComplete="off"
+                  disabled={genAiProvider === 'NONE'}
                   className={inputClass}
                 />
               </div>
@@ -479,9 +492,10 @@ export function ProjectsPage() {
                   type="password"
                   value={genApiKey}
                   onChange={(event) => setGenApiKey(event.target.value)}
-                  placeholder="Sent once — never stored"
+                  placeholder={genAiProvider === 'NONE' ? 'Not required' : 'Sent once — never stored'}
                   maxLength={2000}
                   autoComplete="off"
+                  disabled={genAiProvider === 'NONE'}
                   className={inputClass}
                 />
               </div>

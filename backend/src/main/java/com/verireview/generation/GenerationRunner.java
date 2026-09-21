@@ -144,8 +144,10 @@ public class GenerationRunner {
     }
     // Secrets live in memory for the entire generation lifecycle (including fix loops).
     // They are cleared only when the generation reaches a terminal state.
+    // NONE-provider runs carry no key by design and skip this gate.
     GenerationSecrets secrets = generations.peekSecrets(generationId);
-    if (secrets == null || secrets.aiApiKey() == null) {
+    boolean needsKey = snapshot.aiProvider() != GenerationAiProvider.NONE;
+    if (secrets == null || (needsKey && secrets.aiApiKey() == null)) {
       fail(generationId, snapshot.ownerId(),
           "Generation credentials are no longer available. Please create a new generation.");
       return;
@@ -174,7 +176,11 @@ public class GenerationRunner {
       // Build succeeded — run Verified Agent to evaluate evidence
       generations.markStatus(generationId, GenerationStatus.VERIFYING, null);
       UUID verificationRunId = generations.createVerificationRun(generationId, iteration, evidenceId);
-      runVerifying(generationId, snapshot, iteration, evidence, verificationRunId);
+      if (snapshot.aiProvider() == GenerationAiProvider.NONE) {
+        runDeterministicVerifying(generationId, snapshot, iteration, evidence, verificationRunId);
+      } else {
+        runVerifying(generationId, snapshot, iteration, evidence, verificationRunId);
+      }
 
       // VERIFIED → REVIEWING → REVIEWED
       Generation review = generations.findById(generationId);
@@ -236,14 +242,19 @@ public class GenerationRunner {
       GenerationService.GenerationSnapshot snapshot,
       GenerationSecrets secrets,
       int iteration) {
+    boolean template = snapshot.aiProvider() == GenerationAiProvider.NONE;
+    String promptVersion = template ? GenerationTemplates.TEMPLATE_VERSION : PROMPT_VERSION;
     String hash = GenerationService.inputHash(
         snapshot.requirement(), snapshot.backend().name(), snapshot.frontend().name(),
-        snapshot.database().name(), snapshot.aiModel(), PROMPT_VERSION, String.valueOf(iteration));
+        snapshot.database().name(), snapshot.aiModel(), promptVersion, String.valueOf(iteration));
     UUID executionId = generations.startAgentExecution(
-        generationId, AgentType.PLANNING, snapshot.aiModel(), PROMPT_VERSION, hash);
+        generationId, AgentType.PLANNING, snapshot.aiModel(), promptVersion, hash);
     long startedNanos = System.nanoTime();
     try {
-      AiGenerationPlanResult result = planFiles(snapshot, secrets);
+      AiGenerationPlanResult result = template
+          ? GenerationTemplates.plan(snapshot.id().toString(), snapshot.backend(),
+              snapshot.frontend(), snapshot.database())
+          : planFiles(snapshot, secrets);
       validatePlan(result);
       UUID planId = generations.savePlan(generationId, iteration, result);
       generations.finishAgentExecution(executionId, AgentExecutionStatus.COMPLETED,
@@ -267,15 +278,19 @@ public class GenerationRunner {
       GenerationSecrets secrets,
       int iteration,
       List<AiGenerationPlanResult.PlannedFile> plan) {
+    boolean template = snapshot.aiProvider() == GenerationAiProvider.NONE;
+    String promptVersion = template ? GenerationTemplates.TEMPLATE_VERSION : PROMPT_VERSION;
     String hash = GenerationService.inputHash(
         snapshot.requirement(), snapshot.backend().name(), snapshot.frontend().name(),
-        snapshot.database().name(), snapshot.aiModel(), PROMPT_VERSION,
+        snapshot.database().name(), snapshot.aiModel(), promptVersion,
         String.valueOf(iteration), String.valueOf(plan.size()));
     UUID executionId = generations.startAgentExecution(
-        generationId, AgentType.CODING, snapshot.aiModel(), PROMPT_VERSION, hash);
+        generationId, AgentType.CODING, snapshot.aiModel(), promptVersion, hash);
     long startedNanos = System.nanoTime();
     try {
-      List<AiGenerationFilesResult.GeneratedFile> generated = generateFiles(snapshot, secrets, plan);
+      List<AiGenerationFilesResult.GeneratedFile> generated = template
+          ? GenerationTemplates.files(snapshot.backend(), snapshot.frontend(), snapshot.database())
+          : generateFiles(snapshot, secrets, plan);
       List<ValidatedFile> validated = review(generated, secrets);
       Path workspace = writeWorkspace(generationId, iteration, validated);
       long totalChars = validated.stream().mapToLong(file -> file.content().length()).sum();
@@ -511,7 +526,11 @@ public class GenerationRunner {
    */
   private UUID runBuilding(UUID generationId,
       GenerationService.GenerationSnapshot snapshot, int iteration) {
-    String command = buildCommandForStack(snapshot.backend(), snapshot.frontend(), snapshot.database());
+    // Template workspaces are dependency-free: compile+check with the JDK
+    // already in the image (the mount is read-only, so objects go to /tmp).
+    String command = snapshot.aiProvider() == GenerationAiProvider.NONE
+        ? GenerationTemplates.BUILD_COMMAND
+        : buildCommandForStack(snapshot.backend(), snapshot.frontend(), snapshot.database());
     Path workspace = storage.generationWorkspaceDir(generationId, iteration);
     SandboxRunner.ExecutionResult result;
     try {
@@ -557,6 +576,46 @@ public class GenerationRunner {
     return generations.recordExecutionEvidence(generationId, iteration, command,
         result.exitCode(), result.durationMs(), stdout, stderr,
         buildStatus, testStatus, failureReason);
+  }
+
+  /**
+   * Deterministic verdict for NONE-provider runs: no LLM is available, so the
+   * verdict derives directly from the sandbox evidence (exit code 0 plus
+   * successful build and test statuses). Recorded as a generation-owned
+   * verification run with model {@code template}, exactly like AI verdicts.
+   */
+  private void runDeterministicVerifying(UUID generationId,
+      GenerationService.GenerationSnapshot snapshot, int iteration,
+      GenerationExecutionEvidence evidence, UUID verificationRunId) {
+    String hash = GenerationService.inputHash(
+        snapshot.id().toString(), String.valueOf(iteration), "template-verify",
+        String.valueOf(evidence.getExitCode()), String.valueOf(evidence.getBuildStatus()));
+    UUID executionId = generations.startAgentExecution(
+        generationId, AgentType.VERIFIED, "template", GenerationTemplates.TEMPLATE_VERSION, hash);
+    long startedNanos = System.nanoTime();
+    try {
+      boolean green = evidence.getExitCode() == 0
+          && evidence.getBuildStatus() == GenerationExecutionEvidence.BuildStatus.SUCCESS
+          && evidence.getTestStatus() == GenerationExecutionEvidence.TestStatus.SUCCESS;
+      VerificationVerdict verdict =
+          green ? VerificationVerdict.VERIFIED : VerificationVerdict.REJECTED;
+      generations.updateVerificationRun(verificationRunId,
+          1, green ? 1 : 0, green ? 0 : 1, 0,
+          verdict, "template-deterministic", millisSince(startedNanos));
+      generations.finishAgentExecution(executionId, AgentExecutionStatus.COMPLETED,
+          null, millisSince(startedNanos), "verification:" + verificationRunId);
+      if (green) {
+        generations.markStatus(generationId, GenerationStatus.VERIFIED, null);
+      } else {
+        fail(generationId, snapshot.ownerId(),
+            "Verification failed: template checks did not pass");
+      }
+    } catch (Exception e) {
+      generations.finishAgentExecution(executionId, AgentExecutionStatus.FAILED,
+          truncate("Verification failed: " + e.getMessage(), 2000),
+          millisSince(startedNanos), null);
+      fail(generationId, snapshot.ownerId(), "Verification error: " + e.getMessage());
+    }
   }
 
   /**

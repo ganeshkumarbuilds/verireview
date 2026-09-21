@@ -64,4 +64,37 @@ describe('ProjectsPage', () => {
     // Single-use secrets are cleared from the form after submit.
     expect(screen.queryByDisplayValue('sk-live-key')).not.toBeInTheDocument();
   });
+
+  it('starts a NONE template generation without an API key', async () => {
+    const calls: { url: string; method: string; body: string }[] = [];
+    renderProjects((async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      calls.push({ url: target, method: init?.method ?? 'GET', body: String(init?.body ?? '') });
+      if (target.endsWith('/generations') && (init?.method ?? 'GET') === 'POST') {
+        return new Response(JSON.stringify({ id: 'g2', name: 'plain-java' }), { status: 201 });
+      }
+      return new Response(pageOf([]), { status: 200 });
+    }) as typeof fetch);
+    await waitFor(() => expect(screen.getByText(/No projects yet/)).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Quick project name'), { target: { value: 'plain-java' } });
+    fireEvent.change(screen.getByLabelText('Quick backend stack'), { target: { value: 'JAVA_SPRING_BOOT' } });
+    fireEvent.change(screen.getByLabelText('Quick frontend stack'), { target: { value: 'NONE' } });
+    fireEvent.change(screen.getByLabelText('Quick database'), { target: { value: 'NONE' } });
+    fireEvent.change(screen.getByLabelText('Quick project task'), {
+      target: { value: 'A minimal Java starter with buildable checks and no AI key.' },
+    });
+    fireEvent.change(screen.getByLabelText('Quick AI provider'), { target: { value: 'NONE' } });
+    expect(screen.getByLabelText('Quick AI API key')).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
+
+    await waitFor(() => expect(screen.getByText(/Generation started for/)).toBeInTheDocument());
+    expect(screen.getByRole('link', { name: 'View generation progress' })).toHaveAttribute(
+      'href',
+      '/generate?genId=g2',
+    );
+    const post = calls.find((call) => call.method === 'POST' && call.url.endsWith('/generations'));
+    expect(post?.body).toContain('"provider":"NONE"');
+    expect(post?.body).not.toContain('apiKey');
+  });
 });

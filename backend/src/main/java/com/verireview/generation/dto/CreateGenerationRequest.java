@@ -47,6 +47,6 @@ public record CreateGenerationRequest(
       @NotNull GenerationAiProvider provider,
       @Size(max = 2000) String apiKey,
       @Size(max = 500) String baseUrl,
-      @NotBlank @Size(max = 200) String model) {
+      @Size(max = 200) String model) {
   }
 }

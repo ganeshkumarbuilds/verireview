@@ -78,7 +78,8 @@ public class ReviewAiClient {
     }
     if (response.statusCode() != 200) {
       throw new AiServiceException(AiServiceException.Kind.BAD_STATUS,
-          "AI service answered HTTP " + response.statusCode());
+          "AI service answered HTTP " + response.statusCode()
+              + truncateBody(response.body()));
     }
     return parse(response.body(), request.reviewId());
   }
@@ -186,6 +187,19 @@ public class ReviewAiClient {
       return null;
     }
     return node.asText();
+  }
+
+  /**
+   * Appends the service's own error detail so a rejection names the cause
+   * instead of a bare status code. Responses carry results, never secrets —
+   * still, cap the length.
+   */
+  private static String truncateBody(String body) {
+    if (body == null || body.isBlank()) {
+      return "";
+    }
+    String detail = body.length() <= 2000 ? body : body.substring(0, 2000) + "…[truncated]";
+    return ": " + detail;
   }
 
   private static String textOrEmpty(JsonNode node) {

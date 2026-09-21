@@ -55,6 +55,7 @@ const DATABASES: { value: GenerationDatabase; label: string; port: string }[] = 
 const AI_PROVIDERS: { value: GenerationAiProvider; label: string; hint: string }[] = [
   { value: 'OPENROUTER', label: 'OpenRouter', hint: 'OpenRouter chat-completions endpoint.' },
   { value: 'CUSTOM', label: 'Custom (OpenAI-compatible)', hint: 'Any OpenAI-compatible base URL.' },
+  { value: 'NONE', label: 'None — template starter', hint: 'No key needed. Builds a minimal Java starter from verified templates.' },
 ];
 
 const PIPELINE_STAGES = [
@@ -200,6 +201,12 @@ export function GeneratePage() {
       if (!aiProvider) {
         return 'Please choose an AI provider.';
       }
+      if (aiProvider === 'NONE') {
+        if (backend !== 'JAVA_SPRING_BOOT') {
+          return 'The None provider currently supports Java Spring Boot templates only.';
+        }
+        return null;
+      }
       if (!aiKey) {
         return 'Please enter your API key.';
       }
@@ -247,12 +254,14 @@ export function GeneratePage() {
       backend: backend as GenerationBackend,
       frontend: frontend as GenerationFrontend,
       database: database as GenerationDatabase,
-      aiConfig: {
-        provider: aiProvider as GenerationAiProvider,
-        apiKey: forDraft ? '' : aiKey,
-        baseUrl: aiBaseUrl.trim() || undefined,
-        model: aiModel.trim(),
-      },
+      aiConfig: aiProvider === 'NONE'
+        ? { provider: aiProvider as GenerationAiProvider, model: 'template' }
+        : {
+            provider: aiProvider as GenerationAiProvider,
+            apiKey: forDraft ? '' : aiKey,
+            baseUrl: aiBaseUrl.trim() || undefined,
+            model: aiModel.trim(),
+          },
     };
     if (forDraft) {
       input.draft = true;
@@ -831,6 +840,7 @@ export function GeneratePage() {
                   placeholder="Never stored — used once for this run"
                   maxLength={2000}
                   autoComplete="off"
+                  disabled={aiProvider === 'NONE'}
                   className={inputClass}
                 />
               </div>
@@ -842,13 +852,20 @@ export function GeneratePage() {
                   aria-label="AI model"
                   value={aiModel}
                   onChange={(event) => setAiModel(event.target.value)}
-                  placeholder="e.g. openai/gpt-4o-mini"
+                  placeholder={aiProvider === 'NONE' ? 'template (automatic)' : 'e.g. openai/gpt-4o-mini'}
                   maxLength={200}
                   autoComplete="off"
+                  disabled={aiProvider === 'NONE'}
                   className={inputClass}
                 />
               </div>
             </div>
+            {aiProvider === 'NONE' && (
+              <p className="rounded-lg border border-indigo-200 bg-indigo-50/60 px-3 py-2 text-sm leading-relaxed text-indigo-900">
+                No key needed — the backend builds a minimal Java starter from verified
+                templates and runs it through the same build, verify, and review gates.
+              </p>
+            )}
             {aiProvider === 'CUSTOM' && (
               <div>
                 <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
@@ -926,11 +943,11 @@ export function GeneratePage() {
                 AI configuration
               </dt>
               <dd className="mt-1 text-slate-700">
-                {aiProvider === 'OPENROUTER' ? 'OpenRouter' : 'Custom'} · {aiModel.trim()}
-                {aiBaseUrl.trim() ? ` · ${aiBaseUrl.trim()}` : ''}
+                {aiProvider === 'OPENROUTER' ? 'OpenRouter' : aiProvider === 'CUSTOM' ? 'Custom' : 'None — template starter'} · {aiProvider === 'NONE' ? 'template' : aiModel.trim()}
+                {aiProvider !== 'NONE' && aiBaseUrl.trim() ? ` · ${aiBaseUrl.trim()}` : ''}
               </dd>
               <dd className="mt-1 font-mono text-xs text-slate-500">
-                api key: {MASKED_SECRET}
+                api key: {aiProvider === 'NONE' ? 'not required' : MASKED_SECRET}
               </dd>
             </div>
           </dl>
@@ -1257,32 +1274,16 @@ export function GeneratePage() {
                 <div className="rounded-xl border border-amber-100 bg-amber-50/40 p-4">
                   <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Findings Summary</h4>
                   <p className="mb-2 text-xs text-slate-500">
-                    Found {generation.workflowStats.totalFindings} · Fixed {generation.workflowStats.fixedFindings} · Open {generation.workflowStats.openFindings} — counts come from the backend review, never invented.
+                    Issues found {generation.workflowStats.totalFindings} · Issues fixed {generation.workflowStats.fixedFindings} — counts come from the backend review, never invented.
                   </p>
-                  <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                  <div className="grid gap-2 sm:grid-cols-2">
                     <div className="rounded-lg bg-white p-2 text-center">
                       <p className="text-2xl font-bold text-slate-800">{generation.workflowStats.totalFindings}</p>
-                      <p className="text-xs text-slate-500">Total</p>
-                    </div>
-                    <div className="rounded-lg bg-white p-2 text-center">
-                      <p className="text-2xl font-bold text-red-600">{generation.workflowStats.bugCount}</p>
-                      <p className="text-xs text-slate-500">Bugs</p>
-                    </div>
-                    <div className="rounded-lg bg-white p-2 text-center">
-                      <p className="text-2xl font-bold text-amber-600">{generation.workflowStats.issueCount}</p>
-                      <p className="text-xs text-slate-500">Issues</p>
-                    </div>
-                    <div className="rounded-lg bg-white p-2 text-center">
-                      <p className="text-2xl font-bold text-blue-600">{generation.workflowStats.errorCount}</p>
-                      <p className="text-xs text-slate-500">Errors</p>
+                      <p className="text-xs text-slate-500">Issues found</p>
                     </div>
                     <div className="rounded-lg bg-white p-2 text-center">
                       <p className="text-2xl font-bold text-emerald-600">{generation.workflowStats.fixedFindings}</p>
-                      <p className="text-xs text-slate-500">Fixed</p>
-                    </div>
-                    <div className="rounded-lg bg-white p-2 text-center">
-                      <p className="text-2xl font-bold text-red-600">{generation.workflowStats.openFindings}</p>
-                      <p className="text-xs text-slate-500">Open</p>
+                      <p className="text-xs text-slate-500">Issues fixed</p>
                     </div>
                   </div>
                 </div>

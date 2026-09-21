@@ -390,8 +390,100 @@ class GenerationTest extends AbstractPersistenceTest {
   }
 
   @Test
-  void bulkFixRequestsRequireReviewedStatusAndOwnership() throws Exception {
-    String ownerToken = access(register());
+  void noneProviderBuildsTemplateWithoutKeyThroughDownload() throws Exception {
+    String token = access(register());
+    String name = "gen-" + UUID.randomUUID();
+    MvcResult created = mockMvc.perform(post("/api/v1/generations")
+            .header("Authorization", "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(noneBody(name)))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.status").value("QUEUED"))
+        .andExpect(jsonPath("$.aiConfig.provider").value("NONE"))
+        .andExpect(jsonPath("$.aiConfig.model").value("template"))
+        .andExpect(jsonPath("$.aiConfig.keyConfigured").value(false))
+        .andReturn();
+    String id = objects.readTree(created.getResponse().getContentAsString()).get("id").asText();
+
+    // No AI key, no mocks: template plan/files, real sandbox javac build,
+    // deterministic verify, deterministic review echo.
+    JsonNode settled = pollUntilSettled(token, id);
+    assertThat(settled.get("status").asText()).isEqualTo("REVIEWED");
+    assertThat(settled.get("workflowStats").get("totalFindings").asInt()).isEqualTo(0);
+    assertThat(settled.get("workflowStats").get("openFindings").asInt()).isEqualTo(0);
+    assertThat(settled.get("downloadReady").asBoolean()).isTrue();
+
+    Path appJava = storage
+        .generationWorkspaceDir(UUID.fromString(id), 1)
+        .resolve("src/main/java/app/App.java");
+    assertThat(Files.readString(appJava)).contains("package app;");
+
+    // Zero blocking findings + verified artifact ⇒ downloadable ZIP.
+    MvcResult download = mockMvc.perform(get("/api/v1/generations/" + id + "/download")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andReturn();
+    assertThat(download.getResponse().getContentType()).contains("octet-stream");
+    byte[] zip = download.getResponse().getContentAsByteArray();
+    assertThat(zip.length).isGreaterThan(0);
+    assertThat(zip[0]).isEqualTo((byte) 'P');
+    assertThat(zip[1]).isEqualTo((byte) 'K');
+
+    // Hermetic: drop the workspace only after the download consumed it.
+    storage.deleteQuietly(
+        storage.generationWorkspaceDir(UUID.fromString(id), 1));
+  }
+
+  @Test
+  void noneProviderRejectsKeysAndNonJavaStacks() throws Exception {
+    String token = access(register());
+    // API key must be omitted for NONE.
+    mockMvc.perform(post("/api/v1/generations")
+            .header("Authorization", "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(noneBody("gen-" + UUID.randomUUID()).replace(
+                "\"aiConfig\":{\"provider\":\"NONE\"}",
+                "\"aiConfig\":{\"provider\":\"NONE\",\"apiKey\":\"sk-test-key\"}")))
+        .andExpect(status().isBadRequest());
+    // Templates currently cover Java starters only.
+    mockMvc.perform(post("/api/v1/generations")
+            .header("Authorization", "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(noneBody("gen-" + UUID.randomUUID()).replace(
+                "\"backend\":\"JAVA_SPRING_BOOT\"", "\"backend\":\"PYTHON_FASTAPI\"")))
+        .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void noneDraftStartsWithoutKey() throws Exception {
+    String token = access(register());
+    String id = createGeneration(token, noneBody("gen-" + UUID.randomUUID())
+        .replace("\"aiConfig\":{\"provider\":\"NONE\"}",
+            "\"aiConfig\":{\"provider\":\"NONE\"},\"draft\":true"));
+
+    mockMvc.perform(post("/api/v1/generations/" + id + "/start")
+            .header("Authorization", "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{}"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.status").value("READY"));
+
+    JsonNode terminal = pollUntilSettled(token, id);
+    assertThat(terminal.get("status").asText()).isEqualTo("REVIEWED");
+    storage.deleteQuietly(
+        storage.generationWorkspaceDir(UUID.fromString(id), 1));
+  }
+
+  private String noneBody(String name) {
+    return "{\"name\":\"" + name + "\","
+        + "\"requirement\":\"A minimal todo API with tests\","
+        + "\"description\":\"demo\","
+        + "\"backend\":\"JAVA_SPRING_BOOT\",\"frontend\":\"NONE\",\"database\":\"NONE\","
+        + "\"aiConfig\":{\"provider\":\"NONE\"}}";
+  }
+
+  @Test
+  void bulkFixRequestsRequireReviewedStatusAndOwnership() throws Exception {    String ownerToken = access(register());
     String draftId = createGeneration(ownerToken, draftBody("gen-" + UUID.randomUUID()));
 
     // Drafts are not fixable: the fix loop starts from REVIEWED.
