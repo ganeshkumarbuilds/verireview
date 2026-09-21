@@ -85,6 +85,9 @@ import tools.jackson.databind.ObjectMapper;
  * Drafts ({@code DRAFT}) persist configuration only and hold no secrets at
  * all — secure secret storage is pending, so starting a draft always
  * requires re-supplying them.
+ *
+ * <p>The database password is optional: a blank password is accepted and
+ * passed to the run as an empty string.
  */
 @Service
 public class GenerationService {
@@ -216,8 +219,11 @@ public class GenerationService {
 
     if (!draft) {
       // In-memory only: never persisted, never logged, never returned.
+      // The database password is optional: a blank value becomes "".
       String dbPassword = request.database() != GenerationDatabase.NONE
-          ? request.databaseConfig().password() : null;
+          ? (request.databaseConfig().password() == null
+              ? "" : request.databaseConfig().password())
+          : null;
       secrets.put(generation.getId(),
           new GenerationSecrets(dbPassword, request.aiConfig().apiKey()));
     }
@@ -245,9 +251,8 @@ public class GenerationService {
     boolean wantsDb = generation.getDatabaseType() != GenerationDatabase.NONE;
     String password = request == null ? null : request.password();
     String apiKey = request == null ? null : request.apiKey();
-    if (wantsDb && (password == null || password.isBlank())) {
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST, "Database password is required to start");
+    if (wantsDb && password == null) {
+      password = "";
     }
     if (generation.getAiProvider() != GenerationAiProvider.NONE
         && (apiKey == null || apiKey.isBlank())) {
@@ -447,12 +452,7 @@ public class GenerationService {
   }
 
   private void requireSecrets(CreateGenerationRequest request) {
-    boolean wantsDb = request.database() != GenerationDatabase.NONE;
-    if (wantsDb && (request.databaseConfig().password() == null
-        || request.databaseConfig().password().isBlank())) {
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST, "Database password is required");
-    }
+    // The database password is optional: a blank password is passed through.
     if (request.aiConfig().provider() != GenerationAiProvider.NONE
         && (request.aiConfig().apiKey() == null || request.aiConfig().apiKey().isBlank())) {
       throw new ResponseStatusException(
@@ -879,6 +879,69 @@ public class GenerationService {
       findings.saveAll(rows);
     }
     return rows.size();
+  }
+
+  /**
+   * Computes the dedup keys the Review Agent reports in a fresh scan,
+   * without persisting anything. Used after a rebuild's re-review to tell
+   * which previously flagged findings no longer reproduce. Mirrors the same
+   * validation and key derivation as {@link #persistGenerationReviewFindings}
+   * so a key computed here always matches the one stored on a Finding row.
+   */
+  public Set<String> computeReportedDedupKeys(AiReviewResult result) {
+    Set<String> keys = new LinkedHashSet<>();
+    for (AiProposedFinding item : result.findings()) {
+      if (!"AI".equalsIgnoreCase(item.source()) && !"VERIFIED".equalsIgnoreCase(item.source())) {
+        continue;
+      }
+      FindingCategory category;
+      FindingSeverity severity;
+      try {
+        category = FindingCategory.valueOf(item.category().trim().toUpperCase());
+        severity = FindingSeverity.valueOf(item.severity().trim().toUpperCase());
+      } catch (Exception e) {
+        continue;
+      }
+      if (item.title() == null || item.title().isBlank()) {
+        continue;
+      }
+      String title = trim(item.title(), 500);
+      String filePath = trim(item.filePath(), 1000);
+      Integer lineStart = nonNegative(item.lineStart());
+      keys.add(Fingerprint.of("review-agent", title, filePath, lineStart, item.description()));
+    }
+    return keys;
+  }
+
+  /**
+   * Closes the loop a rebuild+re-review starts. Any Finding in this review
+   * that has an active fix request (FIX_REQUESTED or FIX_PROPOSED) and whose
+   * dedup key does NOT appear in the fresh scan is verified fixed — the
+   * rebuild and re-review themselves are the verification, not an AI claim.
+   * Its open FixRequest(s) move to COMPLETED. A Finding whose key still
+   * appears in the fresh scan is left untouched for another fix round.
+   *
+   * @return number of findings marked VERIFIED_FIXED
+   */
+  @Transactional
+  public int resolveFixedFindings(UUID reviewId, Set<String> currentDedupKeys) {
+    List<Finding> candidates = findings.findByReviewId(reviewId).stream()
+        .filter(f -> f.getStatus() == FindingStatus.FIX_REQUESTED
+            || f.getStatus() == FindingStatus.FIX_PROPOSED)
+        .toList();
+    int resolved = 0;
+    for (Finding finding : candidates) {
+      if (finding.getDedupKey() != null && currentDedupKeys.contains(finding.getDedupKey())) {
+        continue; // still reproduces in the fresh scan — not fixed
+      }
+      finding.setStatus(FindingStatus.VERIFIED_FIXED);
+      resolved++;
+      for (FixRequest fr : fixRequests.findByFindingIdAndStatusIn(
+          finding.getId(), List.of(FixRequestStatus.REQUESTED, FixRequestStatus.IN_PROGRESS))) {
+        fr.setStatus(FixRequestStatus.COMPLETED);
+      }
+    }
+    return resolved;
   }
 
   /**

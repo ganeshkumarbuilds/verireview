@@ -98,6 +98,8 @@ public class GenerationAiClient {
     final String body;
     try {
       body = objects.writeValueAsString(root);
+        System.err.println("POSTING BODY: " + body);   // ADD THIS LINE
+
     } catch (Exception e) {
       throw new IllegalStateException("Could not encode AI generation request", e);
     }

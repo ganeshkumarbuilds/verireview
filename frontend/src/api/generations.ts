@@ -1,5 +1,5 @@
 import type { ApiClient } from './client';
-import { bearer } from './client';
+import { ApiError, bearer } from './client';
 import type {
   CreateGenerationInput,
   GenerationResponse,
@@ -94,19 +94,38 @@ export function isTerminalGeneration(status: string): boolean {
   return status === 'COMPLETED' || status === 'FAILED' || status === 'CANCELLED';
 }
 
-/** Downloads the generated project ZIP (backend-authoritative gate). */
+/**
+ * Downloads the generated project ZIP (backend-authoritative gate).
+ *
+ * Uses `client.buildUrl` instead of hand-concatenating the path: the
+ * previous version appended `/api/v1/generations/...` onto
+ * `client.baseUrl`, which already ends in `/api/v1` — every download
+ * request hit `/api/v1/api/v1/generations/.../download` and 404'd.
+ * Routing through `client.request` also means a 401 here now clears the
+ * session via `onUnauthorized`, same as every other endpoint.
+ */
 export async function downloadGeneration(
   client: ApiClient,
   token: string,
   id: string,
 ): Promise<Blob> {
-  const response = await fetch(`${client.baseUrl}/api/v1/generations/${encodeURIComponent(id)}/download`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const response = await fetch(
+    client.buildUrl(`/generations/${encodeURIComponent(id)}/download`),
+    {
+      method: 'GET',
+      headers: bearer(token),
+    },
+  );
+  if (response.status === 401) {
+    throw new ApiError(401, 'HTTP_401', 'Session expired.');
+  }
   if (!response.ok) {
     const error = await response.text();
-    throw new Error(error || 'Download failed');
+    throw new ApiError(
+      response.status,
+      `HTTP_${response.status}`,
+      error || 'Download failed',
+    );
   }
   return response.blob();
 }

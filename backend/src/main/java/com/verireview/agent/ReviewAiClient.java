@@ -28,6 +28,11 @@ import tools.jackson.databind.ObjectMapper;
  * §4 contract). JDK {@code HttpClient} only — no new dependencies.
  * Bounded by connect + request timeouts; every failure mode surfaces as
  * {@link AiServiceException} so callers degrade without blocking forever.
+ *
+ * <p>The client is pinned to HTTP/1.1. The JDK client otherwise tries an
+ * h2c upgrade on plain-HTTP URLs, which uvicorn rejects ("Unsupported
+ * upgrade request" / "Invalid HTTP request received"), and the request
+ * body is lost — surfacing in FastAPI as a 422 "Field required" on body.
  */
 @Component
 public class ReviewAiClient {
@@ -42,7 +47,10 @@ public class ReviewAiClient {
   @Autowired
   public ReviewAiClient(AiServiceProperties props, ObjectMapper objects) {
     this(props, objects,
-        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build());
+        HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .connectTimeout(Duration.ofSeconds(10))
+            .build());
   }
 
   ReviewAiClient(AiServiceProperties props, ObjectMapper objects, HttpClient http) {
@@ -56,7 +64,9 @@ public class ReviewAiClient {
     String body = encode(request);
     HttpRequest.Builder builder = HttpRequest.newBuilder()
         .uri(URI.create(props.url() + "/internal/review"))
+        .version(HttpClient.Version.HTTP_1_1)
         .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
         .timeout(Duration.ofSeconds(props.timeoutSeconds()))
         .POST(HttpRequest.BodyPublishers.ofString(body));
     if (!props.secret().isBlank()) {
@@ -77,6 +87,7 @@ public class ReviewAiClient {
           "AI service call interrupted", e);
     }
     if (response.statusCode() != 200) {
+      log.warn("AI review call failed: HTTP {}", response.statusCode());
       throw new AiServiceException(AiServiceException.Kind.BAD_STATUS,
           "AI service answered HTTP " + response.statusCode()
               + truncateBody(response.body()));

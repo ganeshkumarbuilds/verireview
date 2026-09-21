@@ -176,3 +176,102 @@ export function EmptyState({
     </div>
   );
 }
+
+/**
+ * Animation utilities for smooth transitions and stage animations.
+ * These work with Tailwind's existing transition utilities.
+ */
+export const animationStyles = {
+  /** Smooth pulse for active states */
+  pulse: 'animate-pulse',
+  /** Gentle spin for loading indicators */
+  spin: 'animate-spin',
+  /** Fade in from 0 to 1 opacity */
+  fadeIn: 'animate-in fade-in duration-300',
+  /** Fade out from 1 to 0 opacity */
+  fadeOut: 'animate-out fade-out duration-200',
+  /** Slide in from left */
+  slideInLeft: 'animate-in slide-in-from-left duration-300',
+  /** Slide in from right */
+  slideInRight: 'animate-in slide-in-from-right duration-300',
+  /** Slide in from top */
+  slideInTop: 'animate-in slide-in-from-top duration-300',
+  /** Slide in from bottom */
+  slideInBottom: 'animate-in slide-in-from-bottom duration-300',
+  /** Scale up from 0.95 to 1 */
+  scaleIn: 'animate-in zoom-in-95 duration-200',
+  /** Scale down from 1 to 0.95 */
+  scaleOut: 'animate-out zoom-out-95 duration-150',
+} as const;
+
+/**
+ * Stage transition class names for pipeline visualization.
+ * Usage: combine base classes with state-specific classes.
+ */
+export const pipelineStageClasses = {
+  base: 'relative flex gap-3 pb-4 last:pb-0 transition-all duration-500 ease-out',
+  connector: 'absolute left-[13px] top-7 h-[calc(100%-1.5rem)] w-px transition-colors duration-500',
+  icon: {
+    base: 'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold transition-all duration-300 ease-out',
+    waiting: 'bg-white text-slate-400 ring-1 ring-inset ring-slate-200',
+    active: 'bg-indigo-600 text-white ring-2 ring-indigo-300 shadow-lg shadow-indigo-600/30 animate-pulse',
+    completed: 'bg-emerald-600 text-white ring-2 ring-emerald-300',
+    failed: 'bg-red-600 text-white ring-2 ring-red-300 animate-bounce',
+  },
+  label: {
+    base: 'min-w-0 flex-1 pt-0.5 transition-opacity duration-300',
+    active: 'opacity-100',
+    completed: 'opacity-100',
+    waiting: 'opacity-70',
+  },
+} as const;
+
+/**
+ * Returns computed className for a pipeline stage icon based on state.
+ */
+export function getPipelineStageIconClass(state: 'waiting' | 'active' | 'completed' | 'failed'): string {
+  const base = pipelineStageClasses.icon.base;
+  switch (state) {
+    case 'active':
+      return `${base} ${pipelineStageClasses.icon.active}`;
+    case 'completed':
+      return `${base} ${pipelineStageClasses.icon.completed}`;
+    case 'failed':
+      return `${base} ${pipelineStageClasses.icon.failed}`;
+    default:
+      return `${base} ${pipelineStageClasses.icon.waiting}`;
+  }
+}
+
+/**
+ * Returns computed className for a pipeline stage label based on state.
+ */
+export function getPipelineStageLabelClass(state: 'waiting' | 'active' | 'completed' | 'failed'): string {
+  const base = pipelineStageClasses.label.base;
+  switch (state) {
+    case 'active':
+      return `${base} ${pipelineStageClasses.label.active}`;
+    case 'completed':
+      return `${base} ${pipelineStageClasses.label.completed}`;
+    case 'failed':
+      return `${base} opacity-100`;
+    default:
+      return `${base} ${pipelineStageClasses.label.waiting}`;
+  }
+}
+
+/**
+ * Returns computed className for a pipeline stage connector line.
+ */
+export function getPipelineConnectorClass(state: 'waiting' | 'active' | 'completed' | 'failed'): string {
+  const base = pipelineStageClasses.connector;
+  switch (state) {
+    case 'active':
+    case 'completed':
+      return `${base} bg-emerald-200`;
+    case 'failed':
+      return `${base} bg-red-200`;
+    default:
+      return `${base} bg-indigo-100`;
+  }
+}

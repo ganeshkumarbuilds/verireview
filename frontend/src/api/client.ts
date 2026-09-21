@@ -25,6 +25,13 @@ export class ApiError extends Error {
 export interface ApiClientOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  /**
+   * Called once whenever any request comes back 401. AuthContext registers
+   * this to clear the stored session and redirect to /login — so an expired
+   * or invalid token fails the same way everywhere instead of surfacing as
+   * a raw "Request failed with status 401." on whichever screen triggered it.
+   */
+  onUnauthorized?: () => void;
 }
 
 const DEFAULT_BASE_URL = 'http://localhost:8080/api/v1';
@@ -32,11 +39,13 @@ const DEFAULT_BASE_URL = 'http://localhost:8080/api/v1';
 export class ApiClient {
   readonly baseUrl: string;
   private readonly fetchImpl?: typeof fetch;
+  private readonly onUnauthorized?: () => void;
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
     // Resolved per call (not in the constructor) so tests can stub fetch.
     this.fetchImpl = options.fetchImpl;
+    this.onUnauthorized = options.onUnauthorized;
   }
 
   /** Joins a resource path onto the configured API base URL. */
@@ -53,6 +62,9 @@ export class ApiClient {
     }
     const fetchImpl = this.fetchImpl ?? fetch;
     const response = await fetchImpl(this.buildUrl(path), { ...init, headers });
+    if (response.status === 401) {
+      this.onUnauthorized?.();
+    }
     return parseBody<T>(response);
   }
 }

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams, Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import {
   createGeneration,
@@ -30,33 +30,34 @@ import {
   selectClass,
 } from '../components/ui';
 import { WorkspaceCrumb } from '../components/workflow';
+import {
+  getPipelineStageIconClass,
+  getPipelineStageLabelClass,
+} from '../components/ui';
 
 const POLL_MS = 3000;
-const MASKED_SECRET = '••••••••';
+const DEFAULT_MODEL = 'openai/gpt-4o-mini';
 
-const BACKENDS: { value: GenerationBackend; label: string; tooling: string }[] = [
-  { value: 'JAVA_SPRING_BOOT', label: 'Java Spring Boot', tooling: 'Maven build, Spring Boot layout' },
-  { value: 'PYTHON_FASTAPI', label: 'Python FastAPI', tooling: 'pip requirements, uvicorn entrypoint' },
-  { value: 'NODEJS', label: 'Node.js', tooling: 'npm package.json, node entrypoint' },
-];
+const BACKEND_LABELS: Record<GenerationBackend, string> = {
+  JAVA_SPRING_BOOT: 'Java Spring Boot',
+  PYTHON_FASTAPI: 'Python FastAPI',
+  NODEJS: 'Node.js',
+};
 
-const FRONTENDS: { value: GenerationFrontend; label: string }[] = [
-  { value: 'REACT_TYPESCRIPT', label: 'React + TypeScript' },
-  { value: 'NONE', label: 'None' },
-];
+const FRONTEND_LABELS: Record<GenerationFrontend, string> = {
+  REACT_TYPESCRIPT: 'React + TypeScript',
+  NONE: 'No frontend',
+};
 
-const DATABASES: { value: GenerationDatabase; label: string; port: string }[] = [
-  { value: 'POSTGRESQL', label: 'PostgreSQL', port: '5432' },
-  { value: 'MYSQL', label: 'MySQL', port: '3306' },
-  { value: 'MONGODB', label: 'MongoDB', port: '27017' },
-  { value: 'NONE', label: 'None', port: '' },
-];
-
-const AI_PROVIDERS: { value: GenerationAiProvider; label: string; hint: string }[] = [
-  { value: 'OPENROUTER', label: 'OpenRouter', hint: 'OpenRouter chat-completions endpoint.' },
-  { value: 'CUSTOM', label: 'Custom (OpenAI-compatible)', hint: 'Any OpenAI-compatible base URL.' },
-  { value: 'NONE', label: 'None — template starter', hint: 'No key needed. Builds a minimal Java starter from verified templates.' },
-];
+const DATABASE_INFO: Record<
+  GenerationDatabase,
+  { label: string; port: string; user: string }
+> = {
+  POSTGRESQL: { label: 'PostgreSQL', port: '5432', user: 'postgres' },
+  MYSQL: { label: 'MySQL', port: '3306', user: 'root' },
+  MONGODB: { label: 'MongoDB', port: '27017', user: 'admin' },
+  NONE: { label: 'No database', port: '', user: '' },
+};
 
 const PIPELINE_STAGES = [
   { key: 'planning', label: 'Planner Agent', statuses: ['PLANNING'] },
@@ -66,13 +67,63 @@ const PIPELINE_STAGES = [
   { key: 'review', label: 'Review Agent', statuses: ['REVIEWING', 'REVIEWED'] },
 ];
 
+const STAGE_NUMBERS = ['①', '②', '③', '④', '⑤'];
+
 const STATUS_ORDER = [
   'QUEUED', 'PLANNING', 'CODING', 'BUILDING', 'TESTING',
   'VERIFYING', 'VERIFIED', 'REVIEWING', 'REVIEWED', 'COMPLETED',
 ];
 
-/** Fixed four-step wizard: Requirement → Stack → AI configuration → Review. */
-const STEPS = ['Requirement', 'Stack', 'AI configuration', 'Review'];
+const PLACEHOLDER =
+  'Explain your idea along with the tech stack. Example: "A task tracker where users sign up, create projects and assign tasks. Use React + TypeScript for the frontend, Spring Boot for the backend and PostgreSQL for the database."';
+
+/**
+ * The user never picks the stack. It is read from the description; when the
+ * description does not name a technology a sensible default is used. The
+ * detected stack is shown live under the textarea so nothing is hidden.
+ */
+function detectStack(text: string): {
+  backend: GenerationBackend;
+  frontend: GenerationFrontend;
+  database: GenerationDatabase;
+} {
+  const t = text.toLowerCase();
+
+  let backend: GenerationBackend = 'JAVA_SPRING_BOOT';
+  if (/fastapi|python|django|flask/.test(t)) {
+    backend = 'PYTHON_FASTAPI';
+  } else if (/node|express|nestjs|nest\.js/.test(t)) {
+    backend = 'NODEJS';
+  }
+
+  let frontend: GenerationFrontend = 'REACT_TYPESCRIPT';
+  if (/(no|without)\s+(a\s+)?(frontend|front-end|ui)|api[\s-]only|backend[\s-]only|rest api only/.test(t)) {
+    frontend = 'NONE';
+  }
+
+  let database: GenerationDatabase = 'NONE';
+  if (/(no|without)\s+(a\s+)?(database|db)|in-memory/.test(t)) {
+    database = 'NONE';
+  } else if (/postgres/.test(t)) {
+    database = 'POSTGRESQL';
+  } else if (/mysql|mariadb/.test(t)) {
+    database = 'MYSQL';
+  } else if (/mongo/.test(t)) {
+    database = 'MONGODB';
+  } else if (/database|\bdb\b|sql|persist|store data|crud/.test(t)) {
+    database = 'POSTGRESQL';
+  }
+
+  return { backend, frontend, database };
+}
+
+function slugify(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return slug || 'app_db';
+}
 
 function statusTone(status: string): 'gray' | 'blue' | 'green' | 'red' {
   switch (status) {
@@ -87,51 +138,58 @@ function statusTone(status: string): 'gray' | 'blue' | 'green' | 'red' {
   }
 }
 
-function backendLabel(value: string): string {
-  return BACKENDS.find((b) => b.value === value)?.label ?? value;
+function Chip({ children }: { children: string }) {
+  return (
+    <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700 ring-1 ring-inset ring-indigo-600/20">
+      {children}
+    </span>
+  );
 }
 
-function databaseLabel(value: string): string {
-  return DATABASES.find((d) => d.value === value)?.label ?? value;
+function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'slate' | 'emerald' | 'amber';
+}) {
+  const color =
+    tone === 'emerald' ? 'text-emerald-600' : tone === 'amber' ? 'text-amber-600' : 'text-slate-800';
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4 text-center shadow-sm">
+      <p className={`text-3xl font-bold tabular-nums ${color}`}>{value}</p>
+      <p className="mt-1 text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+    </div>
+  );
 }
 
 /**
- * Generate Project wizard: Requirement → Stack → AI configuration → Review.
- * Database configuration lives inside the Stack step and appears only when a
- * database is chosen. Secrets live in component state only — never in URLs,
- * localStorage, logs, or generated code. Submitting only sends the validated
- * configuration through the existing generation API; progress renders real
- * backend state polled from the API and is never invented.
+ * Generate Project page. The user supplies a title and one free-text
+ * description (idea + tech stack). The stack is detected from that text.
+ * Database password and AI API key are optional. Secrets live in component
+ * state only — never in URLs, localStorage, logs, or generated code.
+ * Progress, findings and download availability come from real backend state.
  */
 export function GeneratePage() {
   const { token } = useAuth();
-  const [step, setStep] = useState(1);
-  const [stepError, setStepError] = useState<string | null>(null);
 
   const [name, setName] = useState('');
-  const [requirement, setRequirement] = useState('');
   const [description, setDescription] = useState('');
-
-  const [backend, setBackend] = useState<GenerationBackend | ''>('');
-  const [frontend, setFrontend] = useState<GenerationFrontend | ''>('');
-  const [database, setDatabase] = useState<GenerationDatabase | ''>('');
-
-  const [dbHost, setDbHost] = useState('');
-  const [dbPort, setDbPort] = useState('');
-  const [dbName, setDbName] = useState('');
-  const [dbUser, setDbUser] = useState('');
   const [dbPassword, setDbPassword] = useState('');
-  const [dbSsl, setDbSsl] = useState('');
-
-  const [aiProvider, setAiProvider] = useState<GenerationAiProvider | ''>('');
   const [aiKey, setAiKey] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [aiProvider, setAiProvider] = useState<GenerationAiProvider>('OPENROUTER');
+  const [aiModel, setAiModel] = useState(DEFAULT_MODEL);
   const [aiBaseUrl, setAiBaseUrl] = useState('');
-  const [aiModel, setAiModel] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [generationId, setGenerationId] = useState<string | null>(null);
   const [generation, setGeneration] = useState<GenerationResponse | null>(null);
+
   const [draftRequirement, setDraftRequirement] = useState<string | null>(null);
   const [taskFeedback, setTaskFeedback] = useState<{ kind: 'saved' | 'error'; text: string } | null>(null);
   const [savingTask, setSavingTask] = useState(false);
@@ -139,6 +197,7 @@ export function GeneratePage() {
   const [startApiKey, setStartApiKey] = useState('');
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [fixing, setFixing] = useState(false);
@@ -146,175 +205,93 @@ export function GeneratePage() {
   const [fixResult, setFixResult] = useState<{ created: number; skippedOpen: number } | null>(null);
   const [searchParams] = useSearchParams();
 
-  const wantsDb = database !== '' && database !== 'NONE';
+  const stack = useMemo(() => detectStack(description), [description]);
+  const wantsDb = stack.database !== 'NONE';
+  const dbInfo = DATABASE_INFO[stack.database];
 
-  
-  const portPlaceholder = DATABASES.find((d) => d.value === database)?.port ?? '';
-
-  function validateStep(target: number): string | null {
-    if (target === 1) {
-      if (!name.trim()) {
-        return 'Please enter a project name.';
-      }
-      if (name.trim().length > 200) {
-        return 'Project name must be 200 characters or fewer.';
-      }
-      if (requirement.trim().length < 20) {
-        return 'Please describe the requirement in at least 20 characters.';
-      }
-      if (description.length > 5000) {
-        return 'Description must be 5000 characters or fewer.';
-      }
-      return null;
+  function validate(): string | null {
+    if (!name.trim()) {
+      return 'Please enter a project title.';
     }
-    if (target === 2) {
-      if (!backend) {
-        return 'Please choose a backend stack.';
-      }
-      if (!frontend) {
-        return 'Please choose a frontend option.';
-      }
-      if (!database) {
-        return 'Please choose a database option.';
-      }
-      if (wantsDb) {
-        if (!dbHost.trim()) {
-          return 'Please enter the database host.';
-        }
-        const port = Number(dbPort);
-        if (!dbPort.trim() || !Number.isInteger(port) || port < 1 || port > 65535) {
-          return 'Please enter a valid database port (1–65535).';
-        }
-        if (!dbName.trim()) {
-          return 'Please enter the database name.';
-        }
-        if (!dbUser.trim()) {
-          return 'Please enter the database username.';
-        }
-        if (!dbPassword) {
-          return 'Please enter the database password.';
-        }
-      }
-      return null;
+    if (name.trim().length > 200) {
+      return 'Project title must be 200 characters or fewer.';
     }
-    if (target === 3) {
-      if (!aiProvider) {
-        return 'Please choose an AI provider.';
-      }
-      if (aiProvider === 'NONE') {
-        if (backend !== 'JAVA_SPRING_BOOT') {
-          return 'The None provider currently supports Java Spring Boot templates only.';
-        }
-        return null;
-      }
-      if (!aiKey) {
-        return 'Please enter your API key.';
-      }
-      if (aiProvider === 'CUSTOM' && !aiBaseUrl.trim()) {
-        return 'Please enter the base URL for your custom provider.';
-      }
-      if (!aiModel.trim()) {
-        return 'Please enter the model name.';
-      }
-      return null;
+    if (description.trim().length < 20) {
+      return 'Please describe your idea in at least 20 characters.';
+    }
+    if (description.length > 20000) {
+      return 'Description must be 20000 characters or fewer.';
     }
     return null;
   }
 
-  const allValid =
-    validateStep(1) === null &&
-    validateStep(2) === null &&
-    validateStep(3) === null;
-
-  const goNext = () => {
-    const problem = validateStep(step);
-    if (problem) {
-      setStepError(problem);
-      return;
-    }
-    setStepError(null);
-    setStep((current) => Math.min(current + 1, STEPS.length));
-  };
-
-  const goBack = () => {
-    setStepError(null);
-    setStep((current) => Math.max(current - 1, 1));
-  };
-
-  const goEdit = () => {
-    setStepError(null);
-    setStep(1);
-  };
-
   const buildInput = (forDraft: boolean): CreateGenerationInput => {
     const input: CreateGenerationInput = {
       name: name.trim(),
-      requirement: requirement.trim(),
-      description: description.trim() || undefined,
-      backend: backend as GenerationBackend,
-      frontend: frontend as GenerationFrontend,
-      database: database as GenerationDatabase,
-      aiConfig: aiProvider === 'NONE'
-        ? { provider: aiProvider as GenerationAiProvider, model: 'template' }
-        : {
-            provider: aiProvider as GenerationAiProvider,
-            apiKey: forDraft ? '' : aiKey,
-            baseUrl: aiBaseUrl.trim() || undefined,
-            model: aiModel.trim(),
-          },
+      requirement: description.trim(),
+      backend: stack.backend,
+      frontend: stack.frontend,
+      database: stack.database,
+      aiConfig: {
+        // Skipped key → NONE provider (template fallback) per GenerationAiInput.
+        provider: !forDraft && !aiKey.trim() ? 'NONE' : aiProvider,
+        apiKey: forDraft ? undefined : aiKey.trim() || undefined,
+        baseUrl: aiProvider === 'CUSTOM' ? aiBaseUrl.trim() || undefined : undefined,
+        model: aiModel.trim() || DEFAULT_MODEL,
+      },
     };
     if (forDraft) {
       input.draft = true;
     }
     if (wantsDb) {
       input.databaseConfig = {
-        host: dbHost.trim(),
-        port: Number(dbPort),
-        name: dbName.trim(),
-        username: dbUser.trim(),
+        host: 'localhost',
+        port: Number(dbInfo.port),
+        name: slugify(name),
+        username: dbInfo.user,
         password: forDraft ? '' : dbPassword,
-        sslMode: dbSsl.trim() || undefined,
       };
     }
     return input;
   };
 
-  const generateNow = async () => {
-    if (!token || submitting || !allValid) {
+  const submit = async (draft: boolean) => {
+    if (!token || submitting) {
       return;
     }
-    setSubmitting(true);
-    setSubmitError(null);
-    try {
-      const created = await createGeneration(apiClient(), token, buildInput(false));
-      setGenerationId(created.id);
-      setGeneration(created);
-    } catch (err) {
-      setSubmitError(
-        err instanceof ApiError ? err.message : 'Could not start generation.',
+    const problem = validate();
+    if (problem) {
+      setFormError(problem);
+      return;
+    }
+    if (aiProvider === 'CUSTOM' && !aiBaseUrl.trim()) {
+      setFormError('Please enter the base URL for your custom provider.');
+      return;
+    }
+    if (!draft && !aiKey.trim() && stack.backend !== 'JAVA_SPRING_BOOT') {
+      setFormError(
+        'An AI API key is required for this stack. Skipping the key only works for Java Spring Boot projects.',
       );
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const saveDraft = async () => {
-    if (!token || submitting || !allValid) {
       return;
     }
+    setFormError(null);
     setSubmitting(true);
     setSubmitError(null);
     try {
-      // Drafts persist configuration only: secrets are omitted from the
-      // request entirely (the backend discards them even if sent).
-      const created = await createGeneration(apiClient(), token, buildInput(true));
+      const created = await createGeneration(apiClient(), token, buildInput(draft));
       setGenerationId(created.id);
       setGeneration(created);
-      setDraftRequirement(null);
-      setTaskFeedback(null);
+      if (draft) {
+        setDraftRequirement(null);
+        setTaskFeedback(null);
+      }
     } catch (err) {
       setSubmitError(
-        err instanceof ApiError ? err.message : 'Could not save the draft.',
+        err instanceof ApiError
+          ? err.message
+          : draft
+            ? 'Could not save the draft.'
+            : 'Could not start generation.',
       );
     } finally {
       setSubmitting(false);
@@ -327,11 +304,11 @@ export function GeneratePage() {
     }
     const next = draftRequirement.trim();
     if (next.length < 20) {
-      setTaskFeedback({ kind: 'error', text: 'Please describe the requirement in at least 20 characters.' });
+      setTaskFeedback({ kind: 'error', text: 'Please describe the idea in at least 20 characters.' });
       return;
     }
     if (next.length > 20000) {
-      setTaskFeedback({ kind: 'error', text: 'Requirement must be 20000 characters or fewer.' });
+      setTaskFeedback({ kind: 'error', text: 'Description must be 20000 characters or fewer.' });
       return;
     }
     setSavingTask(true);
@@ -342,11 +319,11 @@ export function GeneratePage() {
       });
       setGeneration(updated);
       setDraftRequirement(null);
-      setTaskFeedback({ kind: 'saved', text: 'Task saved.' });
+      setTaskFeedback({ kind: 'saved', text: 'Saved.' });
     } catch (err) {
       setTaskFeedback({
         kind: 'error',
-        text: err instanceof ApiError ? err.message : 'Could not save the task.',
+        text: err instanceof ApiError ? err.message : 'Could not save.',
       });
     } finally {
       setSavingTask(false);
@@ -357,20 +334,11 @@ export function GeneratePage() {
     if (!token || !generation || starting) {
       return;
     }
-    const needsPassword = generation.database !== 'NONE';
-    if (needsPassword && !startPassword) {
-      setStartError('Please enter the database password.');
-      return;
-    }
-    if (!startApiKey) {
-      setStartError('Please enter your API key.');
-      return;
-    }
     setStarting(true);
     setStartError(null);
     try {
       const started = await startSavedGeneration(apiClient(), token, generation.id, {
-        password: needsPassword ? startPassword : undefined,
+        password: generation.database !== 'NONE' ? startPassword : undefined,
         apiKey: startApiKey,
       });
       setGeneration(started);
@@ -428,8 +396,7 @@ export function GeneratePage() {
     }
   };
 
-  // Deep-link: /generate?genId=<id> loads an existing generation (e.g. after
-  // creating it from the Projects quick form) instead of starting the wizard.
+  // Deep-link: /generate?genId=<id> loads an existing generation.
   useEffect(() => {
     if (!token || generationId) {
       return undefined;
@@ -447,7 +414,7 @@ export function GeneratePage() {
           setGeneration(existing);
         }
       } catch {
-        // Stay on the wizard: an unknown id must not blank the page.
+        // Stay on the form: an unknown id must not blank the page.
       }
     })();
     return () => {
@@ -455,10 +422,8 @@ export function GeneratePage() {
     };
   }, [token, generationId, searchParams]);
 
-  // Poll only on generation identity/status transitions: depending on the
-  // `generation` object itself would re-fire on every poll, because each
-  // response parses to a new object — an infinite zero-delay request loop.
-  // The status string is stable between transitions, preserving the 3s cadence.
+  // Poll only on identity/status transitions (depending on the `generation`
+  // object itself would re-fire on every poll and loop forever).
   const generationStatus = generation?.status ?? null;
   useEffect(() => {
     if (!token || !generationId) {
@@ -494,551 +459,217 @@ export function GeneratePage() {
   const terminal = generation !== null && isTerminalGeneration(generation.status);
   const failed = generation?.status === 'FAILED';
   const statusIndex = STATUS_ORDER.indexOf(generation?.status ?? '');
+  const stats = generation?.workflowStats;
+  const openFindings = stats?.openFindings ?? 0;
+  const reviewDone =
+    generation?.status === 'REVIEWED' ||
+    generation?.status === 'COMPLETED' ||
+    generation?.status === 'VERIFIED';
 
   return (
     <div className="space-y-6">
       <WorkspaceCrumb items={[{ label: 'Generate project' }]} />
       <PageHeader
         title="Generate a verified project"
-        description="Give VeriReview the requirement, stack, environment, and AI configuration. Planner, Coding, Verified, and Review agents work from real backend state."
+        description="Describe your idea and tech stack. Planner, Coding, Verified and Review agents build it, check every file, and report real issue counts."
       />
 
       {!running && (
-        <ol aria-label="Generation steps" className="flex flex-wrap items-center gap-1.5">
-          {STEPS.map((label, index) => {
-            const number = index + 1;
-            const active = number === step;
-            const done = number < step;
-            return (
-              <li key={label} className="flex items-center gap-1.5">
-                {index > 0 && (
-                  <span aria-hidden="true" className="h-px w-3 bg-indigo-200" />
-                )}
-                <span
-                  aria-current={active ? 'step' : undefined}
-                  className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
-                    done
-                      ? 'bg-indigo-600 text-white'
-                      : active
-                        ? 'bg-indigo-100 text-indigo-800 ring-1 ring-inset ring-indigo-600/30'
-                        : 'bg-white text-slate-400 ring-1 ring-inset ring-slate-200'
-                  }`}
-                >
-                  <span className="tabular-nums">{number}</span> {label}
-                </span>
-              </li>
-            );
-          })}
-        </ol>
-      )}
-
-      {stepError && !running && (
-        <p role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {stepError}
-        </p>
-      )}
-
-      {!running && step === 1 && (
-        <Card title="Step 1 — Requirement" subtitle="What should be built?">
-          <div className="space-y-3">
+        <Card title="Your project" subtitle="Just a title and a description — the stack is detected for you.">
+          <div className="space-y-5">
             <div>
               <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Project name
+                Project title
               </p>
               <input
-                aria-label="Project name"
+                aria-label="Project title"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="e.g. todo-api"
+                placeholder="e.g. Task Tracker"
                 maxLength={200}
                 className={inputClass}
               />
             </div>
+
             <div>
               <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Requirement
+                Description
               </p>
               <textarea
-                aria-label="Requirement"
-                value={requirement}
-                onChange={(event) => setRequirement(event.target.value)}
-                placeholder="Explain your task or project along with your tech stack: features, endpoints, data model, frontend, backend, database…"
-                rows={6}
-                maxLength={20000}
-                className={inputClass}
-              />
-              <p className="mt-1 text-right text-xs tabular-nums text-slate-400">
-                {requirement.trim().length}/20 minimum
-              </p>
-            </div>
-            <div>
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Description <span className="font-normal normal-case">(optional)</span>
-              </p>
-              <input
                 aria-label="Project description"
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
-                placeholder="One-line summary"
-                maxLength={5000}
+                placeholder={PLACEHOLDER}
+                rows={8}
+                maxLength={20000}
                 className={inputClass}
               />
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {!running && step === 2 && (
-        <Card title="Step 2 — Technology stack" subtitle="Choose explicitly. Nothing is preselected.">
-          <div className="space-y-5">
-            <fieldset>
-              <legend className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Backend
-              </legend>
-              <div className="grid gap-2 sm:grid-cols-3">
-                {BACKENDS.map((option) => (
-                  <label
-                    key={option.value}
-                    className={`cursor-pointer rounded-xl border px-4 py-3 transition-colors ${
-                      backend === option.value
-                        ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-600'
-                        : 'border-indigo-100 bg-white hover:border-indigo-300'
-                    }`}
-                  >
-                    <span className="flex items-center gap-2 text-sm font-semibold text-indigo-950">
-                      <input
-                        type="radio"
-                        name="backend"
-                        value={option.value}
-                        checked={backend === option.value}
-                        onChange={() => setBackend(option.value)}
-                        className="accent-indigo-600"
-                      />
-                      {option.label}
-                    </span>
-                    <span className="mt-1 block text-xs text-slate-500">{option.tooling}</span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Frontend
-              </legend>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {FRONTENDS.map((option) => (
-                  <label
-                    key={option.value}
-                    className={`cursor-pointer rounded-xl border px-4 py-3 transition-colors ${
-                      frontend === option.value
-                        ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-600'
-                        : 'border-indigo-100 bg-white hover:border-indigo-300'
-                    }`}
-                  >
-                    <span className="flex items-center gap-2 text-sm font-semibold text-indigo-950">
-                      <input
-                        type="radio"
-                        name="frontend"
-                        value={option.value}
-                        checked={frontend === option.value}
-                        onChange={() => setFrontend(option.value)}
-                        className="accent-indigo-600"
-                      />
-                      {option.label}
-                    </span>
-                    {option.value === 'REACT_TYPESCRIPT' && (
-                      <span className="mt-1 block text-xs text-slate-500">
-                        Vite + TypeScript tooling
-                      </span>
-                    )}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Database
-              </legend>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                {DATABASES.map((option) => (
-                  <label
-                    key={option.value}
-                    className={`cursor-pointer rounded-xl border px-4 py-3 transition-colors ${
-                      database === option.value
-                        ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-600'
-                        : 'border-indigo-100 bg-white hover:border-indigo-300'
-                    }`}
-                  >
-                    <span className="flex items-center gap-2 text-sm font-semibold text-indigo-950">
-                      <input
-                        type="radio"
-                        name="database"
-                        value={option.value}
-                        checked={database === option.value}
-                        onChange={() => setDatabase(option.value)}
-                        className="accent-indigo-600"
-                      />
-                      {option.label}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            {wantsDb && (
-              <fieldset>
-                <legend className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Database configuration ({databaseLabel(database)})
-                </legend>
-                <p className="mb-2 text-xs leading-relaxed text-slate-500">
-                  Manual configuration. Credentials are never stored or shown again.
-                </p>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Host
-                    </p>
-                    <input
-                      aria-label="Database host"
-                      value={dbHost}
-                      onChange={(event) => setDbHost(event.target.value)}
-                      placeholder="e.g. localhost"
-                      maxLength={500}
-                      autoComplete="off"
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Port
-                    </p>
-                    <input
-                      aria-label="Database port"
-                      value={dbPort}
-                      onChange={(event) => setDbPort(event.target.value)}
-                      placeholder={portPlaceholder || 'e.g. 5432'}
-                      inputMode="numeric"
-                      autoComplete="off"
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Database name
-                    </p>
-                    <input
-                      aria-label="Database name"
-                      value={dbName}
-                      onChange={(event) => setDbName(event.target.value)}
-                      placeholder="e.g. todos"
-                      maxLength={200}
-                      autoComplete="off"
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Username
-                    </p>
-                    <input
-                      aria-label="Database username"
-                      value={dbUser}
-                      onChange={(event) => setDbUser(event.target.value)}
-                      placeholder="e.g. app"
-                      maxLength={200}
-                      autoComplete="off"
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Password
-                    </p>
-                    <input
-                      aria-label="Database password"
-                      type="password"
-                      value={dbPassword}
-                      onChange={(event) => setDbPassword(event.target.value)}
-                      placeholder="Stored in memory only for this run"
-                      maxLength={500}
-                      autoComplete="new-password"
-                      className={inputClass}
-                    />
-                  </div>
-                  <div>
-                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      SSL mode <span className="font-normal normal-case">(optional)</span>
-                    </p>
-                    <select
-                      aria-label="Database SSL mode"
-                      value={dbSsl}
-                      onChange={(event) => setDbSsl(event.target.value)}
-                      className={selectClass}
-                    >
-                      <option value="">Not specified</option>
-                      <option value="disable">disable</option>
-                      <option value="allow">allow</option>
-                      <option value="prefer">prefer</option>
-                      <option value="require">require</option>
-                      <option value="verify-ca">verify-ca</option>
-                      <option value="verify-full">verify-full</option>
-                    </select>
-                  </div>
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2" aria-label="Detected stack">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    Detected
+                  </span>
+                  <Chip>{BACKEND_LABELS[stack.backend]}</Chip>
+                  <Chip>{FRONTEND_LABELS[stack.frontend]}</Chip>
+                  <Chip>{dbInfo.label}</Chip>
                 </div>
-              </fieldset>
-            )}
-
-          </div>
-        </Card>
-      )}
-
-      {!running && step === 3 && (
-        <Card
-          title="Step 3 — AI configuration"
-          subtitle="Your key is sent once over the API call and never stored. Supply your own credentials — there is no default key."
-        >
-          <div className="space-y-4">
-            <fieldset>
-              <legend className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Provider
-              </legend>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {AI_PROVIDERS.map((option) => (
-                  <label
-                    key={option.value}
-                    className={`cursor-pointer rounded-xl border px-4 py-3 transition-colors ${
-                      aiProvider === option.value
-                        ? 'border-indigo-600 bg-indigo-50/60 ring-1 ring-indigo-600'
-                        : 'border-indigo-100 bg-white hover:border-indigo-300'
-                    }`}
-                  >
-                    <span className="flex items-center gap-2 text-sm font-semibold text-indigo-950">
-                      <input
-                        type="radio"
-                        name="ai-provider"
-                        value={option.value}
-                        checked={aiProvider === option.value}
-                        onChange={() => setAiProvider(option.value)}
-                        className="accent-indigo-600"
-                      />
-                      {option.label}
-                    </span>
-                    <span className="mt-1 block text-xs text-slate-500">{option.hint}</span>
-                  </label>
-                ))}
+                <p className="text-xs tabular-nums text-slate-400">
+                  {description.trim().length}/20 minimum
+                </p>
               </div>
-            </fieldset>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              {wantsDb && (
+                <div>
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Database password <span className="font-normal normal-case">(optional)</span>
+                  </p>
+                  <input
+                    aria-label="Database password"
+                    type="password"
+                    value={dbPassword}
+                    onChange={(event) => setDbPassword(event.target.value)}
+                    placeholder="Leave blank to skip"
+                    maxLength={500}
+                    autoComplete="new-password"
+                    className={inputClass}
+                  />
+                  <p className="mt-1 text-xs text-slate-400">
+                    Used for this run only, never stored.
+                  </p>
+                </div>
+              )}
+              <div className={wantsDb ? '' : 'sm:col-span-2'}>
                 <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  API key
+                  AI API key <span className="font-normal normal-case">(optional)</span>
                 </p>
                 <input
                   aria-label="AI API key"
                   type="password"
                   value={aiKey}
                   onChange={(event) => setAiKey(event.target.value)}
-                  placeholder="Never stored — used once for this run"
+                  placeholder="Leave blank to skip"
                   maxLength={2000}
                   autoComplete="off"
-                  disabled={aiProvider === 'NONE'}
                   className={inputClass}
                 />
-              </div>
-              <div>
-                <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Model
+                <p className="mt-1 text-xs text-slate-400">
+                  Sent once with the request, never stored.
                 </p>
-                <input
-                  aria-label="AI model"
-                  value={aiModel}
-                  onChange={(event) => setAiModel(event.target.value)}
-                  placeholder={aiProvider === 'NONE' ? 'template (automatic)' : 'e.g. openai/gpt-4o-mini'}
-                  maxLength={200}
-                  autoComplete="off"
-                  disabled={aiProvider === 'NONE'}
-                  className={inputClass}
-                />
               </div>
             </div>
-            {aiProvider === 'NONE' && (
-              <p className="rounded-lg border border-indigo-200 bg-indigo-50/60 px-3 py-2 text-sm leading-relaxed text-indigo-900">
-                No key needed — the backend builds a minimal Java starter from verified
-                templates and runs it through the same build, verify, and review gates.
-              </p>
-            )}
-            {aiProvider === 'CUSTOM' && (
-              <div>
-                <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Base URL
-                </p>
-                <input
-                  aria-label="AI base URL"
-                  value={aiBaseUrl}
-                  onChange={(event) => setAiBaseUrl(event.target.value)}
-                  placeholder="e.g. https://my-gateway.example.com/v1"
-                  maxLength={500}
-                  inputMode="url"
-                  autoComplete="off"
-                  className={inputClass}
-                />
-              </div>
-            )}
-          </div>
-        </Card>
-      )}
 
-      {!running && step === STEPS.length && (
-        <Card title="Review" subtitle="Read-only summary. Secrets stay masked.">
-          <dl className="space-y-3 text-sm">
-            <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-3">
-              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Requirement
-              </dt>
-              <dd className="mt-1 font-semibold text-indigo-950">{name.trim()}</dd>
-              <dd className="mt-1 whitespace-pre-wrap leading-relaxed text-slate-700">
-                {requirement.trim()}
-              </dd>
-              {description.trim() && (
-                <dd className="mt-1 text-slate-500">{description.trim()}</dd>
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                aria-expanded={showAdvanced}
+                className="text-sm font-semibold text-indigo-700 hover:text-indigo-900"
+              >
+                {showAdvanced ? '▾ Hide AI settings' : '▸ AI settings (provider & model)'}
+              </button>
+              {showAdvanced && (
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Provider
+                    </p>
+                    <select
+                      aria-label="AI provider"
+                      value={aiProvider}
+                      onChange={(event) => setAiProvider(event.target.value as GenerationAiProvider)}
+                      className={selectClass}
+                    >
+                      <option value="OPENROUTER">OpenRouter</option>
+                      <option value="CUSTOM">Custom (OpenAI-compatible)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Model
+                    </p>
+                    <input
+                      aria-label="AI model"
+                      value={aiModel}
+                      onChange={(event) => setAiModel(event.target.value)}
+                      placeholder={DEFAULT_MODEL}
+                      maxLength={200}
+                      autoComplete="off"
+                      className={inputClass}
+                    />
+                  </div>
+                  {aiProvider === 'CUSTOM' && (
+                    <div className="sm:col-span-2">
+                      <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        Base URL
+                      </p>
+                      <input
+                        aria-label="AI base URL"
+                        value={aiBaseUrl}
+                        onChange={(event) => setAiBaseUrl(event.target.value)}
+                        placeholder="e.g. https://my-gateway.example.com/v1"
+                        maxLength={500}
+                        inputMode="url"
+                        autoComplete="off"
+                        className={inputClass}
+                      />
+                    </div>
+                  )}
+                </div>
               )}
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-xl border border-indigo-100 p-3">
-                <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Backend
-                </dt>
-                <dd className="mt-1 font-medium text-slate-800">{backendLabel(backend)}</dd>
-              </div>
-              <div className="rounded-xl border border-indigo-100 p-3">
-                <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Frontend
-                </dt>
-                <dd className="mt-1 font-medium text-slate-800">
-                  {frontend === 'REACT_TYPESCRIPT' ? 'React + TypeScript' : 'None'}
-                </dd>
-              </div>
-              <div className="rounded-xl border border-indigo-100 p-3">
-                <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Database
-                </dt>
-                <dd className="mt-1 font-medium text-slate-800">{databaseLabel(database)}</dd>
-              </div>
-            </div>
-            {wantsDb && (
-              <div className="rounded-xl border border-indigo-100 p-3">
-                <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Database configuration
-                </dt>
-                <dd className="mt-1 font-mono text-xs text-slate-700">
-                  {dbHost.trim()}:{dbPort.trim()}/{dbName.trim()} as {dbUser.trim()}
-                  {dbSsl.trim() ? ` · sslmode=${dbSsl.trim()}` : ''}
-                </dd>
-                <dd className="mt-1 font-mono text-xs text-slate-500">
-                  password: {MASKED_SECRET}
-                </dd>
-              </div>
-            )}
-            <div className="rounded-xl border border-indigo-100 p-3">
-              <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                AI configuration
-              </dt>
-              <dd className="mt-1 text-slate-700">
-                {aiProvider === 'OPENROUTER' ? 'OpenRouter' : aiProvider === 'CUSTOM' ? 'Custom' : 'None — template starter'} · {aiProvider === 'NONE' ? 'template' : aiModel.trim()}
-                {aiProvider !== 'NONE' && aiBaseUrl.trim() ? ` · ${aiBaseUrl.trim()}` : ''}
-              </dd>
-              <dd className="mt-1 font-mono text-xs text-slate-500">
-                api key: {aiProvider === 'NONE' ? 'not required' : MASKED_SECRET}
-              </dd>
-            </div>
-          </dl>
-          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-600">
-            <strong>Quality gate:</strong> file creation alone does not make a project ready. Build, verification, and review must complete successfully before the generated project is treated as verified.
-          </div>
-          {submitError && (
-            <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
-              {submitError}
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => void saveDraft()}
-              disabled={submitting || !allValid}
-              className={secondaryButtonClass}
-            >
-              {submitting ? 'Saving…' : 'Save Draft'}
-            </button>
-            <button
-              type="button"
-              onClick={goBack}
-              className={secondaryButtonClass}
-            >
-              Back
-            </button>
-            <button
-              type="button"
-              onClick={goEdit}
-              className={secondaryButtonClass}
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              onClick={() => void generateNow()}
-              disabled={submitting || !allValid}
-              className={primaryButtonClass}
-            >
-              {submitting ? 'Starting…' : 'Start Generation'}
-            </button>
-          </div>
-          {!allValid && (
-            <p className="mt-2 text-sm text-slate-500">
-              Complete every step to enable saving or generation.
-            </p>
-          )}
-        </Card>
-      )}
 
-      {!running && step < STEPS.length && (
-        <div className="flex flex-wrap justify-between gap-2">
-          <button
-            type="button"
-            onClick={goBack}
-            disabled={step === 1}
-            className={secondaryButtonClass}
-          >
-            Back
-          </button>
-          <button type="button" onClick={goNext} className={primaryButtonClass}>
-            Continue
-          </button>
-        </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-600">
+              <strong>Quality gate:</strong> the Review agent checks every generated file. If it
+              finds bugs, download stays locked until you approve fixes and the project is
+              re-verified.
+            </div>
+
+            {(formError || submitError) && (
+              <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                {formError ?? submitError}
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void submit(true)}
+                disabled={submitting}
+                className={secondaryButtonClass}
+              >
+                {submitting ? 'Saving…' : 'Save draft'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void submit(false)}
+                disabled={submitting}
+                className={primaryButtonClass}
+              >
+                {submitting ? 'Starting…' : 'Generate project'}
+              </button>
+            </div>
+          </div>
+        </Card>
       )}
 
       {running && generation && isDraft && (
         <Card
           title="Draft saved"
-          subtitle="Configuration persisted. The generation pipeline is ready for the next phase — nothing has been generated yet."
+          subtitle="Nothing has been generated yet. Edit the description, then start."
           actions={<Badge tone={statusTone(generation.status)}>{generation.status}</Badge>}
         >
           <div className="space-y-4">
-            <div className="grid gap-2 sm:grid-cols-5">
-              {PIPELINE_STAGES.map((stage) => (
-                <div key={stage.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                  <p className="text-xs font-semibold text-slate-700">{stage.label}</p>
-                  <p className="mt-1 text-xs text-slate-400">Waiting</p>
-                </div>
-              ))}
-            </div>
             <div>
               <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                Task / requirements
+                Description
               </p>
               <textarea
                 aria-label="Draft task"
                 value={draftRequirement ?? generation.requirement}
                 onChange={(event) => setDraftRequirement(event.target.value)}
-                rows={5}
+                rows={6}
                 maxLength={20000}
                 className={inputClass}
               />
@@ -1053,7 +684,7 @@ export function GeneratePage() {
                   }
                   className={secondaryButtonClass}
                 >
-                  {savingTask ? 'Saving…' : 'Save task'}
+                  {savingTask ? 'Saving…' : 'Save changes'}
                 </button>
                 {taskFeedback && (
                   <p
@@ -1068,12 +699,9 @@ export function GeneratePage() {
               </div>
             </div>
             <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
-              <p className="mb-1 text-xs font-bold uppercase tracking-wider text-indigo-500">
-                Start generation
-              </p>
               <p className="mb-3 text-sm leading-relaxed text-slate-600">
-                Drafts hold no secrets server-side. Supply them once to start —
-                they are used for this run only and never stored.
+                Drafts hold no secrets. Supply them below (both optional) — used for this
+                run only and never stored.
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
                 {generation.database !== 'NONE' && (
@@ -1086,6 +714,7 @@ export function GeneratePage() {
                       type="password"
                       value={startPassword}
                       onChange={(event) => setStartPassword(event.target.value)}
+                      placeholder="Leave blank to skip"
                       autoComplete="new-password"
                       className={inputClass}
                     />
@@ -1100,6 +729,7 @@ export function GeneratePage() {
                     type="password"
                     value={startApiKey}
                     onChange={(event) => setStartApiKey(event.target.value)}
+                    placeholder="Leave blank to skip"
                     autoComplete="off"
                     className={inputClass}
                   />
@@ -1116,7 +746,7 @@ export function GeneratePage() {
                 disabled={starting}
                 className={`${primaryButtonClass} mt-3`}
               >
-                {starting ? 'Starting…' : 'Start Generation'}
+                {starting ? 'Starting…' : 'Generate project'}
               </button>
             </div>
           </div>
@@ -1125,245 +755,319 @@ export function GeneratePage() {
 
       {running && generation && !isDraft && (
         <Card
-          title="Generation"
-          subtitle={`Real backend state for “${generation.name}”.`}
+          title={generation.name}
+          subtitle="Live status from the backend — nothing here is estimated."
           actions={<Badge tone={statusTone(generation.status)}>{generation.status}</Badge>}
         >
-          {generation.status === 'READY' && (
-            <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50/60 px-4 py-3">
-              <p className="text-sm font-semibold text-indigo-950">Generation ready.</p>
-              <p className="mt-0.5 text-sm leading-relaxed text-slate-600">
-                Your configuration was accepted and is queued for execution. Live
-                backend status appears below — no progress is shown until the
-                backend reports it.
-              </p>
-            </div>
-          )}
           <div aria-label="Generation agent workflow" className="mb-4 grid gap-2 sm:grid-cols-5">
-            {PIPELINE_STAGES.map((stage) => {
-              const stageIndex = PIPELINE_STAGES.findIndex((item) => item.key === stage.key);
-              const persistedStep = generation.agentWorkflow?.find((item) =>
-                stage.statuses.includes(item.agentType) || item.agentType.toLowerCase().includes(stage.key)
+            {PIPELINE_STAGES.map((stage, stageIndex) => {
+              const persistedStep = generation.agentWorkflow?.find(
+                (item) =>
+                  stage.statuses.includes(item.agentType) ||
+                  item.agentType.toLowerCase().includes(stage.key),
               );
               const currentStage = stage.statuses.includes(generation.status);
-              const completedStage = persistedStep?.status === 'COMPLETED'
-                || (!persistedStep && !currentStage && statusIndex > stageIndex);
-              const failedStage = persistedStep?.status === 'FAILED'
-                || (failed && currentStage);
+              const completedStage =
+                persistedStep?.status === 'COMPLETED' ||
+                (!persistedStep && !currentStage && statusIndex > stageIndex);
+              const failedStage =
+                persistedStep?.status === 'FAILED' || (failed && currentStage);
+
+              let animationState: 'waiting' | 'active' | 'completed' | 'failed' = 'waiting';
+              if (failedStage) animationState = 'failed';
+              else if (completedStage) animationState = 'completed';
+              else if (currentStage) animationState = 'active';
+
               return (
                 <div
                   key={stage.key}
-                  className={`rounded-xl border p-3 ${
-                    currentStage
-                      ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300'
-                      : completedStage
+                  className={`rounded-xl border p-3 transition-all duration-500 ease-out ${
+                    animationState === 'active'
+                      ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300 shadow-sm'
+                      : animationState === 'completed'
                         ? 'border-emerald-200 bg-emerald-50'
-                        : failedStage
+                        : animationState === 'failed'
                           ? 'border-red-200 bg-red-50'
                           : 'border-slate-200 bg-slate-50'
                   }`}
                 >
-                  <p className="text-xs font-bold text-slate-800">{stage.label}</p>
-                  <p className={`mt-1 text-xs font-semibold ${
-                    currentStage ? 'text-indigo-700' : completedStage ? 'text-emerald-700' : failedStage ? 'text-red-700' : 'text-slate-400'
-                  }`}>
-                    {currentStage ? 'Working' : completedStage ? 'Completed' : failedStage ? 'Failed' : 'Waiting'}
-                  </p>
+                  <div className="flex items-start gap-3">
+                    <span className={getPipelineStageIconClass(animationState)}>
+                      {animationState === 'completed'
+                        ? '✓'
+                        : animationState === 'failed'
+                          ? '✕'
+                          : STAGE_NUMBERS[stageIndex]}
+                    </span>
+                    <span className={`min-w-0 flex-1 ${getPipelineStageLabelClass(animationState)}`}>
+                      <p className="text-xs font-bold text-slate-800">{stage.label}</p>
+                      <p
+                        className={`mt-1 text-xs font-semibold ${
+                          animationState === 'active'
+                            ? 'text-indigo-700'
+                            : animationState === 'completed'
+                              ? 'text-emerald-700'
+                              : animationState === 'failed'
+                                ? 'text-red-700'
+                                : 'text-slate-400'
+                        }`}
+                      >
+                        {animationState === 'active'
+                          ? 'Working'
+                          : animationState === 'completed'
+                            ? 'Completed'
+                            : animationState === 'failed'
+                              ? 'Failed'
+                              : 'Waiting'}
+                      </p>
+                    </span>
+                  </div>
                 </div>
               );
             })}
           </div>
-          <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Current operation</p>
-            <p className="mt-1 text-sm font-semibold text-slate-800">{generation.status}</p>
-            <p className="mt-1 text-xs text-slate-500">This status is read directly from the generation record.</p>
-          </div>
+
           {!terminal && (
             <LoadingState label={`${generation.status}… polling for real backend state.`} />
           )}
-          
-          {/* Detailed Pipeline Progress */}
-          {(generation.workflowStats || generation.verification || generation.review || generation.agentWorkflow) && (
-            <div className="space-y-4">
-              {/* Agent Workflow Timeline */}
-              {generation.agentWorkflow && generation.agentWorkflow.length > 0 && (
-                <div>
-                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Agent Pipeline</h4>
-                  <div className="space-y-1.5">
-                    {generation.agentWorkflow.map((step, index) => (
-                      <div key={index} className="flex items-center gap-3 rounded-lg border border-indigo-100 bg-white px-3 py-2">
-                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white bg-indigo-600">
-                          {index + 1}
-                        </span>
-                        <span className="flex-1 font-mono text-sm font-semibold text-indigo-950">{step.agentType}</span>
-                        <Badge tone={step.status === 'COMPLETED' ? 'green' : step.status === 'RUNNING' ? 'blue' : step.status === 'FAILED' ? 'red' : 'gray'}>
-                          {step.status}
-                        </Badge>
-                        {step.durationMs && (
-                          <span className="text-xs tabular-nums text-slate-500">{step.durationMs} ms</span>
-                        )}
-                        {step.error && (
-                          <span className="text-xs text-red-600 ml-2">{step.error}</span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
 
-              {/* Verification Results */}
-              {generation.verification && (
-                <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
-                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Verification</h4>
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                    <div>
-                      <p className="text-xs font-semibold text-slate-500">Verdict</p>
-                      <Badge tone={generation.verification.verdict === 'VERIFIED' ? 'green' : generation.verification.verdict === 'REJECTED' ? 'red' : 'amber'}>
-                        {generation.verification.verdict}
-                      </Badge>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold text-slate-500">Build</p>
-                      <Badge tone={generation.verification.buildStatus === 'SUCCESS' ? 'green' : generation.verification.buildStatus === 'FAILURE' ? 'red' : 'blue'}>
-                        {generation.verification.buildStatus}
-                      </Badge>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold text-slate-500">Tests</p>
-                      <p className="font-mono text-sm text-slate-800">
-                        {generation.verification.testsPassed}/{generation.verification.testsTotal} passed
-                        {generation.verification.testsFailed > 0 && ` · ${generation.verification.testsFailed} failed`}
-                        {generation.verification.testsSkipped > 0 && ` · ${generation.verification.testsSkipped} skipped`}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold text-slate-500">Duration</p>
-                      <p className="font-mono text-sm text-slate-800">
-                        {generation.verification.durationMs ? `${generation.verification.durationMs} ms` : '—'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Review Results */}
-              {generation.review && (
-                <div className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
-                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Review</h4>
-                  <div className="grid gap-2 sm:grid-cols-3">
-                    <div>
-                      <p className="text-xs font-semibold text-slate-500">Status</p>
-                      <Badge tone={generation.review.status === 'COMPLETED' ? 'green' : generation.review.status === 'FAILED' ? 'red' : 'amber'}>
-                        {generation.review.status}
-                      </Badge>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold text-slate-500">Findings</p>
-                      <p className="font-mono text-sm text-slate-800">{generation.review.findingCount}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold text-slate-500">Error</p>
-                      <p className="font-mono text-sm text-slate-800">{generation.review.error ?? '—'}</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Workflow Stats */}
-              {generation.workflowStats && (
-                <div className="rounded-xl border border-amber-100 bg-amber-50/40 p-4">
-                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Findings Summary</h4>
-                  <p className="mb-2 text-xs text-slate-500">
-                    Issues found {generation.workflowStats.totalFindings} · Issues fixed {generation.workflowStats.fixedFindings} — counts come from the backend review, never invented.
-                  </p>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <div className="rounded-lg bg-white p-2 text-center">
-                      <p className="text-2xl font-bold text-slate-800">{generation.workflowStats.totalFindings}</p>
-                      <p className="text-xs text-slate-500">Issues found</p>
-                    </div>
-                    <div className="rounded-lg bg-white p-2 text-center">
-                      <p className="text-2xl font-bold text-emerald-600">{generation.workflowStats.fixedFindings}</p>
-                      <p className="text-xs text-slate-500">Issues fixed</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Download / Fix Actions */}
-              {(generation.status === 'REVIEWED' || generation.status === 'COMPLETED' || generation.status === 'VERIFIED') && (
-                <div className="space-y-4">
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-sm leading-relaxed text-slate-600">
-                      Review complete. {generation.workflowStats && generation.workflowStats.openFindings > 0
-                        ? `${generation.workflowStats.openFindings} unresolved finding(s) must be fixed before download.`
-                        : generation.downloadReady
-                        ? 'All checks passed. Project is ready for download.'
-                        : 'Verification and review completed. Download available if all gates pass.'
+          <div className="space-y-4">
+            {generation.verification && (
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4">
+                <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Verification
+                </h4>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500">Verdict</p>
+                    <Badge
+                      tone={
+                        generation.verification.verdict === 'VERIFIED'
+                          ? 'green'
+                          : generation.verification.verdict === 'REJECTED'
+                            ? 'red'
+                            : 'amber'
                       }
-                    </p>
-                    {generation.workflowStats && generation.workflowStats.openFindings > 0 && (
-                      <p className="mt-2 text-sm text-amber-700">
-                        ⚠ {generation.workflowStats.openFindings} open finding(s). Approving fixes
-                        creates one FixRequest per open finding — code only changes through the
-                        existing patch + rebuild flow, never silently.
-                      </p>
-                    )}
+                    >
+                      {generation.verification.verdict}
+                    </Badge>
                   </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500">Build</p>
+                    <Badge
+                      tone={
+                        generation.verification.buildStatus === 'SUCCESS'
+                          ? 'green'
+                          : generation.verification.buildStatus === 'FAILURE'
+                            ? 'red'
+                            : 'blue'
+                      }
+                    >
+                      {generation.verification.buildStatus}
+                    </Badge>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500">Tests</p>
+                    <p className="font-mono text-sm text-slate-800">
+                      {generation.verification.testsPassed}/{generation.verification.testsTotal} passed
+                      {generation.verification.testsFailed > 0 &&
+                        ` · ${generation.verification.testsFailed} failed`}
+                      {generation.verification.testsSkipped > 0 &&
+                        ` · ${generation.verification.testsSkipped} skipped`}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500">Duration</p>
+                    <p className="font-mono text-sm text-slate-800">
+                      {generation.verification.durationMs
+                        ? `${generation.verification.durationMs} ms`
+                        : '—'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
-                  {generation.status === 'REVIEWED' && generation.workflowStats && generation.workflowStats.openFindings > 0 && (
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleFixIssues()}
-                        disabled={fixing}
-                        className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {fixing ? 'Requesting fixes…' : 'Fix issues & optimize'}
-                      </button>
-                      {fixResult && (
-                        <p role="status" className="text-sm text-emerald-700">
-                          {fixResult.created} fix request(s) created
-                          {fixResult.skippedOpen > 0 && ` · ${fixResult.skippedOpen} already open — skipped`}.
-                          Propose and apply patches per finding, then rebuild to reverify.
-                        </p>
-                      )}
-                    </div>
-                  )}
-                  {fixError && (
-                    <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
-                      {fixError}
-                    </p>
-                  )}
-                  
-                  <div className="flex flex-wrap gap-2">
-                    {generation.downloadReady && (
-                      <button
-                        type="button"
-                        onClick={handleDownload}
-                        disabled={downloading}
-                        className={primaryButtonClass}
-                      >
-                        {downloading ? 'Downloading…' : 'Download ZIP'}
-                      </button>
-                    )}
-                    {!generation.downloadReady && (!generation.workflowStats || generation.workflowStats.openFindings === 0) && (
-                      <span className="flex items-center px-3 py-2 text-sm text-slate-500">
-                        Download unavailable — verification or review not yet complete
-                      </span>
-                    )}
+            {generation.review && (
+              <div className="rounded-xl border border-slate-100 bg-slate-50/40 p-4">
+                <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Review
+                </h4>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500">Status</p>
+                    <Badge
+                      tone={
+                        generation.review.status === 'COMPLETED'
+                          ? 'green'
+                          : generation.review.status === 'FAILED'
+                            ? 'red'
+                            : 'amber'
+                      }
+                    >
+                      {generation.review.status}
+                    </Badge>
                   </div>
-                  
-                  {downloadError && (
-                    <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
-                      {downloadError}
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500">Findings</p>
+                    <p className="font-mono text-sm text-slate-800">{generation.review.findingCount}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500">Error</p>
+                    <p className="font-mono text-sm text-slate-800">{generation.review.error ?? '—'}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {stats && (
+              <div>
+                <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Issues
+                </h4>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <Stat label="Found" value={stats.totalFindings} tone="slate" />
+                  <Stat label="Fixed" value={stats.fixedFindings} tone="emerald" />
+                  <Stat label="Remaining" value={stats.openFindings} tone="amber" />
+                </div>
+                <p className="mt-2 text-xs text-slate-400">
+                  Counts come straight from the review record.
+                </p>
+              </div>
+            )}
+
+            {generation.agentWorkflow && generation.agentWorkflow.length > 0 && (
+              <div>
+                <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Agent pipeline
+                </h4>
+                <div className="space-y-1.5">
+                  {generation.agentWorkflow.map((step, index) => (
+                    <div
+                      key={index}
+                      className="flex items-center gap-3 rounded-lg border border-indigo-100 bg-white px-3 py-2"
+                    >
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-xs font-bold text-white">
+                        {index + 1}
+                      </span>
+                      <span className="flex-1 font-mono text-sm font-semibold text-indigo-950">
+                        {step.agentType}
+                      </span>
+                      <Badge
+                        tone={
+                          step.status === 'COMPLETED'
+                            ? 'green'
+                            : step.status === 'RUNNING'
+                              ? 'blue'
+                              : step.status === 'FAILED'
+                                ? 'red'
+                                : 'gray'
+                        }
+                      >
+                        {step.status}
+                      </Badge>
+                      {step.durationMs && (
+                        <span className="text-xs tabular-nums text-slate-500">{step.durationMs} ms</span>
+                      )}
+                      {step.error && <span className="ml-2 text-xs text-red-600">{step.error}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {reviewDone && (
+              <div className="space-y-4">
+                <div
+                  className={`rounded-xl border p-4 ${
+                    openFindings > 0
+                      ? 'border-amber-200 bg-amber-50/60'
+                      : 'border-emerald-200 bg-emerald-50/60'
+                  }`}
+                >
+                  {openFindings > 0 ? (
+                    <>
+                      <p className="text-sm font-semibold text-amber-900">
+                        {openFindings} issue{openFindings === 1 ? '' : 's'} must be fixed before you can download.
+                      </p>
+                      <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                        Approving fixes creates one fix request per open issue. The Coding agent
+                        proposes patches, the project is rebuilt, and the Review agent re-verifies —
+                        nothing changes without your approval.
+                      </p>
+                    </>
+                  ) : generation.downloadReady ? (
+                    <p className="text-sm font-semibold text-emerald-800">
+                      All checks passed. Your project is ready for download.
+                    </p>
+                  ) : (
+                    <p className="text-sm text-slate-600">
+                      Verification and review finished. Download unlocks once every gate passes.
                     </p>
                   )}
                 </div>
-              )}
-            </div>
-          )}
+
+                {generation.status === 'REVIEWED' && openFindings > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleFixIssues()}
+                      disabled={fixing}
+                      className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-amber-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {fixing ? 'Requesting fixes…' : 'Approve & fix issues'}
+                    </button>
+                    {fixResult && (
+                      <p role="status" className="text-sm text-emerald-700">
+                        {fixResult.created} fix request(s) created
+                        {fixResult.skippedOpen > 0 && ` · ${fixResult.skippedOpen} already open — skipped`}.
+                      </p>
+                    )}
+                    {fixResult && generation.projectId && (
+                      <Link
+                        to={`/review?project=${generation.projectId}`}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
+                      >
+                        Review fix requests →
+                      </Link>
+                    )}
+                  </div>
+                )}
+                {fixError && (
+                  <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                    {fixError}
+                  </p>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDownload}
+                    disabled={!generation.downloadReady || openFindings > 0 || downloading}
+                    title={
+                      generation.downloadReady && openFindings === 0
+                        ? undefined
+                        : 'Available once all issues are fixed and re-verified'
+                    }
+                    className={primaryButtonClass}
+                  >
+                    {downloading ? 'Downloading…' : 'Download ZIP'}
+                  </button>
+                  {(!generation.downloadReady || openFindings > 0) && (
+                    <span className="text-sm text-slate-500">Download locked</span>
+                  )}
+                </div>
+                {downloadError && (
+                  <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                    {downloadError}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
           {failed && (
-            <div className="space-y-3">
+            <div className="mt-4 space-y-3">
               <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
                 {generation.error ?? 'Generation failed.'}
               </p>
@@ -1373,11 +1077,10 @@ export function GeneratePage() {
                   setGenerationId(null);
                   setGeneration(null);
                   setSubmitError(null);
-                  setStep(STEPS.length);
                 }}
                 className={secondaryButtonClass}
               >
-                Back to review
+                Back to form
               </button>
             </div>
           )}

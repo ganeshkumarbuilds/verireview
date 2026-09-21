@@ -1,11 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 import { ApiClient } from '../api/client';
 import { login as apiLogin, logout as apiLogout, me as apiMe, register as apiRegister } from '../api/auth';
 import type { UserResponse } from '../api/types';
-
-const client = new ApiClient({});
 
 /** localStorage keys for the persisted session (ADR-010). */
 const ACCESS_TOKEN_KEY = 'verireview.accessToken';
@@ -52,11 +50,23 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+// Module-level so `apiClient()` (used by pages like GeneratePage that call
+// authenticated endpoints outside the AuthProvider's own callbacks) always
+// gets the *same* instance the provider wired up — so a 401 from any of
+// those calls still triggers onUnauthorized and clears the session.
+let sharedClient: ApiClient | null = null;
+
 /**
  * Session tokens persist in localStorage so a page reload keeps the user
  * signed in (ADR-010, user-approved). On startup the profile is re-fetched
  * with the stored access token; an invalid/expired token clears the session.
  * Tests inject `initial` state and skip the restore path.
+ *
+ * There is no refresh-token endpoint on the backend yet, so an expired
+ * access token cannot be silently renewed. Instead the shared ApiClient's
+ * `onUnauthorized` hook clears the session the moment any request 401s, so
+ * every screen fails the same way (redirect to /login) instead of leaving a
+ * stale "logged in" navbar next to a dead token, as happened on /generate.
  */
 export function AuthProvider({
   children,
@@ -73,14 +83,36 @@ export function AuthProvider({
   );
   const [user, setUser] = useState<UserResponse | null>(initial?.user ?? null);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const tokens = await apiLogin(client, email, password);
-    const profile = await apiMe(client, tokens.accessToken);
-    setToken(tokens.accessToken);
-    setRefreshToken(tokens.refreshToken);
-    setUser(profile);
-    persistSession(tokens.accessToken, tokens.refreshToken);
-  }, []);
+  // Kept in a ref so the ApiClient instance (created once) always calls the
+  // latest handler without needing to be recreated on every render.
+  const handleUnauthorizedRef = useRef<() => void>(() => {});
+  handleUnauthorizedRef.current = () => {
+    clearStoredSession();
+    setToken(null);
+    setRefreshToken(null);
+    setUser(null);
+  };
+
+  const [client] = useState(() => {
+    if (!sharedClient) {
+      sharedClient = new ApiClient({
+        onUnauthorized: () => handleUnauthorizedRef.current(),
+      });
+    }
+    return sharedClient;
+  });
+
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const tokens = await apiLogin(client, email, password);
+      const profile = await apiMe(client, tokens.accessToken);
+      setToken(tokens.accessToken);
+      setRefreshToken(tokens.refreshToken);
+      setUser(profile);
+      persistSession(tokens.accessToken, tokens.refreshToken);
+    },
+    [client],
+  );
 
   const register = useCallback(
     async (email: string, password: string, displayName?: string) => {
@@ -91,7 +123,7 @@ export function AuthProvider({
       setUser(profile);
       persistSession(tokens.accessToken, tokens.refreshToken);
     },
-    [],
+    [client],
   );
 
   const logout = useCallback(async () => {
@@ -105,7 +137,7 @@ export function AuthProvider({
       setRefreshToken(null);
       setUser(null);
     }
-  }, [token, refreshToken]);
+  }, [client, token, refreshToken]);
 
   // Restore the profile for a persisted session (real app only: tests pass
   // `initial` and manage state explicitly).
@@ -132,7 +164,7 @@ export function AuthProvider({
     return () => {
       cancelled = true;
     };
-  }, [initial, token, user]);
+  }, [client, initial, token, user]);
 
   const value = useMemo(
     () => ({ token, refreshToken, user, login, register, logout }),
@@ -158,6 +190,14 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * Returns the single ApiClient instance wired to this app's AuthProvider,
+ * so any 401 from an authenticated call (e.g. GeneratePage's
+ * createGeneration/startGeneration/downloadGeneration) clears the session
+ * and redirects to /login exactly like a 401 hit through the login/me path.
+ * Falls back to an unwired client only if called before AuthProvider mounts
+ * (should not happen in the real app tree).
+ */
 export function apiClient(): ApiClient {
-  return client;
+  return sharedClient ?? new ApiClient({});
 }

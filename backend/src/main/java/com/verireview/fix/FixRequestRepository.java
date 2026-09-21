@@ -10,4 +10,6 @@ public interface FixRequestRepository extends JpaRepository<FixRequest, UUID> {
   List<FixRequest> findByFindingIdOrderByCreatedAtDesc(UUID findingId);
 
   boolean existsByFindingIdAndStatusIn(UUID findingId, Collection<FixRequestStatus> statuses);
+
+  List<FixRequest> findByFindingIdAndStatusIn(UUID findingId, Collection<FixRequestStatus> statuses);
 }

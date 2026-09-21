@@ -26,11 +26,11 @@ spring:
     locations: classpath:db/migration
   servlet:
     multipart:
-      # Phase 5: admits the 50 MB project cap (larger bodies → 413).
+      # Phase 5: admits the 50 MB project cap (larger bodies -> 413).
       max-file-size: 50MB
       max-request-size: 55MB
 
-# Phase 3 auth (SECURITY_DESIGN §2, ADR-009). Secret comes from the
+# Phase 3 auth (SECURITY_DESIGN 2, ADR-009). Secret comes from the
 # JWT_SIGNING_KEY environment variable only — never commit a real value.
 # The app fails fast at startup when it is missing or too short for HS256.
 app:
@@ -45,7 +45,7 @@ app:
     # Overridable: STORAGE_ROOT=/var/lib/verireview/projects
     storage-root: ${STORAGE_ROOT:./uploads/projects}
   analysis:
-    # Deterministic analyzers run ONLY in this Docker image (SECURITY_DESIGN §4).
+    # Deterministic analyzers run ONLY in this Docker image (SECURITY_DESIGN 4).
     image: ${ANALYSIS_IMAGE:verireview-analysis:phase6}
     timeout-seconds: 300
     memory: 2g
@@ -77,3 +77,13 @@ app:
 server:
   # Overridable at runtime: PORT=8081 ./mvnw spring-boot:run
   port: ${PORT:8080}
+  tomcat:
+    # Without these, Tomcat's own defaults (maxSwallowSize ~2MB,
+    # maxHttpFormPostSize ~2MB) reset the connection on large multipart
+    # uploads BEFORE Spring's servlet.multipart limits above ever run.
+    # This is what causes ERR_CONNECTION_RESET on files well under the
+    # 50MB app-level cap. Raised here to match that cap; -1 disables the
+    # swallow-size check entirely, letting the multipart limits above be
+    # the sole gate (a clean 413/Payload Too Large instead of a reset).
+    max-swallow-size: -1
+    max-http-form-post-size: 55MB

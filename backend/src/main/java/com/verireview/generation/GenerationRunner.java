@@ -28,6 +28,7 @@ import com.verireview.project.ProjectSourceType;
 import com.verireview.user.UserRepository;
 import com.verireview.generation.GenerationExecutionEvidence;
 import com.verireview.verification.VerificationVerdict;
+import com.verireview.review.Review;
 import com.verireview.review.ReviewStatus;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -39,6 +40,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -131,10 +133,10 @@ public class GenerationRunner {
    * Generation pipeline: snapshot → iteration budget → PLANNING → CODING →
    * BUILDING → VERIFYING → VERIFIED → REVIEWING → REVIEWED.
    * After an applied generation patch, the rebuild path is:
-   * REVIEWED → REBUILDING → REVERIFYING → VERIFIED/FAILED.
-   * Files land in an isolated generation workspace; builds run in the Docker sandbox;
-   * Verified Agent evaluates evidence; Review Agent reviews generated projects.
-   * Re-review after a successful patch re-verification belongs to the next phase.
+   * REVIEWED → REBUILDING → REVERIFYING → VERIFIED → REVIEWING → REVIEWED
+   * (or FAILED). Files land in an isolated generation workspace; builds run
+   * in the Docker sandbox; Verified Agent evaluates evidence; Review Agent
+   * reviews generated projects and re-reviews them after every fix.
    */
   @Async("generationExecutor")
   public void runAsync(UUID generationId) {
@@ -226,9 +228,12 @@ public class GenerationRunner {
       Generation gen = generations.findById(generationId);
       int iteration = gen.getIteration();
 
-      // REVIEWED -> REBUILDING is the authoritative beginning of the
-      // patch-triggered rebuild lifecycle.
-      generations.markStatus(generationId, GenerationStatus.REBUILDING, null);
+      // GenerationService.triggerRebuildAndReverify already moved the row to
+      // REBUILDING before dispatch. Only transition here if that has not
+      // happened, so a same-state transition can never fail the run.
+      if (gen.getStatus() != GenerationStatus.REBUILDING) {
+        generations.markStatus(generationId, GenerationStatus.REBUILDING, null);
+      }
       runRebuildAndReverify(generationId, snapshot, iteration);
 
     } catch (Exception e) {
@@ -428,8 +433,13 @@ public class GenerationRunner {
     return validated;
   }
 
+  /**
+   * A blank secret (skipped database password or API key) can never be
+   * "embedded": {@code String.contains("")} is always true, so blank values
+   * must be ignored or every generation would be rejected.
+   */
   private void assertNoEmbeddedSecret(String content, String path, String secret) {
-    if (secret != null && content.contains(secret)) {
+    if (secret != null && !secret.isBlank() && content.contains(secret)) {
       throw new GenerationException(
           "Generated file embeds credentials (" + path + "); secrets must use environment variables");
     }
@@ -720,17 +730,95 @@ public class GenerationRunner {
   }
 
   /**
+   * Re-reviews the fixed workspace after a successful re-verification. The
+   * Review Agent runs again against the current files and any new findings
+   * are added to the generation's existing review (duplicates are skipped by
+   * the shared dedup key), so issue counts stay continuous across fix rounds.
+   *
+   * <p>Immediately after that fresh scan, {@code resolveFixedFindings} closes
+   * the loop: any Finding that had an active fix request and whose dedup key
+   * no longer appears in the fresh scan is marked VERIFIED_FIXED and its
+   * FixRequest(s) move to COMPLETED. A Finding that still reproduces is left
+   * open for another fix round. This is what makes the "fixed" stat and the
+   * download gate reflect reality instead of always reading zero.
+   *
+   * <p>The generation returns to REVIEWED; download unlocks only when the
+   * backend gate finds no unresolved blocking findings.
+   */
+  private void runReReview(UUID generationId,
+      GenerationService.GenerationSnapshot snapshot, int iteration) {
+    List<Review> previous = generations.reviews()
+        .findByGenerationIdOrderByCreatedAtDesc(generationId);
+    if (previous.isEmpty()) {
+      runReviewing(generationId, snapshot, iteration);
+      return;
+    }
+    Review existing = previous.get(0);
+    UUID reviewId = existing.getId();
+    int alreadyCounted = existing.getFindingCount();
+
+    String hash = GenerationService.inputHash(
+        snapshot.id().toString(), String.valueOf(iteration), "re-review");
+    UUID executionId = generations.startAgentExecution(
+        generationId, AgentType.REVIEW, snapshot.aiModel(), PROMPT_VERSION, hash);
+    long startedNanos = System.nanoTime();
+    try {
+      generations.linkReviewToAgentExecution(executionId, reviewId);
+
+      Path workspace = storage.generationWorkspaceDir(generationId, iteration);
+      List<com.verireview.agent.dto.AiFileSnapshot> files = readWorkspaceFiles(workspace);
+      List<com.verireview.agent.dto.AiDeterministicFinding> deterministic = new ArrayList<>();
+
+      // The idempotency key must differ from the first review's key, or the
+      // AI service may answer with its cached result for the unfixed files.
+      com.verireview.agent.dto.AiReviewRequest request = new com.verireview.agent.dto.AiReviewRequest(
+          reviewId.toString(),
+          generationId.toString(),
+          primaryLanguage(snapshot.backend()),
+          files,
+          deterministic,
+          "gen-rereview-" + reviewId + "-" + System.currentTimeMillis());
+
+      com.verireview.agent.dto.AiReviewResult result = reviewAiClient.review(request);
+
+      // Compute what the fresh scan reports BEFORE persisting, so the
+      // comparison in resolveFixedFindings is against the new scan's own
+      // findings, not against rows this same call is about to insert.
+      Set<String> currentDedupKeys = generations.computeReportedDedupKeys(result);
+
+      int added = generations.persistGenerationReviewFindings(
+          reviewId, result, result.promptVersion(), aiServiceProperties.modelLabel());
+
+      int resolved = generations.resolveFixedFindings(reviewId, currentDedupKeys);
+
+      generations.updateReview(reviewId, ReviewStatus.COMPLETED, alreadyCounted + added, null);
+
+      generations.finishAgentExecution(executionId, AgentExecutionStatus.COMPLETED,
+          null, millisSince(startedNanos),
+          "re-review:" + reviewId + " new:" + added + " fixed:" + resolved);
+
+      generations.markStatus(generationId, GenerationStatus.REVIEWED, null);
+
+    } catch (Exception e) {
+      generations.finishAgentExecution(executionId, AgentExecutionStatus.FAILED,
+          truncate("Re-review failed: " + e.getMessage(), 2000),
+          millisSince(startedNanos), null);
+      fail(generationId, snapshot.ownerId(), "Re-review error: " + e.getMessage());
+    }
+  }
+
+  /**
    * Runs the rebuild and re-verification flow for a generation after a patch
-   * has been applied. Uses the current iteration and the modified generation
-   * workspace.
+   * has been applied, then re-reviews the fixed files. Uses the current
+   * iteration and the modified generation workspace.
    *
    * @param generationId the generation to rebuild
    * @param snapshot the generation snapshot
-   * @param patchId the patch that was applied and triggered this rebuild
+   * @param iteration the current iteration whose workspace was patched
    */
   private void runRebuildAndReverify(UUID generationId,
       GenerationService.GenerationSnapshot snapshot, int iteration) {
-    // The caller has already transitioned REVIEWED -> REBUILDING.
+    // The generation is already in REBUILDING (see triggerRebuildAndReverify).
     UUID evidenceId = runBuilding(generationId, snapshot, iteration);
     GenerationExecutionEvidence evidence = generations.executionEvidence()
         .findById(evidenceId).orElseThrow();
@@ -754,10 +842,20 @@ public class GenerationRunner {
     UUID verificationRunId = generations.createVerificationRun(
         generationId, iteration, evidenceId);
 
-    runVerifying(generationId, snapshot, iteration, evidence, verificationRunId);
+    // Template (NONE-provider) projects have no LLM: verify from the evidence.
+    if (snapshot.aiProvider() == GenerationAiProvider.NONE) {
+      runDeterministicVerifying(generationId, snapshot, iteration, evidence, verificationRunId);
+    } else {
+      runVerifying(generationId, snapshot, iteration, evidence, verificationRunId);
+    }
 
-    // Successful verification transitions to VERIFIED inside runVerifying().
-    // The Review Agent is intentionally not invoked here; re-review is Task 8.
+    // Successful verification transitions to VERIFIED; then the Review Agent
+    // re-verifies the fixed files and the generation returns to REVIEWED.
+    Generation after = generations.findById(generationId);
+    if (after.getStatus() == GenerationStatus.VERIFIED) {
+      generations.markStatus(generationId, GenerationStatus.REVIEWING, null);
+      runReReview(generationId, snapshot, iteration);
+    }
   }
 
   /**
