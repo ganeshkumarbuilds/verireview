@@ -35,6 +35,7 @@ export interface ApiClientOptions {
 }
 
 const DEFAULT_BASE_URL = 'http://localhost:8080/api/v1';
+const ENV_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
 export class ApiClient {
   readonly baseUrl: string;
@@ -42,7 +43,11 @@ export class ApiClient {
   private readonly onUnauthorized?: () => void;
 
   constructor(options: ApiClientOptions = {}) {
-    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.baseUrl = (
+  options.baseUrl ??
+  ENV_BASE_URL ??
+  DEFAULT_BASE_URL
+).replace(/\/+$/, '');
     // Resolved per call (not in the constructor) so tests can stub fetch.
     this.fetchImpl = options.fetchImpl;
     this.onUnauthorized = options.onUnauthorized;
