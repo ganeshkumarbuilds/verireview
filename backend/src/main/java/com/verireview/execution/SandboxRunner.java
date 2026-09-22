@@ -16,13 +16,22 @@ import org.springframework.stereotype.Component;
 
 /**
  * Docker sandbox boundary for untrusted project execution (SECURITY_DESIGN
- * §4, AGENTS.md rule 14). Uploaded code, build tools, and analyzers run ONLY
+ * S4, AGENTS.md rule 14). Uploaded code, build tools, and analyzers run ONLY
  * inside a throwaway container: no network, memory/CPU/pid caps, a disposable
  * snapshot copy (never the canonical store), forced timeout, and workspace
  * wipe afterwards. The backend only ever reads report files back.
  *
- * <p>Invocation uses {@code ProcessBuilder} arg arrays — never a shell, never
+ * <p>Invocation uses {@code ProcessBuilder} arg arrays -- never a shell, never
  * interpolated user input (only internally generated temp paths).
+ *
+ * <p>{@code app.sandbox.docker-enabled} (default true) gates every Docker
+ * invocation in this class. Some deployment hosts (a standard PaaS web
+ * service without Docker-in-Docker support) cannot run Docker at all; on
+ * those hosts this flag is set to false so callers get an explicit, clearly
+ * labeled "skipped" result instead of a crash. A skip is never reported as a
+ * pass: callers can tell from {@link ExecutionResult#skipped()} that no real
+ * build or analysis ran, and every skip is logged so it is visible in
+ * server logs, not just swallowed silently.
  */
 @Component
 public class SandboxRunner {
@@ -37,9 +46,15 @@ public class SandboxRunner {
   private final String executionImage;
   private final long executionTimeoutSeconds;
   private final long maxOutputBytes;
+  private final boolean dockerEnabled;
 
   public long getExecutionTimeoutSeconds() {
     return executionTimeoutSeconds;
+  }
+
+  /** True when Docker is available in this environment and sandbox runs are real. */
+  public boolean isDockerEnabled() {
+    return dockerEnabled;
   }
 
   public SandboxRunner(
@@ -50,7 +65,8 @@ public class SandboxRunner {
       @Value("${app.analysis.pids-limit:256}") String pidsLimit,
       @Value("${app.execution.image:maven:3.9.9-eclipse-temurin-21}") String executionImage,
       @Value("${app.execution.timeout-seconds:300}") long executionTimeoutSeconds,
-      @Value("${app.execution.max-output-bytes:1048576}") long maxOutputBytes) {
+      @Value("${app.execution.max-output-bytes:1048576}") long maxOutputBytes,
+      @Value("${app.sandbox.docker-enabled:true}") boolean dockerEnabled) {
     this.image = image;
     this.timeoutSeconds = timeoutSeconds;
     this.memory = memory;
@@ -59,19 +75,42 @@ public class SandboxRunner {
     this.executionImage = executionImage;
     this.executionTimeoutSeconds = executionTimeoutSeconds;
     this.maxOutputBytes = maxOutputBytes;
+    this.dockerEnabled = dockerEnabled;
+    if (!dockerEnabled) {
+      log.warn("Docker sandbox is DISABLED (app.sandbox.docker-enabled=false). "
+          + "Builds, tests, and deterministic analysis tools will be skipped, "
+          + "not actually run, in this environment.");
+    }
   }
 
   /** Disposable container run workspace (snapshot copy + report dir). */
   public record SandboxWorkspace(Path snapshotDir, Path outputDir) {
   }
 
-  /** Result of a sandboxed build+test execution. */
-  public record ExecutionResult(int exitCode, String stdout, String stderr, long durationMs, boolean timedOut) {
+  /**
+   * Result of a sandboxed build+test execution.
+   *
+   * @param skipped true when Docker was disabled and no container actually
+   *     ran -- exitCode/stdout/stderr describe the skip, not a real result.
+   */
+  public record ExecutionResult(
+      int exitCode, String stdout, String stderr, long durationMs, boolean timedOut, boolean skipped) {
+
+    /** Convenience constructor for real (non-skipped) results. */
+    public ExecutionResult(int exitCode, String stdout, String stderr, long durationMs, boolean timedOut) {
+      this(exitCode, stdout, stderr, durationMs, timedOut, false);
+    }
   }
 
   /**
    * Copies the canonical project tree into a disposable snapshot and runs the
    * analysis image over it. Symlinks are never followed into the container.
+   *
+   * <p>When {@code app.sandbox.docker-enabled} is false, returns a workspace
+   * with an empty output directory instead of invoking Docker. Callers that
+   * expect analyzer report files (e.g. {@code AnalysisRunner}) must check
+   * {@link #isDockerEnabled()} first and treat a disabled sandbox as "no
+   * deterministic tools ran," not as an empty-but-valid report set.
    *
    * @throws SandboxException on docker, timeout, or container failure
    */
@@ -87,6 +126,10 @@ public class SandboxRunner {
     try {
       copySnapshot(projectDir, snapshot);
       Files.createDirectories(output);
+      if (!dockerEnabled) {
+        log.warn("Skipping sandboxed analysis: Docker is disabled in this environment");
+        return new SandboxWorkspace(snapshot, output);
+      }
       runContainer(snapshot, output);
       return new SandboxWorkspace(snapshot, output);
     } catch (SandboxException e) {
@@ -110,11 +153,27 @@ public class SandboxRunner {
    * Executes a custom build command for a generation workspace inside Docker.
    * Never runs on host; no network; capped resources; bounded timeout.
    *
+   * <p>When {@code app.sandbox.docker-enabled} is false, returns a skipped
+   * result (exit code 0, {@link ExecutionResult#skipped()} true) without
+   * touching Docker at all, so this environment can complete the generation
+   * pipeline without a real build/test verification.
+   *
    * @param projectDir the project/workspace directory to copy into the container
    * @param customCommand the shell command to run inside the container (e.g., "mvn test", "npm test", "pytest")
    *                      If null, defaults to Maven/Gradle detection
    */
   public ExecutionResult executeBuild(Path projectDir, String customCommand) {
+    if (!dockerEnabled) {
+      log.warn("Skipping sandboxed build/test: Docker is disabled in this environment");
+      return new ExecutionResult(
+          0,
+          "Docker sandbox is disabled in this environment; build/test execution was skipped, "
+              + "not run. This result does not verify that the project builds or its tests pass.",
+          "",
+          0,
+          false,
+          true);
+    }
     Path work;
     try {
       work = Files.createTempDirectory("verireview-execution-");

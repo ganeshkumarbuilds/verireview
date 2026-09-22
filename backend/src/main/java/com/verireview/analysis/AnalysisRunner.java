@@ -27,6 +27,15 @@ import org.springframework.stereotype.Component;
  * Async analysis worker. Runs outside any database transaction (the sandbox
  * run takes minutes); it crosses into short {@link AnalysisJobService}
  * transactions only to flip review state and persist findings.
+ *
+ * <p>Deterministic tools (Checkstyle, PMD, SpotBugs, Dependency-Check) all
+ * run inside the Docker sandbox. When {@code app.sandbox.docker-enabled} is
+ * false -- a deployment host without Docker-in-Docker support -- every
+ * deterministic tool is reported {@code SKIPPED_DISABLED} instead of being
+ * silently omitted or crashing the review, exactly like the existing
+ * Dependency-Check "needs an NVD mirror" skip. The AI Review Agent step is
+ * unaffected: it is a plain HTTP call to ai-service with no Docker
+ * dependency, so uploaded projects still get a real (AI-only) review.
  */
 @Component
 public class AnalysisRunner {
@@ -37,6 +46,7 @@ public class AnalysisRunner {
   private final SandboxRunner sandbox;
   private final AuditService audits;
   private final boolean dependencyCheckEnabled;
+  private final boolean dockerEnabled;
   private final AiServiceProperties aiProps;
   private final AiReviewService aiReviews;
   private final ReviewAiClient aiClient;
@@ -46,6 +56,7 @@ public class AnalysisRunner {
       SandboxRunner sandbox,
       AuditService audits,
       @Value("${app.analysis.dependency-check-enabled:false}") boolean dependencyCheckEnabled,
+      @Value("${app.sandbox.docker-enabled:true}") boolean dockerEnabled,
       AiServiceProperties aiProps,
       AiReviewService aiReviews,
       ReviewAiClient aiClient) {
@@ -53,6 +64,7 @@ public class AnalysisRunner {
     this.sandbox = sandbox;
     this.audits = audits;
     this.dependencyCheckEnabled = dependencyCheckEnabled;
+    this.dockerEnabled = dockerEnabled;
     this.aiProps = aiProps;
     this.aiReviews = aiReviews;
     this.aiClient = aiClient;
@@ -68,9 +80,16 @@ public class AnalysisRunner {
     jobs.markRunning(reviewId, started);
     SandboxRunner.SandboxWorkspace workspace = null;
     try {
-      Path projectDir = snapshot.storageRef() == null ? null : Path.of(snapshot.storageRef());
-      workspace = sandbox.analyzeSnapshot(projectDir);
-      List<ToolReport> reports = collectReports(workspace);
+      List<ToolReport> reports;
+      if (dockerEnabled) {
+        Path projectDir = snapshot.storageRef() == null ? null : Path.of(snapshot.storageRef());
+        workspace = sandbox.analyzeSnapshot(projectDir);
+        reports = collectReports(workspace);
+      } else {
+        log.warn("Skipping deterministic analysis tools for review {}: Docker is disabled "
+            + "in this environment. AI review still runs.", reviewId);
+        reports = skippedReports();
+      }
       int stored = jobs.persistFindings(reviewId, reports);
       AiReviewService.AiOutcome aiOutcome = runAiStep(reviewId);
       String notes = combineNotes(toolNotes(reports), aiOutcome.note());
@@ -84,6 +103,24 @@ public class AnalysisRunner {
     } finally {
       sandbox.deleteWorkspace(workspace);
     }
+  }
+
+  /**
+   * Reports used in place of real tool output when Docker is disabled.
+   * Every deterministic tool is explicitly SKIPPED_DISABLED -- never silently
+   * absent, and never reported as if it ran and found nothing.
+   */
+  private List<ToolReport> skippedReports() {
+    String reason = "Docker sandbox is disabled in this environment; deterministic "
+        + "analysis tools were not run";
+    List<ToolReport> reports = new ArrayList<>();
+    reports.add(ToolReport.skipped("checkstyle", ToolReport.ToolStatus.SKIPPED_DISABLED, reason));
+    reports.add(ToolReport.skipped("pmd", ToolReport.ToolStatus.SKIPPED_DISABLED, reason));
+    reports.add(ToolReport.skipped("spotbugs", ToolReport.ToolStatus.SKIPPED_DISABLED, reason));
+    reports.add(ToolReport.skipped("dependency-check", ToolReport.ToolStatus.SKIPPED_DISABLED,
+        dependencyCheckEnabled ? reason
+            : "Dependency-Check needs an NVD mirror; enable app.analysis.dependency-check-enabled explicitly"));
+    return reports;
   }
 
   private List<ToolReport> collectReports(SandboxRunner.SandboxWorkspace workspace) {
@@ -124,7 +161,7 @@ public class AnalysisRunner {
    * AI review step: scoped input is assembled and sent in one transaction,
    * the HTTP call runs outside any transaction (bounded by client timeouts),
    * and validation/persistence happen in a second short transaction.
-   * Any AI failure degrades to deterministic-only — it never fails the review.
+   * Any AI failure degrades to deterministic-only -- it never fails the review.
    */
   private AiReviewService.AiOutcome runAiStep(UUID reviewId) {
     if (!aiProps.enabled()) {
