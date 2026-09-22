@@ -1,8 +1,12 @@
 """Generation Agent reasoning.
 
 Pure, provider-agnostic logic: prompt building, strict output parsing,
-path validation. The only I/O is one ``LLMProvider.complete`` call per
-step (plan, then files). Never touches a database or filesystem.
+path validation. The only I/O is one or more ``LLMProvider.complete``
+calls per step (plan, then files) — retried a small, bounded number of
+times when the model's output fails strict JSON parsing, since a fresh
+sampling attempt commonly succeeds where a one-off bad completion (a
+refusal, a truncated response, prose instead of JSON) would not. Never
+touches a database or filesystem.
 """
 
 from dataclasses import dataclass
@@ -10,7 +14,7 @@ from importlib import resources
 import json
 import re
 
-from app.llm import LLMProvider, LLMRequest
+from app.llm import LLMError, LLMProvider, LLMRequest
 from app.schemas.generation import FilesRequest, GeneratedFile, PlannedFile, PlanRequest
 
 PROMPT_VERSION = "generation/v1"
@@ -24,6 +28,12 @@ MAX_DEPENDENCY_CHARS = 500
 MAX_DIRECTORIES = 200
 MAX_STEPS = 100
 MAX_STEP_CHARS = 2000
+
+# Bounded retries when the model's completion fails strict parsing. This is
+# separate from OpenRouterProvider's own transport-level retries: those cover
+# network/5xx/empty-completion failures, this covers a completion that came
+# back non-empty but is not valid JSON (prose, a refusal, malformed shape).
+MAX_PARSE_ATTEMPTS = 3
 
 _DRIVE_LETTER = re.compile(r"^[A-Za-z]:")
 
@@ -92,6 +102,17 @@ def build_files_prompt(request: FilesRequest) -> tuple[str, str]:
         "TASK: produce the single FILES JSON object described in the system prompt.",
     ]
     return system_prompt, "\n".join(user_lines)
+
+
+def _retry_prompt_suffix(attempt: int) -> str:
+    """Appended to the user prompt on retry attempts only, to steer the
+    model away from whatever caused the previous attempt's output to fail
+    strict JSON parsing (prose, markdown, a refusal, truncation)."""
+    return (
+        "\n\nIMPORTANT: your previous response could not be parsed as valid "
+        "JSON. Respond with ONLY the single JSON object described above — "
+        "no prose, no markdown code fences, no explanation before or after it."
+    )
 
 
 def validate_generated_path(path: str | None) -> list[str]:
@@ -279,18 +300,37 @@ def run_plan_agent(
     provider: LLMProvider,
     config: GenerationAgentConfig,
 ) -> tuple[list[PlannedFile], PlanSections, str, list[str]]:
-    """One reasoning pass for the plan step: prompt → LLM → strict parse."""
+    """One reasoning pass for the plan step: prompt -> LLM -> strict parse,
+    retried up to MAX_PARSE_ATTEMPTS times when the completion fails strict
+    JSON parsing (as opposed to a transport failure, which OpenRouterProvider
+    itself already retries). The final attempt's errors are returned as-is
+    so the caller sees the real parse failure, not a generic retry message."""
     system_prompt, user_prompt = build_plan_prompt(request)
-    response = provider.complete(
-        LLMRequest(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=config.model,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
+    last_errors: list[str] = ["generation produced no attempts"]
+    for attempt in range(1, MAX_PARSE_ATTEMPTS + 1):
+        prompt_for_attempt = (
+            user_prompt if attempt == 1 else user_prompt + _retry_prompt_suffix(attempt)
         )
-    )
-    return parse_plan_output(response.text)
+        try:
+            response = provider.complete(
+                LLMRequest(
+                    system_prompt=system_prompt,
+                    user_prompt=prompt_for_attempt,
+                    model=config.model,
+                    temperature=config.temperature,
+                    max_tokens=config.max_tokens,
+                )
+            )
+        except LLMError:
+            # Transport-level failure: OpenRouterProvider already retried
+            # internally and gave up. Do not mask it as a parse failure —
+            # let it propagate so the caller sees the real cause.
+            raise
+        files, sections, notes, errors = parse_plan_output(response.text)
+        if not errors:
+            return files, sections, notes, []
+        last_errors = errors
+    return [], PlanSections(), "", last_errors
 
 
 def run_files_agent(
@@ -298,15 +338,30 @@ def run_files_agent(
     provider: LLMProvider,
     config: GenerationAgentConfig,
 ) -> tuple[list[GeneratedFile], str, list[str]]:
-    """One reasoning pass for the files step: prompt → LLM → strict parse."""
+    """One reasoning pass for the files step: prompt -> LLM -> strict parse,
+    retried up to MAX_PARSE_ATTEMPTS times when the completion fails strict
+    JSON parsing. Mirrors run_plan_agent's retry behavior."""
     system_prompt, user_prompt = build_files_prompt(request)
-    response = provider.complete(
-        LLMRequest(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=config.model,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
+    planned_paths = [item.path for item in request.plan]
+    last_errors: list[str] = ["generation produced no attempts"]
+    for attempt in range(1, MAX_PARSE_ATTEMPTS + 1):
+        prompt_for_attempt = (
+            user_prompt if attempt == 1 else user_prompt + _retry_prompt_suffix(attempt)
         )
-    )
-    return parse_files_output(response.text, [item.path for item in request.plan])
+        try:
+            response = provider.complete(
+                LLMRequest(
+                    system_prompt=system_prompt,
+                    user_prompt=prompt_for_attempt,
+                    model=config.model,
+                    temperature=config.temperature,
+                    max_tokens=config.max_tokens,
+                )
+            )
+        except LLMError:
+            raise
+        files, notes, errors = parse_files_output(response.text, planned_paths)
+        if not errors:
+            return files, notes, []
+        last_errors = errors
+    return [], "", last_errors
