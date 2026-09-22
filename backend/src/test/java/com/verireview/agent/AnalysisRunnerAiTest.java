@@ -28,6 +28,11 @@ import org.mockito.ArgumentCaptor;
  * Phase 7C wiring tests: the runner sums deterministic + AI counts, merges
  * notes, and skips the AI step when disabled. Sandbox, jobs, and AI are
  * mocked — no Docker, no network, no database.
+ *
+ * <p>dockerEnabled is passed as true here: these tests exercise the real
+ * sandbox-analysis code path (via a mocked SandboxRunner) and assert that
+ * sandbox.analyzeSnapshot is actually invoked, which only happens when
+ * Docker is enabled.
  */
 class AnalysisRunnerAiTest {
 
@@ -46,7 +51,7 @@ class AnalysisRunnerAiTest {
 
   private AnalysisRunner runner() {
     return new AnalysisRunner(
-        jobs, sandbox, audits, false, aiProps, aiReviews, aiClient);
+        jobs, sandbox, audits, false, true, aiProps, aiReviews, aiClient);
   }
 
   private SandboxRunner.SandboxWorkspace workspace() throws Exception {
