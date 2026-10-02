@@ -101,3 +101,13 @@ server:
     # the sole gate (a clean 413/Payload Too Large instead of a reset).
     max-swallow-size: -1
     max-http-form-post-size: 55MB
+
+# Actuator (Phase 1) - expose health, info, metrics
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always

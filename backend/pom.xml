@@ -48,6 +48,23 @@
       <artifactId>spring-boot-starter-webmvc</artifactId>
     </dependency>
 
+    <!-- Phase 1: Actuator (health, metrics) + Springdoc OpenAPI -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>2.6.0</version>
+    </dependency>
+
+    <!-- Phase 1: Micrometer Prometheus registry -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+
     <!-- Phase 2: persistence (JPA/Hibernate, PostgreSQL, Flyway). -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

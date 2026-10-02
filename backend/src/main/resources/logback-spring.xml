@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="true" scanPeriod="30 seconds">
+
+  <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} traceId=%X{traceId} - %msg%n"/>
+
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>${LOG_PATTERN}</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Root logger -->
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+
+  <!-- Application loggers -->
+  <logger name="com.verireview" level="INFO"/>
+
+  <!-- Spring & Hibernate loggers (reduce noise) -->
+  <logger name="org.springframework.web" level="WARN"/>
+  <logger name="org.hibernate.SQL" level="WARN"/>
+  <logger name="org.hibernate.type.descriptor.sql.BasicBinder" level="WARN"/>
+  <logger name="org.flywaydb" level="INFO"/>
+
+  <!-- Actuator / Micrometer -->
+  <logger name="io.micrometer" level="WARN"/>
+
+</configuration>

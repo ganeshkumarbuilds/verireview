@@ -1,0 +1,23 @@
+# Test profile: Testcontainers PostgreSQL (wired by AbstractPersistenceTest @DynamicPropertySource)
+# This file provides safe defaults when not running via test context.
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/verireview_test
+    username: verireview
+    password: test
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+# Test JWT secret (32+ bytes for HS256)
+app:
+  jwt:
+    secret: test-only-phase3-signing-key-not-a-real-secret-0123456789abcdef
+
+logging:
+  level:
+    com.verireview: DEBUG
+    org.springframework.test: DEBUG
+    org.hibernate.SQL: DEBUG

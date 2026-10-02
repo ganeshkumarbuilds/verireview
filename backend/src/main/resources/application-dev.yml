@@ -1,0 +1,26 @@
+# Dev profile: local development with compose db
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/verireview
+    username: verireview
+    password: change-me-in-your-local-env
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+logging:
+  level:
+    com.verireview: DEBUG
+    org.springframework.web: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+
+app:
+  cors:
+    allowed-origins: http://localhost:5173

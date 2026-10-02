@@ -1,0 +1,73 @@
+# Production profile: all values from environment variables
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+          batch_size: 20
+        order_inserts: true
+        order_updates: true
+        generate_statistics: false
+
+server:
+  port: ${PORT:8080}
+  tomcat:
+    max-threads: 200
+    accept-count: 100
+    connection-timeout: 20000
+    max-swallow-size: -1
+    max-http-form-post-size: 55MB
+
+logging:
+  level:
+    com.verireview: INFO
+    org.springframework.web: WARN
+    org.hibernate: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} traceId=%X{traceId} - %msg%n"
+
+app:
+  jwt:
+    secret: ${JWT_SIGNING_KEY}
+    access-minutes: 15
+    refresh-days: 7
+  auth:
+    rate-limit-per-minute: 100
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS}
+  sandbox:
+    docker-enabled: ${DOCKER_SANDBOX_ENABLED:true}
+  ai-service:
+    url: ${AI_SERVICE_INTERNAL_URL}
+    secret: ${AI_SERVICE_INTERNAL_SECRET}
+    timeout-seconds: 120
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    export:
+      prometheus:
+        enabled: true
