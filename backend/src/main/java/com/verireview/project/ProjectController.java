@@ -1,7 +1,10 @@
 package com.verireview.project;
 
+import com.verireview.ingestion.PasteIngestionService;
 import com.verireview.project.dto.CreateProjectRequest;
 import com.verireview.project.dto.FileContentResponse;
+import com.verireview.project.dto.GitHubImportRequest;
+import com.verireview.project.dto.PasteImportRequest;
 import com.verireview.common.PagedResponse;
 import com.verireview.project.dto.ProjectFileResponse;
 import com.verireview.project.dto.ProjectResponse;
@@ -100,6 +103,39 @@ public class ProjectController {
       @RequestParam(value = "language", required = false) String language) {
     return ResponseEntity.status(HttpStatus.CREATED)
         .body(projects.importZip(principal.getId(), name, description, language, file));
+  }
+
+  /**
+   * GitHub shallow-clone import (Phase 5). Public GitHub URLs only, allowlisted
+   * to github.com. Clones with depth=1, extracts files to quarantine, then
+   * stages to project storage. Returns 202-compatible synchronous result with
+   * commit SHA in audit trail.
+   */
+  @PostMapping(path = "/import/github", consumes = MediaType.APPLICATION_JSON_VALUE)
+  public ResponseEntity<ProjectResponse> importGitHub(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @Valid @RequestBody GitHubImportRequest request) {
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .body(projects.importGitHub(
+            principal.getId(), request.name(), request.description(), request.language(), request.url()));
+  }
+
+  /**
+   * Paste-file intake (Phase 5). Accepts a list of file paths + contents (max 1 MB
+   * each, 2000 files total, 200 MB aggregate). Files are written to quarantine,
+   * validated, then staged to project storage.
+   */
+  @PostMapping(path = "/import/paste", consumes = MediaType.APPLICATION_JSON_VALUE)
+  public ResponseEntity<ProjectResponse> importPaste(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @Valid @RequestBody PasteImportRequest request) {
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .body(projects.importPaste(
+            principal.getId(),
+            request.name(),
+            request.description(),
+            request.language(),
+            request.files()));
   }
 
   @GetMapping("/{id}/files")

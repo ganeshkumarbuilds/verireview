@@ -13,6 +13,9 @@ export const quietButtonClass =
 export const inputClass =
   'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 transition-colors hover:border-indigo-300 focus:border-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-600/30';
 
+export const textareaClass =
+  'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 transition-colors hover:border-indigo-300 focus:border-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-600/30 resize-y min-h-[80px]';
+
 export const selectClass =
   'rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 transition-colors hover:border-indigo-300 focus:border-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-600/30';
 

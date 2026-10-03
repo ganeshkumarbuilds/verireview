@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { listFindings, listReviews } from '../api/analysis';
-import { listProjects, uploadZip } from '../api/projects';
+import { listProjects, uploadZip, importGitHub, importPaste, type PasteFileInput } from '../api/projects';
 import { createGeneration } from '../api/generations';
 import type { FindingResponse, ProjectResponse, ReviewResponse } from '../api/types';
 import type {
@@ -24,6 +24,7 @@ import {
   inputClass,
   primaryButtonClass,
   selectClass,
+  textareaClass,
 } from '../components/ui';
 import {
   ProjectAvatar,
@@ -84,6 +85,22 @@ export function ProjectsPage() {
   const [zipName, setZipName] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // --- GitHub import form (section 3) ---
+  const [ghName, setGhName] = useState('');
+  const [ghUrl, setGhUrl] = useState('');
+  const [ghDescription, setGhDescription] = useState('');
+  const [ghLanguage, setGhLanguage] = useState('');
+  const [ghBusy, setGhBusy] = useState(false);
+  const [ghError, setGhError] = useState<string | null>(null);
+
+  // --- Paste intake form (section 4) ---
+  const [pasteName, setPasteName] = useState('');
+  const [pasteDescription, setPasteDescription] = useState('');
+  const [pasteLanguage, setPasteLanguage] = useState('');
+  const [pasteFiles, setPasteFiles] = useState<PasteFileInput[]>([{ path: '', content: '' }]);
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const [pasteError, setPasteError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     if (!token) {
@@ -244,6 +261,71 @@ export function ProjectsPage() {
       setError(err instanceof ApiError ? err.message : 'Upload failed.');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleGitHubImport = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!token || !ghName.trim() || !ghUrl.trim()) {
+      return;
+    }
+    setGhBusy(true);
+    setGhError(null);
+    try {
+      await importGitHub(apiClient(), token, {
+        name: ghName.trim(),
+        url: ghUrl.trim(),
+        description: ghDescription.trim() || undefined,
+        language: ghLanguage.trim() || undefined,
+      });
+      setGhName('');
+      setGhUrl('');
+      setGhDescription('');
+      setGhLanguage('');
+      await reload();
+    } catch (err) {
+      setGhError(err instanceof ApiError ? err.message : 'GitHub import failed.');
+    } finally {
+      setGhBusy(false);
+    }
+  };
+
+  const addPasteFile = () => {
+    setPasteFiles([...pasteFiles, { path: '', content: '' }]);
+  };
+
+  const removePasteFile = (index: number) => {
+    if (pasteFiles.length <= 1) return;
+    setPasteFiles(pasteFiles.filter((_, i) => i !== index));
+  };
+
+  const updatePasteFile = (index: number, field: 'path' | 'content', value: string) => {
+    setPasteFiles(pasteFiles.map((f, i) => (i === index ? { ...f, [field]: value } : f)));
+  };
+
+  const handlePasteImport = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!token || !pasteName.trim() || pasteFiles.some(f => !f.path.trim() || !f.content.trim())) {
+      return;
+    }
+    setPasteBusy(true);
+    setPasteError(null);
+    try {
+      await importPaste(apiClient(), token, {
+        name: pasteName.trim(),
+        description: pasteDescription.trim() || undefined,
+        language: pasteLanguage.trim() || undefined,
+        files: pasteFiles.map(f => ({ path: f.path.trim(), content: f.content })),
+      });
+      setPasteName('');
+      setPasteDescription('');
+      setPasteLanguage('');
+      setPasteFiles([{ path: '', content: '' }]);
+      await reload();
+    } catch (err) {
+      setPasteError(err instanceof ApiError ? err.message : 'Paste import failed.');
+    } finally {
+      setPasteBusy(false);
     }
   };
 
@@ -581,6 +663,189 @@ export function ProjectsPage() {
             className={primaryButtonClass}
           >
             {busy ? 'Working…' : 'Upload and import'}
+          </button>
+        </form>
+      </Card>
+
+      <Card
+        title="3 · Import from GitHub"
+        subtitle="Shallow-clone a public GitHub repository (github.com only). Maximum 2,000 files and 200 MB total."
+      >
+        <form onSubmit={handleGitHubImport} aria-label="GitHub import form" className="space-y-3">
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Project name
+            </p>
+            <input
+              aria-label="GitHub project name"
+              value={ghName}
+              onChange={(event) => setGhName(event.target.value)}
+              placeholder="e.g. awesome-project"
+              maxLength={200}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              GitHub repository URL
+            </p>
+            <input
+              aria-label="GitHub URL"
+              value={ghUrl}
+              onChange={(event) => setGhUrl(event.target.value)}
+              placeholder="https://github.com/owner/repo"
+              maxLength={500}
+              inputMode="url"
+              autoComplete="off"
+              className={inputClass}
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              Public repositories only. Cloned with depth=1 (latest commit only).
+            </p>
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Description (optional)
+            </p>
+            <textarea
+              aria-label="GitHub import description"
+              value={ghDescription}
+              onChange={(event) => setGhDescription(event.target.value)}
+              placeholder="Brief description of the codebase"
+              rows={2}
+              maxLength={5000}
+              className={textareaClass}
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Primary language (optional)
+            </p>
+            <input
+              aria-label="GitHub import language"
+              value={ghLanguage}
+              onChange={(event) => setGhLanguage(event.target.value)}
+              placeholder="e.g. java, python, typescript"
+              maxLength={100}
+              className={inputClass}
+            />
+          </div>
+          {ghError && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+              {ghError}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={ghBusy || !ghName.trim() || !ghUrl.trim()}
+            className={primaryButtonClass}
+          >
+            {ghBusy ? 'Importing…' : 'Import from GitHub'}
+          </button>
+        </form>
+      </Card>
+
+      <Card
+        title="4 · Paste code files"
+        subtitle="Manually add files by pasting their path and content. Maximum 2,000 files, 1 MB per file, 200 MB total."
+      >
+        <form onSubmit={handlePasteImport} aria-label="Paste import form" className="space-y-3">
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Project name
+            </p>
+            <input
+              aria-label="Paste project name"
+              value={pasteName}
+              onChange={(event) => setPasteName(event.target.value)}
+              placeholder="e.g. my-pasted-code"
+              maxLength={200}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Description (optional)
+            </p>
+            <textarea
+              aria-label="Paste import description"
+              value={pasteDescription}
+              onChange={(event) => setPasteDescription(event.target.value)}
+              placeholder="Brief description of the codebase"
+              rows={2}
+              maxLength={5000}
+              className={textareaClass}
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Primary language (optional)
+            </p>
+            <input
+              aria-label="Paste import language"
+              value={pasteLanguage}
+              onChange={(event) => setPasteLanguage(event.target.value)}
+              placeholder="e.g. java, python, typescript"
+              maxLength={100}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Files
+            </p>
+            <div className="space-y-2">
+              {pasteFiles.map((file, index) => (
+                <div key={index} className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    aria-label={`File ${index + 1} path`}
+                    value={file.path}
+                    onChange={(event) => updatePasteFile(index, 'path', event.target.value)}
+                    placeholder={`File path (e.g. src/main/java/App.java)`}
+                    maxLength={500}
+                    className={inputClass}
+                  />
+                  <textarea
+                    aria-label={`File ${index + 1} content`}
+                    value={file.content}
+                    onChange={(event) => updatePasteFile(index, 'content', event.target.value)}
+                    placeholder={`File content`}
+                    rows={4}
+                    maxLength={1000000}
+                    className={textareaClass}
+                  />
+                  {pasteFiles.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removePasteFile(index)}
+                      aria-label={`Remove file ${index + 1}`}
+                      className="self-start text-sm text-red-600 hover:text-red-800"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={addPasteFile}
+              className="text-sm font-semibold text-indigo-700 hover:text-indigo-900"
+            >
+              + Add another file
+            </button>
+          </div>
+          {pasteError && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+              {pasteError}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={pasteBusy || !pasteName.trim() || pasteFiles.some(f => !f.path.trim() || !f.content.trim())}
+            className={primaryButtonClass}
+          >
+            {pasteBusy ? 'Importing…' : 'Import pasted files'}
           </button>
         </form>
       </Card>

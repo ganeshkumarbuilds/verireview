@@ -18,6 +18,25 @@ export type FileListParams = {
   size?: number;
 };
 
+export type GitHubImportInput = {
+  name: string;
+  description?: string;
+  language?: string;
+  url: string;
+};
+
+export type PasteFileInput = {
+  path: string;
+  content: string;
+};
+
+export type PasteImportInput = {
+  name: string;
+  description?: string;
+  language?: string;
+  files: PasteFileInput[];
+};
+
 function query(params: Record<string, string | number | undefined>): string {
   const parts = Object.entries(params)
     .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
@@ -86,6 +105,30 @@ export async function uploadZip(
     method: 'POST',
     headers: bearer(token),
     body: form,
+  });
+}
+
+export async function importGitHub(
+  client: ApiClient,
+  token: string,
+  input: GitHubImportInput,
+): Promise<ProjectResponse> {
+  return client.request<ProjectResponse>('/projects/import/github', {
+    method: 'POST',
+    headers: bearer(token),
+    body: JSON.stringify(input),
+  });
+}
+
+export async function importPaste(
+  client: ApiClient,
+  token: string,
+  input: PasteImportInput,
+): Promise<ProjectResponse> {
+  return client.request<ProjectResponse>('/projects/import/paste', {
+    method: 'POST',
+    headers: bearer(token),
+    body: JSON.stringify(input),
   });
 }
 

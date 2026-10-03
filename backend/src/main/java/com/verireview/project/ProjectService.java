@@ -1,10 +1,13 @@
 package com.verireview.project;
 
 import com.verireview.audit.AuditService;
+import com.verireview.ingestion.GitHubIngestionService;
+import com.verireview.ingestion.PasteIngestionService;
 import com.verireview.ingestion.ProjectStorage;
 import com.verireview.ingestion.ZipIngestionService;
 import com.verireview.project.dto.CreateProjectRequest;
 import com.verireview.project.dto.FileContentResponse;
+import com.verireview.project.dto.PasteImportRequest;
 import com.verireview.common.PagedResponse;
 import com.verireview.project.dto.ProjectFileResponse;
 import com.verireview.project.dto.ProjectResponse;
@@ -12,6 +15,7 @@ import com.verireview.project.dto.UpdateProjectRequest;
 import com.verireview.user.UserRepository;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
@@ -34,6 +38,8 @@ public class ProjectService {
   private final ProjectFileRepository files;
   private final UserRepository users;
   private final ZipIngestionService zipIngestion;
+  private final GitHubIngestionService githubIngestion;
+  private final PasteIngestionService pasteIngestion;
   private final ProjectStorage storage;
   private final AuditService audits;
 
@@ -42,12 +48,16 @@ public class ProjectService {
       ProjectFileRepository files,
       UserRepository users,
       ZipIngestionService zipIngestion,
+      GitHubIngestionService githubIngestion,
+      PasteIngestionService pasteIngestion,
       ProjectStorage storage,
       AuditService audits) {
     this.projects = projects;
     this.files = files;
     this.users = users;
     this.zipIngestion = zipIngestion;
+    this.githubIngestion = githubIngestion;
+    this.pasteIngestion = pasteIngestion;
     this.storage = storage;
     this.audits = audits;
   }
@@ -76,6 +86,25 @@ public class ProjectService {
       UUID ownerId, String name, String description, String language, MultipartFile file) {
     ZipIngestionService.ImportedProject imported =
         zipIngestion.ingest(ownerId, name, description, language, file);
+    return toResponse(imported.project(), imported.fileCount());
+  }
+
+  @Transactional
+  public ProjectResponse importGitHub(
+      UUID ownerId, String name, String description, String language, String url) {
+    GitHubIngestionService.ImportedProject imported =
+        githubIngestion.ingest(ownerId, name, description, language, url);
+    return toResponse(imported.project(), imported.fileCount());
+  }
+
+  @Transactional
+  public ProjectResponse importPaste(
+      UUID ownerId, String name, String description, String language, List<PasteImportRequest.PasteFileInput> files) {
+    List<PasteIngestionService.PasteFileInput> serviceFiles = files.stream()
+        .map(f -> new PasteIngestionService.PasteFileInput(f.path(), f.content()))
+        .toList();
+    PasteIngestionService.ImportedProject imported =
+        pasteIngestion.ingest(ownerId, name, description, language, serviceFiles);
     return toResponse(imported.project(), imported.fileCount());
   }
 
