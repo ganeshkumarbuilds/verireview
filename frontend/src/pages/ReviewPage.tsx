@@ -26,6 +26,7 @@ import {
   primaryButtonClass,
   secondaryButtonClass,
   selectClass,
+  AgentStatusIndicator,
 } from '../components/ui';
 import {
   WorkspaceCrumb,
@@ -328,6 +329,13 @@ export function ReviewPage() {
           )}
           {activeReview && (
             <p className="mt-3 text-sm text-slate-600">Analysis in progress… findings update when it completes.</p>
+          )}
+          {activeReview && (
+            <div className="mt-3 flex flex-wrap items-center gap-2" aria-label="Agent pipeline status">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Agents:</span>
+              <AgentStatusIndicator state="completed" agentType="analysis" showLabel />
+              <AgentStatusIndicator state="active" agentType="review" showLabel />
+            </div>
           )}
         </Card>
       )}

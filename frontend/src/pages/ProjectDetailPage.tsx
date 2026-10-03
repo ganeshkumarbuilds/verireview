@@ -32,6 +32,7 @@ import {
   primaryButtonClass,
   secondaryButtonClass,
   selectClass,
+  AgentStatusIndicator,
 } from '../components/ui';
 import { FindingDetail } from '../components/FindingDetail';
 import { WorkspaceCrumb } from '../components/workflow';
@@ -503,6 +504,17 @@ export function ProjectDetailPage() {
               <Badge tone={statusTone(activeReview.status)}>{activeReview.status}</Badge>
               <span className="text-slate-600">Analysis in progress…</span>
             </span>
+          )}
+          {activeReview && (
+            <div className="mt-3 flex flex-wrap items-center gap-2" aria-label="Agent pipeline status">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Agents:</span>
+              <AgentStatusIndicator state="completed" agentType="analysis" showLabel />
+              <AgentStatusIndicator 
+                state={activeReview.status === 'RUNNING' ? 'active' : 'waiting'} 
+                agentType="review" 
+                showLabel 
+              />
+            </div>
           )}
           {!activeReview && reviews.length === 0 && (
             <span className="text-sm text-slate-600">No analysis yet — findings appear here.</span>

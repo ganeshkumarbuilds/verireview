@@ -30,10 +30,7 @@ import {
   selectClass,
 } from '../components/ui';
 import { WorkspaceCrumb } from '../components/workflow';
-import {
-  getPipelineStageIconClass,
-  getPipelineStageLabelClass,
-} from '../components/ui';
+import { GenerationPipeline, GENERATION_PIPELINE_STAGES } from '../components/GenerationPipeline';
 
 const POLL_MS = 3000;
 const DEFAULT_MODEL = 'openai/gpt-4o-mini';
@@ -66,8 +63,6 @@ const PIPELINE_STAGES = [
   { key: 'verified', label: 'Verified Agent', statuses: ['VERIFYING', 'REVERIFYING', 'VERIFIED'] },
   { key: 'review', label: 'Review Agent', statuses: ['REVIEWING', 'REVIEWED'] },
 ];
-
-const STAGE_NUMBERS = ['①', '②', '③', '④', '⑤'];
 
 const STATUS_ORDER = [
   'QUEUED', 'PLANNING', 'CODING', 'BUILDING', 'TESTING',
@@ -759,72 +754,37 @@ export function GeneratePage() {
           subtitle="Live status from the backend — nothing here is estimated."
           actions={<Badge tone={statusTone(generation.status)}>{generation.status}</Badge>}
         >
-          <div aria-label="Generation agent workflow" className="mb-4 grid gap-2 sm:grid-cols-5">
-            {PIPELINE_STAGES.map((stage, stageIndex) => {
-              const persistedStep = generation.agentWorkflow?.find(
-                (item) =>
-                  stage.statuses.includes(item.agentType) ||
-                  item.agentType.toLowerCase().includes(stage.key),
-              );
-              const currentStage = stage.statuses.includes(generation.status);
-              const completedStage =
-                persistedStep?.status === 'COMPLETED' ||
-                (!persistedStep && !currentStage && statusIndex > stageIndex);
-              const failedStage =
-                persistedStep?.status === 'FAILED' || (failed && currentStage);
+          <div aria-label="Generation agent workflow" className="mb-4">
+            <GenerationPipeline
+              stages={GENERATION_PIPELINE_STAGES.map((label, index) => {
+                const stageKey = label.toLowerCase().replace(/\s+/g, '');
+                const statuses = PIPELINE_STAGES.find(s => s.label === label)?.statuses || [];
+                const persistedStep = generation.agentWorkflow?.find(
+                  (item) =>
+                    statuses.includes(item.agentType) ||
+                    item.agentType.toLowerCase().includes(stageKey),
+                );
+                const currentStage = statuses.includes(generation.status);
+                const completedStage =
+                  persistedStep?.status === 'COMPLETED' ||
+                  (!persistedStep && !currentStage && statusIndex > index);
+                const failedStage =
+                  persistedStep?.status === 'FAILED' || (failed && currentStage);
 
-              let animationState: 'waiting' | 'active' | 'completed' | 'failed' = 'waiting';
-              if (failedStage) animationState = 'failed';
-              else if (completedStage) animationState = 'completed';
-              else if (currentStage) animationState = 'active';
+                let state: 'done' | 'active' | 'planned' = 'planned';
+                if (failedStage) state = 'planned'; // failed shows as planned with error below
+                else if (completedStage) state = 'done';
+                else if (currentStage) state = 'active';
 
-              return (
-                <div
-                  key={stage.key}
-                  className={`rounded-xl border p-3 transition-all duration-500 ease-out ${
-                    animationState === 'active'
-                      ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300 shadow-sm'
-                      : animationState === 'completed'
-                        ? 'border-emerald-200 bg-emerald-50'
-                        : animationState === 'failed'
-                          ? 'border-red-200 bg-red-50'
-                          : 'border-slate-200 bg-slate-50'
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <span className={getPipelineStageIconClass(animationState)}>
-                      {animationState === 'completed'
-                        ? '✓'
-                        : animationState === 'failed'
-                          ? '✕'
-                          : STAGE_NUMBERS[stageIndex]}
-                    </span>
-                    <span className={`min-w-0 flex-1 ${getPipelineStageLabelClass(animationState)}`}>
-                      <p className="text-xs font-bold text-slate-800">{stage.label}</p>
-                      <p
-                        className={`mt-1 text-xs font-semibold ${
-                          animationState === 'active'
-                            ? 'text-indigo-700'
-                            : animationState === 'completed'
-                              ? 'text-emerald-700'
-                              : animationState === 'failed'
-                                ? 'text-red-700'
-                                : 'text-slate-400'
-                        }`}
-                      >
-                        {animationState === 'active'
-                          ? 'Working'
-                          : animationState === 'completed'
-                            ? 'Completed'
-                            : animationState === 'failed'
-                              ? 'Failed'
-                              : 'Waiting'}
-                      </p>
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
+                return {
+                  key: stageKey,
+                  label,
+                  state,
+                  hint: failedStage ? 'Failed — check error details' : undefined,
+                };
+              })}
+              currentStageIndex={statusIndex}
+            />
           </div>
 
           {!terminal && (

@@ -1,4 +1,12 @@
 import { Badge } from './ui';
+import { 
+  AgentPipeline, 
+  AgentConfig, 
+  AgentState,
+  AGENT_PIPELINE,
+  getAgentColor,
+  AgentType 
+} from './ui';
 
 export type PipelineStageState = 'done' | 'active' | 'planned';
 
@@ -46,39 +54,112 @@ function stageLabel(state: PipelineStageState): string {
 }
 
 /**
- * Honest workflow preview: which stages are done/active versus merely
- * planned. Never shows progress, logs, or agent activity — parents decide
- * each stage's state from real backend data.
+ * Maps generation pipeline stages to agent types for animation.
  */
-export function GenerationPipeline({ stages }: { stages: PipelineStage[] }) {
+function mapStageToAgent(stageKey: string): AgentType {
+  const map: Record<string, AgentType> = {
+    'Requirement': 'planner',
+    'Planning': 'planner',
+    'Coding': 'coding',
+    'Build': 'build',
+    'Test': 'build',
+    'Verify': 'verified',
+    'Review': 'review',
+    'Fix': 'coding',
+    'Complete': 'verified',
+  };
+  return map[stageKey] || 'planner';
+}
+
+/**
+ * Converts PipelineStage to AgentConfig with proper state mapping.
+ */
+function stagesToAgents(stages: PipelineStage[]): (AgentConfig & { state: AgentState; hint?: string })[] {
+  return stages.map(stage => {
+    const agentType = mapStageToAgent(stage.key);
+    const baseAgent = AGENT_PIPELINE.find(a => a.type === agentType);
+    return {
+      ...baseAgent!,
+      label: stage.label,
+      state: stage.state === 'done' ? 'completed' : stage.state === 'active' ? 'active' : 'waiting',
+      hint: stage.hint,
+    };
+  });
+}
+
+/**
+ * Animated Generation Pipeline - shows smooth agent animations based on real backend state.
+ */
+export function GenerationPipeline({ 
+  stages, 
+  currentStageIndex = 0,
+  showDetails = true,
+  className = ''
+}: { 
+  stages: PipelineStage[]; 
+  currentStageIndex?: number;
+  showDetails?: boolean;
+  className?: string;
+}) {
+  const agents = stagesToAgents(stages);
+  const states: Record<AgentType, AgentState> = {} as Record<AgentType, AgentState>;
+  
+  agents.forEach((agent, index) => {
+    const stage = stages.find(s => s.key === mapStageToAgent(agent.type));
+    if (stage) {
+      states[agent.type] = stage.state === 'done' ? 'completed' : stage.state === 'active' ? 'active' : 'waiting';
+    } else {
+      states[agent.type] = index < currentStageIndex ? 'completed' : index === currentStageIndex ? 'active' : 'waiting';
+    }
+  });
+
   return (
-    <ol aria-label="Generation pipeline" className="space-y-0">
-      {stages.map((stage, index) => (
-        <li key={stage.key} className="relative flex gap-3 pb-4 last:pb-0">
-          {index < stages.length - 1 && (
-            <span aria-hidden="true" className="absolute left-[13px] top-7 h-[calc(100%-1.5rem)] w-px bg-indigo-100" />
-          )}
-          <span
-            aria-hidden="true"
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
-              stage.state === 'done'
-                ? 'bg-emerald-600 text-white'
-                : stage.state === 'active'
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-white text-slate-400 ring-1 ring-inset ring-slate-200'
-            }`}
-          >
-            {stage.state === 'done' ? '✓' : index + 1}
-          </span>
-          <span className="min-w-0 flex-1 pt-0.5">
-            <span className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-semibold text-indigo-950">{stage.label}</span>
-              <Badge tone={stageTone(stage.state)}>{stageLabel(stage.state)}</Badge>
-            </span>
-            {stage.hint && <span className="mt-0.5 block text-xs text-slate-500">{stage.hint}</span>}
-          </span>
-        </li>
-      ))}
-    </ol>
+    <div className={`space-y-3 ${className}`}>
+      <AgentPipeline 
+        agents={agents} 
+        states={states}
+        className="space-y-3"
+      />
+      {showDetails && (
+        <div className="mt-4 space-y-2">
+          {stages.map((stage, index) => {
+            const isActive = index === currentStageIndex;
+            const isDone = stage.state === 'done';
+            const agentType = mapStageToAgent(stage.key);
+            const colors = getAgentColor(agentType);
+            
+            return (
+              <div 
+                key={stage.key}
+                className={`flex items-center gap-3 px-3 py-2 rounded-xl transition-all duration-500 ${
+                  isActive 
+                    ? `bg-${colors.light} ring-2 ring-${colors.primary}-200 shadow-${colors.glow} animate-pulse`
+                    : isDone 
+                      ? `bg-${colors.light} ring-1 ring-${colors.primary}-200`
+                      : 'bg-white'
+                }`}
+              >
+                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-sm font-bold transition-all duration-300 ${
+                  isActive 
+                    ? `bg-${colors.primary}-600 text-white ring-2 ring-${colors.primary}-300 shadow-lg shadow-${colors.glow} animate-pulse`
+                    : isDone 
+                      ? `bg-${colors.primary}-600 text-white ring-2 ring-${colors.primary}-300`
+                      : 'bg-white text-slate-400 ring-1 ring-inset ring-slate-200'
+                }`}>
+                  {isDone ? '✓' : index + 1}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-800">{stage.label}</span>
+                    <Badge tone={stageTone(stage.state)}>{stageLabel(stage.state)}</Badge>
+                  </div>
+                  {stage.hint && <span className="mt-0.5 block text-xs text-slate-500">{stage.hint}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

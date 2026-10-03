@@ -303,3 +303,382 @@ export function getPipelineConnectorClass(state: 'waiting' | 'active' | 'complet
       return `${base} bg-indigo-100`;
   }
 }
+
+/**
+ * Agent types in the VeriReview pipeline.
+ */
+export type AgentType = 
+  | 'planner' 
+  | 'coding' 
+  | 'build' 
+  | 'verified' 
+  | 'review' 
+  | 'generation'
+  | 'analysis';
+
+/**
+ * Agent state for animation purposes.
+ */
+export type AgentState = 'waiting' | 'active' | 'completed' | 'failed' | 'skipped';
+
+/**
+ * Agent configuration with display properties.
+ */
+export interface AgentConfig {
+  type: AgentType;
+  label: string;
+  icon: ReactNode;
+  description: string;
+  order: number;
+}
+
+/**
+ * Default agent pipeline configuration.
+ */
+export const AGENT_PIPELINE: AgentConfig[] = [
+  { 
+    type: 'planner', 
+    label: 'Planner Agent', 
+    icon: '📋',
+    description: 'Analyzes requirements and creates execution plan',
+    order: 1 
+  },
+  { 
+    type: 'coding', 
+    label: 'Coding Agent', 
+    icon: '💻',
+    description: 'Generates code changes and fixes',
+    order: 2 
+  },
+  { 
+    type: 'build', 
+    label: 'Build & Test', 
+    icon: '🔨',
+    description: 'Compiles project and runs test suite',
+    order: 3 
+  },
+  { 
+    type: 'verified', 
+    label: 'Verified Agent', 
+    icon: '✅',
+    description: 'Evaluates build/test evidence for verification',
+    order: 4 
+  },
+  { 
+    type: 'review', 
+    label: 'Review Agent', 
+    icon: '🔍',
+    description: 'Performs AI-powered code review',
+    order: 5 
+  },
+];
+
+/**
+ * Returns the color theme for an agent type.
+ */
+export function getAgentColor(agentType: AgentType): { 
+  primary: string; 
+  light: string; 
+  dark: string; 
+  glow: string;
+} {
+  switch (agentType) {
+    case 'planner':
+      return { primary: 'indigo', light: 'indigo-50', dark: 'indigo-700', glow: 'indigo-600/30' };
+    case 'coding':
+      return { primary: 'violet', light: 'violet-50', dark: 'violet-700', glow: 'violet-600/30' };
+    case 'build':
+      return { primary: 'amber', light: 'amber-50', dark: 'amber-700', glow: 'amber-600/30' };
+    case 'verified':
+      return { primary: 'emerald', light: 'emerald-50', dark: 'emerald-700', glow: 'emerald-600/30' };
+    case 'review':
+      return { primary: 'sky', light: 'sky-50', dark: 'sky-700', glow: 'sky-600/30' };
+    case 'generation':
+      return { primary: 'purple', light: 'purple-50', dark: 'purple-700', glow: 'purple-600/30' };
+    case 'analysis':
+      return { primary: 'blue', light: 'blue-50', dark: 'blue-700', glow: 'blue-600/30' };
+    default:
+      return { primary: 'slate', light: 'slate-50', dark: 'slate-700', glow: 'slate-600/30' };
+  }
+}
+
+/**
+ * Returns computed className for an agent stage based on state.
+ */
+export function getAgentStageClass(
+  agentType: AgentType, 
+  state: AgentState,
+  includeBase = true
+): string {
+  const colors = getAgentColor(agentType);
+  const base = includeBase 
+    ? 'relative flex items-start gap-3 rounded-xl p-4 transition-all duration-500 ease-out border'
+    : 'transition-all duration-500 ease-out';
+  
+  switch (state) {
+    case 'active':
+      return `${base} border-${colors.primary}-300 bg-${colors.light} ring-2 ring-${colors.primary}-200 shadow-lg shadow-${colors.glow} animate-pulse`;
+    case 'completed':
+      return `${base} border-${colors.primary}-200 bg-${colors.light} ring-1 ring-${colors.primary}-200`;
+    case 'failed':
+      return `${base} border-red-200 bg-red-50 ring-1 ring-red-200 animate-bounce`;
+    case 'skipped':
+      return `${base} border-slate-200 bg-slate-50 opacity-60`;
+    default: // waiting
+      return `${base} border-slate-200 bg-white`;
+  }
+}
+
+/**
+ * Returns the icon class for an agent stage based on state.
+ */
+export function getAgentIconClass(agentType: AgentType, state: AgentState): string {
+  const colors = getAgentColor(agentType);
+  const base = 'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-lg font-bold transition-all duration-300 ease-out';
+  
+  switch (state) {
+    case 'active':
+      return `${base} bg-${colors.primary}-600 text-white ring-3 ring-${colors.primary}-200 shadow-xl shadow-${colors.glow} animate-pulse`;
+    case 'completed':
+      return `${base} bg-${colors.primary}-600 text-white ring-2 ring-${colors.primary}-300`;
+    case 'failed':
+      return `${base} bg-red-600 text-white ring-2 ring-red-300 animate-bounce`;
+    case 'skipped':
+      return `${base} bg-slate-300 text-slate-500`;
+    default: // waiting
+      return `${base} bg-white text-slate-300 ring-1 ring-inset ring-slate-200`;
+  }
+}
+
+/**
+ * Returns the label class for an agent stage based on state.
+ */
+export function getAgentLabelClass(state: AgentState): string {
+  const base = 'min-w-0 flex-1 pt-1 transition-all duration-300';
+  switch (state) {
+    case 'active':
+      return `${base} opacity-100`;
+    case 'completed':
+      return `${base} opacity-100`;
+    case 'failed':
+      return `${base} opacity-100 text-red-700`;
+    case 'skipped':
+      return `${base} opacity-50 text-slate-400 line-through`;
+    default:
+      return `${base} opacity-60 text-slate-500`;
+  }
+}
+
+/**
+ * Returns the connector line class between agent stages.
+ */
+export function getAgentConnectorClass(state: AgentState, agentColor: string): string {
+  const base = 'absolute left-5 top-10 h-[calc(100%-2.5rem)] w-0.5 transition-colors duration-500';
+  switch (state) {
+    case 'active':
+    case 'completed':
+      return `${base} bg-${agentColor}-300`;
+    case 'failed':
+      return `${base} bg-red-300`;
+    default:
+      return `${base} bg-slate-200`;
+  }
+}
+
+/**
+ * Animated agent status indicator - shows pulsing dot with tooltip.
+ */
+export function AgentStatusIndicator({ 
+  state, 
+  agentType, 
+  className = '',
+  showLabel = true 
+}: { 
+  state: AgentState; 
+  agentType: AgentType; 
+  className?: string; 
+  showLabel?: boolean;
+}) {
+  const colors = getAgentColor(agentType);
+  const agent = AGENT_PIPELINE.find(a => a.type === agentType);
+  
+  const dotClasses = {
+    waiting: 'h-2.5 w-2.5 rounded-full bg-slate-300',
+    active: `h-2.5 w-2.5 rounded-full bg-${colors.primary}-500 animate-pulse shadow-[0_0_8px_${colors.primary}-400]`,
+    completed: `h-2.5 w-2.5 rounded-full bg-${colors.primary}-500`,
+    failed: 'h-2.5 w-2.5 rounded-full bg-red-500 animate-bounce',
+    skipped: 'h-2.5 w-2.5 rounded-full bg-slate-300 opacity-50',
+  };
+  
+  return (
+    <div className={`flex items-center gap-2 ${className}`} title={agent?.label}>
+      <span className={dotClasses[state]} />
+      {showLabel && (
+        <span className={`text-xs font-medium ${state === 'active' ? `text-${colors.dark}` : 'text-slate-500'}`}>
+          {agent?.label}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Animated progress ring for agent completion percentage.
+ */
+export function AgentProgressRing({ 
+  progress, 
+  size = 48, 
+  strokeWidth = 4,
+  agentType,
+  className = ''
+}: { 
+  progress: number; 
+  size?: number; 
+  strokeWidth?: number;
+  agentType?: AgentType;
+  className?: string;
+}) {
+  const colors = agentType ? getAgentColor(agentType) : { primary: 'indigo' };
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - Math.min(1, Math.max(0, progress / 100)));
+  
+  return (
+    <div className={`relative inline-flex ${className}`} style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="transform -rotate-90">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={`#e0e7ef`}
+          strokeWidth={strokeWidth}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={`#${colors.primary === 'indigo' ? '6366f1' : colors.primary === 'violet' ? '8b5cf6' : colors.primary === 'amber' ? 'f59e0b' : colors.primary === 'emerald' ? '10b981' : colors.primary === 'sky' ? '0ea5e9' : '6366f1'}`}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          className="transition-all duration-700 ease-out"
+          style={{ strokeDasharray: circumference, strokeDashoffset: offset }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-xs font-bold text-slate-700">{Math.round(progress)}%</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Agent timeline step - for showing sequential agent execution with animations.
+ */
+export function AgentTimelineStep({ 
+  agent, 
+  state, 
+  duration, 
+  error,
+  isLast = false,
+  className = ''
+}: { 
+  agent: AgentConfig; 
+  state: AgentState; 
+  duration?: number; 
+  error?: string;
+  isLast?: boolean;
+  className?: string;
+}) {
+  const colors = getAgentColor(agent.type);
+  const stageClass = getAgentStageClass(agent.type, state);
+  const iconClass = getAgentIconClass(agent.type, state);
+  const labelClass = getAgentLabelClass(state);
+  const connectorClass = getAgentConnectorClass(state, colors.primary);
+  
+  return (
+    <div className={`relative ${className}`}>
+      <div className={`${stageClass} ${isLast ? 'pb-0' : ''}`}>
+        <div className="flex items-start gap-3">
+          <div className="relative flex-shrink-0">
+            <span className={iconClass}>{agent.icon}</span>
+            {!isLast && (
+              <div className={connectorClass} style={{ height: `calc(100% + 1.5rem)` }} />
+            )}
+          </div>
+          <div className={`min-w-0 flex-1 ${labelClass}`}>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-bold text-slate-800">{agent.label}</p>
+              {state === 'active' && (
+                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-${colors.primary}-100 text-${colors.dark} animate-pulse`}>
+                  Working
+                </span>
+              )}
+              {state === 'completed' && (
+                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-${colors.primary}-100 text-${colors.dark}`}>
+                  Completed
+                </span>
+              )}
+              {state === 'failed' && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700">
+                  Failed
+                </span>
+              )}
+              {state === 'skipped' && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">
+                  Skipped
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-slate-500">{agent.description}</p>
+            {(duration || error) && (
+              <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+                {duration && (
+                  <span className={`flex items-center gap-1 text-${colors.dark}`}>
+                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                    {Math.round(duration / 1000)}s
+                  </span>
+                )}
+                {error && (
+                  <span className="flex items-center gap-1 text-red-600">
+                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                    {error}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Full agent pipeline visualization with smooth animations.
+ */
+export function AgentPipeline({ 
+  agents, 
+  states, 
+  className = '',
+}: { 
+  agents: AgentConfig[]; 
+  states: Record<AgentType, AgentState>;
+  className?: string;
+}) {
+  return (
+    <div className={`space-y-0 ${className}`}>
+      {agents.map((agent, index) => (
+        <AgentTimelineStep
+          key={agent.type}
+          agent={agent}
+          state={states[agent.type] || 'waiting'}
+          isLast={index === agents.length - 1}
+        />
+      ))}
+    </div>
+  );
+}
