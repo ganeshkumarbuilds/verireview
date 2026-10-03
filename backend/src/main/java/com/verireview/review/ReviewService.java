@@ -3,8 +3,10 @@ package com.verireview.review;
 import com.verireview.common.PagedResponse;
 import com.verireview.project.Project;
 import com.verireview.project.ProjectRepository;
+import com.verireview.review.dto.DashboardStatsResponse;
 import com.verireview.review.dto.FindingResponse;
 import com.verireview.review.dto.ReviewResponse;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -34,6 +36,49 @@ public class ReviewService {
     this.reviews = reviews;
     this.findings = findings;
     this.objects = objects;
+  }
+
+  @Transactional(readOnly = true)
+  public DashboardStatsResponse getDashboardStats(UUID ownerId, UUID projectId) {
+    Project project = owned(ownerId, projectId);
+    List<com.verireview.review.Review> projectReviews = reviews.findByProjectIdOrderByCreatedAtDesc(project.getId());
+    com.verireview.review.Review latestReview = projectReviews.isEmpty() ? null : projectReviews.get(0);
+    long totalReviews = projectReviews.size();
+
+    long totalFindings = findings.countByReviewProjectId(project.getId());
+    long openFindings = findings.countByReviewProjectIdAndStatus(project.getId(), FindingStatus.OPEN);
+    long fixedFindings = findings.countByReviewProjectIdAndStatus(project.getId(), FindingStatus.VERIFIED_FIXED);
+    long verifiedFindings = findings.countByReviewProjectIdAndStatus(project.getId(), FindingStatus.VERIFIED_FIXED);
+    long rejectedFindings = findings.countByReviewProjectIdAndStatus(project.getId(), FindingStatus.REJECTED);
+    long wontfixFindings = findings.countByReviewProjectIdAndStatus(project.getId(), FindingStatus.WONTFIX);
+    long criticalHighFindings = findings.countByReviewProjectIdAndSeverityIn(project.getId(), List.of(FindingSeverity.CRITICAL, FindingSeverity.HIGH));
+    long deterministicFindings = findings.countByReviewProjectIdAndSource(project.getId(), FindingSource.DETERMINISTIC);
+    long aiFindings = findings.countByReviewProjectIdAndSource(project.getId(), FindingSource.AI);
+
+    return new DashboardStatsResponse(
+        project.getId(),
+        project.getName(),
+        totalFindings,
+        openFindings,
+        fixedFindings,
+        verifiedFindings,
+        rejectedFindings,
+        wontfixFindings,
+        criticalHighFindings,
+        deterministicFindings,
+        aiFindings,
+        latestReview != null ? latestReview.getId().hashCode() : 0,
+        latestReview != null ? latestReview.getStatus().toString() : "NONE",
+        totalReviews
+    );
+  }
+
+  @Transactional(readOnly = true)
+  public List<DashboardStatsResponse> getAllDashboardStats(UUID ownerId) {
+    List<Project> userProjects = projects.findByOwnerIdAndDeletedAtIsNull(ownerId);
+    return userProjects.stream()
+        .map(project -> getDashboardStats(ownerId, project.getId()))
+        .toList();
   }
 
   @Transactional(readOnly = true)

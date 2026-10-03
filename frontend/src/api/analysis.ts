@@ -2,6 +2,23 @@ import type { ApiClient } from './client';
 import { bearer } from './client';
 import type { FindingResponse, Page, ReviewResponse } from './types';
 
+export type DashboardStatsResponse = {
+  projectId: string;
+  projectName: string;
+  totalFindings: number;
+  openFindings: number;
+  fixedFindings: number;
+  verifiedFindings: number;
+  rejectedFindings: number;
+  wontfixFindings: number;
+  criticalHighFindings: number;
+  deterministicFindings: number;
+  aiFindings: number;
+  latestReviewId: number;
+  latestReviewStatus: string;
+  totalReviews: number;
+};
+
 /** Phase 6 deterministic analysis endpoints (API_DESIGN §2, reviews section).
  *  Triggering is async: 202 with the QUEUED review, then poll until terminal. */
 export async function triggerAnalysis(
@@ -53,3 +70,24 @@ export function isTerminal(status: string): boolean {
 
 /** Severity rank for client-side filtering/sorting. */
 export const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const;
+
+export async function getDashboardStats(
+  client: ApiClient,
+  token: string,
+  projectId: string,
+): Promise<DashboardStatsResponse> {
+  return client.request<DashboardStatsResponse>(
+    `/projects/${encodeURIComponent(projectId)}/dashboard-stats`,
+    { headers: bearer(token) },
+  );
+}
+
+export async function getAllDashboardStats(
+  client: ApiClient,
+  token: string,
+): Promise<DashboardStatsResponse[]> {
+  return client.request<DashboardStatsResponse[]>(
+    `/dashboard/stats`,
+    { headers: bearer(token) },
+  );
+}

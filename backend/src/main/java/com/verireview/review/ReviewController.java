@@ -2,9 +2,11 @@ package com.verireview.review;
 
 import com.verireview.analysis.AnalysisJobService;
 import com.verireview.common.PagedResponse;
+import com.verireview.review.dto.DashboardStatsResponse;
 import com.verireview.review.dto.FindingResponse;
 import com.verireview.review.dto.ReviewResponse;
 import com.verireview.security.VeriReviewUserDetails;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -29,10 +31,18 @@ public class ReviewController {
 
   private final AnalysisJobService jobs;
   private final ReviewService reviews;
+  private final ReviewRepository reviewRepository;
+  private final FindingRepository findingRepository;
 
-  public ReviewController(AnalysisJobService jobs, ReviewService reviews) {
+  public ReviewController(
+      AnalysisJobService jobs,
+      ReviewService reviews,
+      ReviewRepository reviewRepository,
+      FindingRepository findingRepository) {
     this.jobs = jobs;
     this.reviews = reviews;
+    this.reviewRepository = reviewRepository;
+    this.findingRepository = findingRepository;
   }
 
   @PostMapping("/api/v1/projects/{id}/analysis")
@@ -70,5 +80,25 @@ public class ReviewController {
       @PageableDefault(size = 50) Pageable pageable) {
     return ResponseEntity.ok(
         reviews.findings(principal.getId(), reviewId, severity, category, status, pageable));
+  }
+
+  /**
+   * Dashboard statistics for a project: findings breakdown by status/source/severity,
+   * plus latest review info. Owner-scoped (404 for non-owners).
+   */
+  @GetMapping("/api/v1/projects/{id}/dashboard-stats")
+  public ResponseEntity<DashboardStatsResponse> dashboardStats(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID projectId) {
+    return ResponseEntity.ok(reviews.getDashboardStats(principal.getId(), projectId));
+  }
+
+  /**
+   * Aggregated dashboard statistics across all user projects.
+   */
+  @GetMapping("/api/v1/dashboard/stats")
+  public ResponseEntity<List<DashboardStatsResponse>> allDashboardStats(
+      @AuthenticationPrincipal VeriReviewUserDetails principal) {
+    return ResponseEntity.ok(reviews.getAllDashboardStats(principal.getId()));
   }
 }

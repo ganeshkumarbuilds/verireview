@@ -1,5 +1,6 @@
 package com.verireview.project;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
@@ -22,4 +23,6 @@ public interface ProjectRepository extends JpaRepository<Project, UUID> {
       """)
   Page<Project> search(UUID ownerId, String namePattern, ProjectSourceType sourceType,
       Pageable pageable);
+
+  List<Project> findByOwnerIdAndDeletedAtIsNull(UUID ownerId);
 }

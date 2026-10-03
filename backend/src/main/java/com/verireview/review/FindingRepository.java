@@ -29,4 +29,13 @@ public interface FindingRepository extends JpaRepository<Finding, UUID> {
 
   boolean existsByReviewIdAndCategoryInAndStatus(UUID reviewId, List<FindingCategory> categories,
       FindingStatus status);
+
+  // Dashboard stats queries
+  long countByReviewProjectId(UUID projectId);
+
+  long countByReviewProjectIdAndStatus(UUID projectId, FindingStatus status);
+
+  long countByReviewProjectIdAndSeverityIn(UUID projectId, List<FindingSeverity> severities);
+
+  long countByReviewProjectIdAndSource(UUID projectId, FindingSource source);
 }

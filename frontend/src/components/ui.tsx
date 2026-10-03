@@ -19,7 +19,32 @@ export const textareaClass =
 export const selectClass =
   'rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 transition-colors hover:border-indigo-300 focus:border-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-600/30';
 
-/** Minimal card for the design system. */
+/** Accessible progress bar. */
+export function Progress({
+  value,
+  max = 100,
+  className,
+}: {
+  value: number;
+  max?: number;
+  className?: string;
+}) {
+  const pct = Math.min(100, Math.max(0, Math.round((value / max) * 100)));
+  return (
+    <div
+      role="progressbar"
+      aria-valuenow={pct}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      className={`h-2 rounded-full bg-slate-200 overflow-hidden ${className ?? ''}`}
+    >
+      <div
+        className="h-full bg-indigo-600 transition-all duration-500 ease-out"
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
 export function Card({
   title,
   subtitle,

@@ -13,5 +13,7 @@ public interface ReviewRepository extends JpaRepository<Review, UUID> {
 
   Page<Review> findByProjectIdOrderByCreatedAtDesc(UUID projectId, Pageable pageable);
 
+  List<Review> findByProjectIdOrderByCreatedAtDesc(UUID projectId);
+
   List<Review> findByGenerationIdOrderByCreatedAtDesc(UUID generationId);
 }
