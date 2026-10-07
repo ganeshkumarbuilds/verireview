@@ -48,10 +48,11 @@ app:
 
   import:
     # ZIP import limits (overridable via env: APP_IMPORT_MAX_ZIP_BYTES, etc.)
-    # Defaults: 1GB zip, 50000 files, 4GB uncompressed, 10MB per file
-    max-zip-bytes: ${APP_IMPORT_MAX_ZIP_BYTES:1073741824}
+    # Defaults: 150MB zip, 50000 files, 500MB uncompressed, 10MB per file
+    # These are memory-safe for 512MB instances
+    max-zip-bytes: ${APP_IMPORT_MAX_ZIP_BYTES:157286400}
     max-files: ${APP_IMPORT_MAX_FILES:50000}
-    max-total-uncompressed-bytes: ${APP_IMPORT_MAX_TOTAL_UNCOMPRESSED_BYTES:4294967296}
+    max-total-uncompressed-bytes: ${APP_IMPORT_MAX_TOTAL_UNCOMPRESSED_BYTES:524288000}
     max-single-file-bytes: ${APP_IMPORT_MAX_SINGLE_FILE_BYTES:10485760}
   sandbox:
     # Gates EVERY Docker invocation in SandboxRunner (generation build/test

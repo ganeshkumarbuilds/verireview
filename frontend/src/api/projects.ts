@@ -166,10 +166,52 @@ export async function getFileContent(
   );
 }
 
+export type ImportJobStatus = 'QUEUED' | 'EXTRACTING' | 'INDEXING' | 'DONE' | 'FAILED';
+
+export type ImportJobResponse = {
+  id: string;
+  projectId: string | null;
+  name: string;
+  status: ImportJobStatus;
+  filesProcessed: number;
+  filesTotal: number;
+  bytesProcessed: number;
+  bytesTotal: number;
+  currentStep: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+};
+
 export async function fetchImportLimits(
   client: ApiClient,
 ): Promise<ImportLimits> {
   return client.request<ImportLimits>('/projects/import/limits', {
     method: 'GET',
   });
+}
+
+export async function getImportJob(
+  client: ApiClient,
+  token: string,
+  jobId: string,
+): Promise<ImportJobResponse> {
+  return client.request<ImportJobResponse>(`/projects/import/jobs/${encodeURIComponent(jobId)}`, {
+    method: 'GET',
+    headers: bearer(token),
+  });
+}
+
+export async function listImportJobs(
+  client: ApiClient,
+  token: string,
+  page: number = 0,
+  size: number = 20,
+): Promise<{ content: ImportJobResponse[]; totalElements: number }> {
+  return client.request<{ content: ImportJobResponse[]; totalElements: number }>(
+    `/projects/import/jobs?page=${page}&size=${size}`,
+    { method: 'GET', headers: bearer(token) },
+  );
 }

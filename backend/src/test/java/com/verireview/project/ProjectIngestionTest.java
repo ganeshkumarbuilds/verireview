@@ -387,12 +387,12 @@ class ProjectIngestionTest extends AbstractPersistenceTest {
   void importLimitsEndpointReturnsConfiguredLimits() throws Exception {
     mockMvc.perform(get("/api/v1/projects/import/limits"))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.maxZipBytes").value(1073741824))
+        .andExpect(jsonPath("$.maxZipBytes").value(157286400))
         .andExpect(jsonPath("$.maxFiles").value(50000))
-        .andExpect(jsonPath("$.maxTotalUncompressedBytes").value(4294967296L))
+        .andExpect(jsonPath("$.maxTotalUncompressedBytes").value(524288000L))
         .andExpect(jsonPath("$.maxSingleFileBytes").value(10485760))
-        .andExpect(jsonPath("$.maxZipBytesHuman").value("1.0 GB"))
-        .andExpect(jsonPath("$.maxTotalUncompressedBytesHuman").value("4.0 GB"))
+        .andExpect(jsonPath("$.maxZipBytesHuman").value("150 MB"))
+        .andExpect(jsonPath("$.maxTotalUncompressedBytesHuman").value("500 MB"))
         .andExpect(jsonPath("$.maxSingleFileBytesHuman").value("10 MB"));
   }
 

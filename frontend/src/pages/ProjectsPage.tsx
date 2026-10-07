@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { listFindings, listReviews } from '../api/analysis';
-import { listProjects, importGitHub, importPaste, fetchImportLimits, type PasteFileInput, type ImportLimits } from '../api/projects';
+import { listProjects, importGitHub, importPaste, fetchImportLimits, getImportJob, type PasteFileInput, type ImportLimits, type ImportJobStatus } from '../api/projects';
 import { createGeneration } from '../api/generations';
 import type { FindingResponse, ProjectResponse, ReviewResponse } from '../api/types';
 import type {
@@ -88,6 +88,19 @@ export function ProjectsPage() {
   const [busy, setBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
+  // --- Import job tracking state ---
+  const [importJobId, setImportJobId] = useState<string | null>(null);
+  const [importJobStatus, setImportJobStatus] = useState<ImportJobStatus | null>(null);
+  const [importJobProgress, setImportJobProgress] = useState<{
+    filesProcessed: number;
+    filesTotal: number;
+    bytesProcessed: number;
+    bytesTotal: number;
+    currentStep: string | null;
+    errorMessage: string | null;
+  } | null>(null);
+  const [polling, setPolling] = useState(false);
+
   // --- Import limits (fetched from backend) ---
   const [limits, setLimits] = useState<ImportLimits | null>(null);
 
@@ -155,6 +168,109 @@ export function ProjectsPage() {
         // Silently fail; validation will fall back to server-side errors
       });
   }, []);
+
+  // Restore import job from sessionStorage on mount
+  useEffect(() => {
+    const savedJobId = sessionStorage.getItem('verireview_import_job_id');
+    if (savedJobId && token) {
+      setImportJobId(savedJobId);
+      // Immediately poll to get current status
+      getImportJob(apiClient(), token, savedJobId)
+        .then((job) => {
+          setImportJobStatus(job.status);
+          setImportJobProgress({
+            filesProcessed: job.filesProcessed,
+            filesTotal: job.filesTotal,
+            bytesProcessed: job.bytesProcessed,
+            bytesTotal: job.bytesTotal,
+            currentStep: job.currentStep,
+            errorMessage: job.errorMessage,
+          });
+          if (job.status === 'QUEUED' || job.status === 'EXTRACTING' || job.status === 'INDEXING') {
+            setPolling(true);
+          } else if (job.status === 'DONE' && job.projectId) {
+            // Navigate to project page
+            window.location.href = `/projects/${job.projectId}`;
+          }
+        })
+        .catch(() => {
+          // Job might not exist anymore, clear sessionStorage
+          sessionStorage.removeItem('verireview_import_job_id');
+        });
+    }
+  }, [token]);
+
+  // Poll import job status
+  useEffect(() => {
+    if (!polling || !importJobId || !token) {
+      return;
+    }
+
+    let cancelled = false;
+    const POLL_INTERVAL_MS = 1500;
+
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const job = await getImportJob(apiClient(), token, importJobId);
+        if (cancelled) return;
+
+        setImportJobStatus(job.status);
+        setImportJobProgress({
+          filesProcessed: job.filesProcessed,
+          filesTotal: job.filesTotal,
+          bytesProcessed: job.bytesProcessed,
+          bytesTotal: job.bytesTotal,
+          currentStep: job.currentStep,
+          errorMessage: job.errorMessage,
+        });
+
+        if (job.status === 'DONE') {
+          setPolling(false);
+          if (job.projectId) {
+            // Clear sessionStorage and navigate
+            sessionStorage.removeItem('verireview_import_job_id');
+            setImportJobId(null);
+            setImportJobStatus(null);
+            setImportJobProgress(null);
+            window.location.href = `/projects/${job.projectId}`;
+          }
+        } else if (job.status === 'FAILED') {
+          setPolling(false);
+          // Keep jobId in sessionStorage for retry
+        } else {
+          // Still QUEUED, EXTRACTING, or INDEXING - continue polling
+        }
+      } catch (err) {
+        if (cancelled) return;
+        // Network error or 5xx - check if we should resume polling
+        if (err instanceof ApiError) {
+          if (err.status === 0 || err.status === 502 || err.status === 503) {
+            // Backend may be restarting, keep polling
+            return;
+          }
+          if (err.status === 404) {
+            // Job not found - clear and stop
+            setPolling(false);
+            sessionStorage.removeItem('verireview_import_job_id');
+            setImportJobId(null);
+            setImportJobStatus(null);
+            setImportJobProgress(null);
+            return;
+          }
+        }
+        // Other errors - stop polling but keep job for retry
+        setPolling(false);
+      }
+    };
+
+    poll();
+    const timer = window.setInterval(poll, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [polling, importJobId, token]);
 
   const genWantsDb = genDatabase !== '' && genDatabase !== 'NONE';
 
@@ -279,11 +395,22 @@ export function ProjectsPage() {
     setError(null);
     try {
       // Use XMLHttpRequest for progress tracking
-      await uploadZipWithProgress(apiClient(), token, { file, name: zipName.trim() }, setUploadProgress);
-      setZipName('');
-      setFile(null);
+      const jobId = await uploadZipWithProgress(apiClient(), token, { file, name: zipName.trim() }, setUploadProgress);
+      // Store jobId in sessionStorage for persistence across refresh/navigation
+      sessionStorage.setItem('verireview_import_job_id', jobId);
+      setImportJobId(jobId);
+      setImportJobStatus('QUEUED');
+      setImportJobProgress({
+        filesProcessed: 0,
+        filesTotal: 0,
+        bytesProcessed: 0,
+        bytesTotal: file.size,
+        currentStep: 'Upload complete, queued for processing',
+        errorMessage: null,
+      });
+      setPolling(true);
+      // Don't clear form yet - keep it for potential retry
       setUploadProgress(100);
-      await reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Upload failed.');
     } finally {
@@ -297,7 +424,7 @@ export function ProjectsPage() {
     token: string,
     input: { file: File; name: string; description?: string; language?: string },
     onProgress: (progress: number) => void
-  ): Promise<ProjectResponse> => {
+  ): Promise<string> => {
     return new Promise((resolve, reject) => {
       const form = new FormData();
       form.append('file', input.file);
@@ -323,7 +450,12 @@ export function ProjectsPage() {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const response = JSON.parse(xhr.responseText);
-            resolve(response);
+            // Expecting 202 with { jobId: "..." }
+            if (response.jobId) {
+              resolve(response.jobId);
+            } else {
+              reject(new ApiError(xhr.status, 'parse_error', 'Invalid response: missing jobId'));
+            }
           } catch {
             reject(new ApiError(xhr.status, 'parse_error', 'Invalid response from server'));
           }
@@ -782,6 +914,71 @@ export function ProjectsPage() {
             {busy ? `Uploading… ${uploadProgress}%` : 'Upload and import'}
           </button>
         </form>
+        {importJobId && (importJobStatus === 'QUEUED' || importJobStatus === 'EXTRACTING' || importJobStatus === 'INDEXING') && (
+          <div className="space-y-3 border-t border-indigo-100 pt-3 mt-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                {importJobStatus === 'QUEUED' ? 'Queued' : importJobStatus === 'EXTRACTING' ? 'Extracting' : 'Indexing'}
+              </span>
+              <Badge tone={importJobStatus === 'QUEUED' ? 'gray' : 'blue'}>{importJobStatus}</Badge>
+            </div>
+            {importJobProgress && importJobProgress.filesTotal > 0 && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-600">Files</span>
+                  <span className="font-mono tabular-nums text-indigo-950">
+                    {importJobProgress.filesProcessed.toLocaleString()} / {importJobProgress.filesTotal.toLocaleString()}
+                  </span>
+                </div>
+                <Progress value={importJobProgress.filesTotal > 0 ? Math.round((importJobProgress.filesProcessed / importJobProgress.filesTotal) * 100) : 0} className="h-2" />
+              </div>
+            )}
+            {importJobProgress && importJobProgress.bytesTotal > 0 && (
+              <div className="space-y-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-600">Data</span>
+                  <span className="font-mono tabular-nums text-indigo-950">
+                    {formatFileSize(importJobProgress.bytesProcessed)} / {formatFileSize(importJobProgress.bytesTotal)}
+                  </span>
+                </div>
+                <Progress value={importJobProgress.bytesTotal > 0 ? Math.round((importJobProgress.bytesProcessed / importJobProgress.bytesTotal) * 100) : 0} className="h-2" />
+              </div>
+            )}
+            {importJobProgress?.currentStep && (
+              <p className="text-xs text-slate-500">{importJobProgress.currentStep}</p>
+            )}
+          </div>
+        )}
+        {importJobStatus === 'FAILED' && importJobProgress?.errorMessage && (
+          <div className="space-y-2 border-t border-red-100 pt-3 mt-3" role="alert">
+            <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+              {importJobProgress.errorMessage}
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPolling(true);
+                }}
+                className={primaryButtonClass}
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  sessionStorage.removeItem('verireview_import_job_id');
+                  setImportJobId(null);
+                  setImportJobStatus(null);
+                  setImportJobProgress(null);
+                }}
+                className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-600 focus-visible:ring-offset-2"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
       </Card>
 
       <Card

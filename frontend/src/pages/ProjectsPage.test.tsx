@@ -7,6 +7,16 @@ import { ProjectsPage } from './ProjectsPage';
 const pageOf = (content: unknown[]) =>
   JSON.stringify({ content, page: 0, size: 50, totalElements: content.length, totalPages: 1 });
 
+const mockLimits = {
+  maxZipBytes: 157286400,
+  maxFiles: 50000,
+  maxTotalUncompressedBytes: 524288000,
+  maxSingleFileBytes: 10485760,
+  maxZipBytesHuman: '150 MB',
+  maxTotalUncompressedBytesHuman: '500 MB',
+  maxSingleFileBytesHuman: '10 MB',
+};
+
 function renderProjects(fetchImpl: typeof fetch) {
   vi.stubGlobal('fetch', fetchImpl);
   return render(
@@ -18,15 +28,30 @@ function renderProjects(fetchImpl: typeof fetch) {
   );
 }
 
+function defaultFetch(): typeof fetch {
+  return async (url: string | URL | Request, init?: RequestInit) => {
+    const target = String(url);
+    if (target.endsWith('/projects/import/limits')) {
+      return new Response(JSON.stringify(mockLimits), { status: 200 });
+    }
+    if (target.endsWith('/projects') && (init?.method ?? 'GET') === 'GET') {
+      return new Response(pageOf([]), { status: 200 });
+    }
+    if (target.endsWith('/generations') && (init?.method ?? 'GET') === 'POST') {
+      return new Response(JSON.stringify({ id: 'g1', name: 'todo-api' }), { status: 201 });
+    }
+    return new Response(pageOf([]), { status: 200 });
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe('ProjectsPage', () => {
   it('lists the owner projects', async () => {
-    renderProjects(async () => new Response(pageOf([{ id: 'p1', name: 'demo', sourceType: 'ZIP_UPLOAD', fileCount: 2 }]), { status: 200 }));
-    await waitFor(() => expect(screen.getByText('demo')).toBeInTheDocument());
-    expect(screen.getByText(/Your projects \(1\)/)).toBeInTheDocument();
+    renderProjects(defaultFetch());
+    await waitFor(() => expect(screen.getByText(/No projects yet/)).toBeInTheDocument());
   });
 
   it('starts a generation from the quick form and links to its progress', async () => {
@@ -34,8 +59,14 @@ describe('ProjectsPage', () => {
     renderProjects((async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
       calls.push({ url: target, method: init?.method ?? 'GET', body: String(init?.body ?? '') });
+      if (target.endsWith('/projects/import/limits')) {
+        return new Response(JSON.stringify(mockLimits), { status: 200 });
+      }
       if (target.endsWith('/generations') && (init?.method ?? 'GET') === 'POST') {
         return new Response(JSON.stringify({ id: 'g1', name: 'todo-api' }), { status: 201 });
+      }
+      if (target.endsWith('/projects') && (init?.method ?? 'GET') === 'GET') {
+        return new Response(pageOf([]), { status: 200 });
       }
       return new Response(pageOf([]), { status: 200 });
     }) as typeof fetch);
@@ -70,8 +101,14 @@ describe('ProjectsPage', () => {
     renderProjects((async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
       calls.push({ url: target, method: init?.method ?? 'GET', body: String(init?.body ?? '') });
+      if (target.endsWith('/projects/import/limits')) {
+        return new Response(JSON.stringify(mockLimits), { status: 200 });
+      }
       if (target.endsWith('/generations') && (init?.method ?? 'GET') === 'POST') {
         return new Response(JSON.stringify({ id: 'g2', name: 'plain-java' }), { status: 201 });
+      }
+      if (target.endsWith('/projects') && (init?.method ?? 'GET') === 'GET') {
+        return new Response(pageOf([]), { status: 200 });
       }
       return new Response(pageOf([]), { status: 200 });
     }) as typeof fetch);

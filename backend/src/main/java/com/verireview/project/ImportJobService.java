@@ -1,5 +1,6 @@
 package com.verireview.project;
 
+import com.verireview.analysis.AnalysisJobService;
 import com.verireview.ingestion.GitHubIngestionService;
 import com.verireview.ingestion.ZipIngestionService;
 import com.verireview.user.User;
@@ -34,16 +35,19 @@ public class ImportJobService {
   private final ZipIngestionService zipIngestion;
   private final GitHubIngestionService githubIngestion;
   private final UserRepository users;
+  private final AnalysisJobService analysisJobService;
 
   public ImportJobService(
       ImportJobRepository jobs,
       ZipIngestionService zipIngestion,
       GitHubIngestionService githubIngestion,
-      UserRepository users) {
+      UserRepository users,
+      AnalysisJobService analysisJobService) {
     this.jobs = jobs;
     this.zipIngestion = zipIngestion;
     this.githubIngestion = githubIngestion;
     this.users = users;
+    this.analysisJobService = analysisJobService;
   }
 
   @Transactional
@@ -122,6 +126,7 @@ public class ImportJobService {
 // Actually ingest the staged file by creating a MultipartFile wrapper
       // We need to use the existing ingestion service
       // Create a simple MultipartFile implementation from the staged file
+      // that streams content instead of loading entirely into memory
       class StagedMultipartFile implements org.springframework.web.multipart.MultipartFile {
         private final Path path;
         private final String originalFilename;
@@ -166,7 +171,9 @@ public class ImportJobService {
 
         @Override
         public byte[] getBytes() throws IOException {
-          return Files.readAllBytes(path);
+          // Avoid loading entire file into memory for large uploads
+          // The ingestion service uses getInputStream() which streams
+          throw new UnsupportedOperationException("Use getInputStream() for streaming");
         }
 
         @Override
@@ -193,7 +200,16 @@ public class ImportJobService {
       job.setStatus(ImportJobStatus.DONE);
       job.setFinishedAt(Instant.now());
       job.setDurationMs(java.time.Duration.between(start, job.getFinishedAt()).toMillis());
-      job.setCurrentStep("Import completed, project created");
+      job.setCurrentStep("Import completed, project created, triggering analysis");
+
+      // Trigger analysis automatically on successful import
+      try {
+        analysisJobService.trigger(ownerId, imported.project().getId());
+        job.setCurrentStep("Import completed, analysis started");
+      } catch (Exception ex) {
+        log.warn("Failed to trigger analysis for project {}: {}", imported.project().getId(), ex.getMessage());
+        job.setCurrentStep("Import completed, analysis trigger failed: " + ex.getMessage());
+      }
 
     } catch (Exception e) {
       log.error("Import job {} failed", jobId, e);
@@ -251,7 +267,16 @@ public class ImportJobService {
       job.setStatus(ImportJobStatus.DONE);
       job.setFinishedAt(Instant.now());
       job.setDurationMs(java.time.Duration.between(start, job.getFinishedAt()).toMillis());
-      job.setCurrentStep("Import completed");
+      job.setCurrentStep("Import completed, triggering analysis");
+
+      // Trigger analysis automatically on successful import
+      try {
+        analysisJobService.trigger(ownerId, imported.project().getId());
+        job.setCurrentStep("Import completed, analysis started");
+      } catch (Exception ex) {
+        log.warn("Failed to trigger analysis for project {}: {}", imported.project().getId(), ex.getMessage());
+        job.setCurrentStep("Import completed, analysis trigger failed: " + ex.getMessage());
+      }
 
     } catch (Exception e) {
       log.error("GitHub import job {} failed", jobId, e);

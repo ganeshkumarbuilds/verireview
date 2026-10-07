@@ -22,4 +22,7 @@ public interface ImportJobRepository extends JpaRepository<ImportJob, UUID> {
   List<ImportJob> findByOwnerIdAndStatusIn(UUID ownerId, List<ImportJobStatus> statuses);
 
   long countByOwnerIdAndStatusIn(UUID ownerId, List<ImportJobStatus> statuses);
+
+  @Query("SELECT j FROM ImportJob j WHERE j.status IN :statuses")
+  List<ImportJob> findByStatusIn(List<ImportJobStatus> statuses);
 }
