@@ -46,3 +46,10 @@ export async function requestPasswordReset(client: ApiClient, email: string): Pr
     body: JSON.stringify({ email }),
   });
 }
+
+export async function refreshToken(client: ApiClient, refreshToken: string): Promise<TokenResponse> {
+  return client.request<TokenResponse>('/auth/refresh', {
+    method: 'POST',
+    body: JSON.stringify({ refreshToken }),
+  });
+}

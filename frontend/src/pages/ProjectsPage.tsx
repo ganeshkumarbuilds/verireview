@@ -57,7 +57,7 @@ const DB_DEFAULT_PORTS: Record<string, string> = {
  * body only and inputs are cleared after submit.
  */
 export function ProjectsPage() {
-  const { token } = useAuth();
+  const { token, refreshToken, refresh } = useAuth();
   const [projects, setProjects] = useState<ProjectCardData[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -390,12 +390,28 @@ export function ProjectsPage() {
         return;
       }
     }
+
+    // Attempt to refresh token if we have a refresh token (prevents 401 on upload)
+    if (refreshToken) {
+      const refreshed = await refresh();
+      if (!refreshed) {
+        // refresh() already clears session and redirects via AuthContext
+        return;
+      }
+    }
+
     setBusy(true);
     setUploadProgress(0);
     setError(null);
     try {
       // Use XMLHttpRequest for progress tracking
       const jobId = await uploadZipWithProgress(apiClient(), token, { file, name: zipName.trim() }, setUploadProgress);
+      // Handle sync import completion (direct project creation)
+      if (jobId.startsWith('__SYNC_COMPLETE__:')) {
+        const projectId = jobId.replace('__SYNC_COMPLETE__:', '');
+        window.location.href = `/projects/${projectId}`;
+        return;
+      }
       // Store jobId in sessionStorage for persistence across refresh/navigation
       sessionStorage.setItem('verireview_import_job_id', jobId);
       setImportJobId(jobId);
@@ -448,16 +464,52 @@ export function ProjectsPage() {
 
       xhr.addEventListener('load', () => {
         if (xhr.status >= 200 && xhr.status < 300) {
+          let response: unknown = null;
           try {
-            const response = JSON.parse(xhr.responseText);
-            // Expecting 202 with { jobId: "..." }
-            if (response.jobId) {
-              resolve(response.jobId);
-            } else {
-              reject(new ApiError(xhr.status, 'parse_error', 'Invalid response: missing jobId'));
+            // Handle empty body (e.g., 202 with no content)
+            const text = xhr.responseText;
+            if (text && text.trim()) {
+              response = JSON.parse(text);
             }
           } catch {
-            reject(new ApiError(xhr.status, 'parse_error', 'Invalid response from server'));
+            reject(new ApiError(xhr.status, 'parse_error', 'Invalid JSON response from server'));
+            return;
+          }
+
+          // Defensively parse response - accept jobId, id, or job.id
+          // If response is a full project object (has id and name but no job fields),
+          // treat it as a completed sync import and navigate
+          let jobId: string | null = null;
+          let isSyncComplete = false;
+
+          if (response && typeof response === 'object') {
+            const resp = response as Record<string, unknown>;
+            if (typeof resp.jobId === 'string') {
+              jobId = resp.jobId;
+            } else if (typeof resp.id === 'string') {
+              // Check if this looks like a job response (has status QUEUED) or a project response
+              if (resp.status === 'QUEUED' || resp.status === 'EXTRACTING' || resp.status === 'INDEXING') {
+                jobId = resp.id;
+              } else if (typeof resp.name === 'string' && !resp.status) {
+                // Full project object from sync import - navigate directly
+                isSyncComplete = true;
+                jobId = resp.id;
+              }
+            } else if (resp.job && typeof resp.job === 'object' && typeof (resp.job as Record<string, unknown>).id === 'string') {
+              jobId = (resp.job as Record<string, unknown>).id as string;
+            }
+          }
+
+          if (isSyncComplete && jobId) {
+            // Sync import completed - navigate to project page
+            window.location.href = `/projects/${jobId}`;
+            // Resolve with a special marker to indicate navigation happened
+            resolve(`__SYNC_COMPLETE__:${jobId}`);
+          } else if (jobId) {
+            resolve(jobId);
+          } else {
+            console.error('Unexpected server response:', xhr.status, response);
+            reject(new ApiError(xhr.status, 'parse_error', `Unexpected server response (status ${xhr.status})`));
           }
         } else {
           let message = `Request failed with status ${xhr.status}.`;

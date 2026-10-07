@@ -1,14 +1,15 @@
 package com.verireview.project;
 
+import com.verireview.common.PagedResponse;
 import com.verireview.ingestion.IngestionLimits;
 import com.verireview.ingestion.PasteIngestionService;
 import com.verireview.project.dto.CreateProjectRequest;
 import com.verireview.project.dto.FileContentResponse;
 import com.verireview.project.dto.GitHubImportRequest;
+import com.verireview.project.dto.ImportJobCreatedResponse;
 import com.verireview.project.dto.ImportJobResponse;
 import com.verireview.project.dto.ImportLimitsResponse;
 import com.verireview.project.dto.PasteImportRequest;
-import com.verireview.common.PagedResponse;
 import com.verireview.project.dto.ProjectFileResponse;
 import com.verireview.project.dto.ProjectResponse;
 import com.verireview.project.dto.UpdateProjectRequest;
@@ -105,7 +106,7 @@ public class ProjectController {
    * Returns 202 with jobId; poll GET /import/jobs/{id} for progress.
    */
   @PostMapping(path = "/import/zip", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-  public ResponseEntity<ImportJobResponse> importZip(
+  public ResponseEntity<ImportJobCreatedResponse> importZip(
       @AuthenticationPrincipal VeriReviewUserDetails principal,
       @RequestParam("file") MultipartFile file,
       @RequestParam("name") String name,
@@ -114,7 +115,7 @@ public class ProjectController {
     ImportJob job = importJobs.createZipJob(principal.getId(), name, description, language, file);
     importJobs.processZipJob(job.getId(), principal.getId());
     return ResponseEntity.status(HttpStatus.ACCEPTED)
-        .body(ImportJobResponse.from(job));
+        .body(ImportJobCreatedResponse.from(job));
   }
 
   /**
@@ -141,14 +142,14 @@ public class ProjectController {
    * Limits: 50000 files, 4 GB total, 10 MB per file.
    */
   @PostMapping(path = "/import/github", consumes = MediaType.APPLICATION_JSON_VALUE)
-  public ResponseEntity<ImportJobResponse> importGitHub(
+  public ResponseEntity<ImportJobCreatedResponse> importGitHub(
       @AuthenticationPrincipal VeriReviewUserDetails principal,
       @Valid @RequestBody GitHubImportRequest request) {
     ImportJob job = importJobs.createGitHubJob(
         principal.getId(), request.name(), request.description(), request.language(), request.url());
     importJobs.processGitHubJob(job.getId(), principal.getId());
     return ResponseEntity.status(HttpStatus.ACCEPTED)
-        .body(ImportJobResponse.from(job));
+        .body(ImportJobCreatedResponse.from(job));
   }
 
   /**

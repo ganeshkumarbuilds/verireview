@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 import { ApiClient } from '../api/client';
-import { login as apiLogin, logout as apiLogout, me as apiMe, register as apiRegister } from '../api/auth';
+import { login as apiLogin, logout as apiLogout, me as apiMe, register as apiRegister, refreshToken as apiRefreshToken } from '../api/auth';
 import type { UserResponse } from '../api/types';
 
 /** localStorage keys for the persisted session (ADR-010). */
@@ -46,6 +46,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, displayName?: string) => Promise<void>;
   logout: () => Promise<void>;
+  refresh: () => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -139,6 +140,25 @@ export function AuthProvider({
     }
   }, [client, token, refreshToken]);
 
+  const refresh = useCallback(async () => {
+    if (!refreshToken) {
+      return false;
+    }
+    try {
+      const tokens = await apiRefreshToken(client, refreshToken);
+      setToken(tokens.accessToken);
+      setRefreshToken(tokens.refreshToken);
+      persistSession(tokens.accessToken, tokens.refreshToken);
+      return true;
+    } catch {
+      clearStoredSession();
+      setToken(null);
+      setRefreshToken(null);
+      setUser(null);
+      return false;
+    }
+  }, [client, refreshToken]);
+
   // Restore the profile for a persisted session (real app only: tests pass
   // `initial` and manage state explicitly).
   useEffect(() => {
@@ -167,8 +187,8 @@ export function AuthProvider({
   }, [client, initial, token, user]);
 
   const value = useMemo(
-    () => ({ token, refreshToken, user, login, register, logout }),
-    [token, refreshToken, user, login, register, logout],
+    () => ({ token, refreshToken, user, login, register, logout, refresh }),
+    [token, refreshToken, user, login, register, logout, refresh],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

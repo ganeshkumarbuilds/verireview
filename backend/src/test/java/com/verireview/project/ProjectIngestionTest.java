@@ -403,4 +403,32 @@ class ProjectIngestionTest extends AbstractPersistenceTest {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.maxZipBytes").exists());
   }
+
+  @Test
+  void asyncZipImportReturnsJobIdAndStatus() throws Exception {
+    String token = access(register());
+    byte[] zipBytes = new byte[] {(byte) 0x50, (byte) 0x4B, 0x03, 0x04}; // PK\x03\x04
+    MockMultipartFile zipFile = new MockMultipartFile("file", "test.zip", "application/zip", zipBytes);
+
+    mockMvc.perform(multipart("/api/v1/projects/import/zip")
+            .file(zipFile)
+            .param("name", "async-import-test")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.jobId").exists())
+        .andExpect(jsonPath("$.status").value("QUEUED"));
+  }
+
+  @Test
+  void asyncGitHubImportReturnsJobIdAndStatus() throws Exception {
+    String token = access(register());
+
+    mockMvc.perform(post("/api/v1/projects/import/github")
+            .contentType(MediaType.APPLICATION_JSON)
+            .header("Authorization", "Bearer " + token)
+            .content("{\"name\":\"github-import-test\",\"url\":\"https://github.com/octocat/Hello-World\"}"))
+        .andExpect(status().isAccepted())
+        .andExpect(jsonPath("$.jobId").exists())
+        .andExpect(jsonPath("$.status").value("QUEUED"));
+  }
 }
