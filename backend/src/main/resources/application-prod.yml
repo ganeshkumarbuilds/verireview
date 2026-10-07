@@ -32,7 +32,7 @@ server:
     accept-count: 100
     connection-timeout: 20000
     max-swallow-size: -1
-    max-http-form-post-size: 55MB
+    max-http-form-post-size: 65MB
 
 logging:
   level:

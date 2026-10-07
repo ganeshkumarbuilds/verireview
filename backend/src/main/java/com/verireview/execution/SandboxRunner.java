@@ -7,6 +7,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
@@ -244,6 +245,11 @@ public class SandboxRunner {
       int exitCode = process.exitValue();
       String stdout = truncate(new String(stdoutBuf.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
       String stderr = truncate(new String(stderrBuf.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
+      // Detect Docker daemon connection errors (exit codes 1, 125-127 with specific messages)
+      // and treat them as sandbox errors, not build/test failures.
+      if (isDockerDaemonError(exitCode, stderr)) {
+        throw new SandboxException("Docker daemon unavailable: " + stderr);
+      }
       return new ExecutionResult(exitCode, stdout, stderr, duration, false);
     } catch (IOException e) {
       throw new SandboxException("Docker unavailable for execution: " + e.getMessage());
@@ -251,6 +257,34 @@ public class SandboxRunner {
       Thread.currentThread().interrupt();
       throw new SandboxException("Execution interrupted");
     }
+  }
+
+  /**
+   * Checks if the docker command failed due to daemon connectivity issues.
+   * Common exit codes: 1 (generic error), 125 (daemon error), 126 (command not invokable), 127 (command not found).
+   * We also check stderr for known daemon error patterns.
+   */
+  private boolean isDockerDaemonError(int exitCode, String stderr) {
+    if (stderr == null || stderr.isBlank()) {
+      return false;
+    }
+    String lower = stderr.toLowerCase(Locale.ROOT);
+    // Docker CLI exits with 125 when daemon is unreachable, 126/127 for command issues
+    if (exitCode == 125 || exitCode == 126 || exitCode == 127) {
+      return true;
+    }
+    // Exit code 1 with daemon connection error messages
+    if (exitCode == 1) {
+      return lower.contains("cannot connect to the docker daemon")
+          || lower.contains("failed to connect to the docker")
+          || lower.contains("docker daemon")
+          || lower.contains("dockerd")
+          || lower.contains("connection refused")
+          || lower.contains("no such file or directory")
+          || lower.contains("permission denied")
+          || lower.contains("is the docker daemon running");
+    }
+    return false;
   }
 
   private String truncate(String content) {

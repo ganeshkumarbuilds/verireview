@@ -1,0 +1,1 @@
+{"name":"test-gen-3","requirement":"A simple hello world service","description":"","backend":"JAVA_SPRING_BOOT","frontend":"NONE","database":"NONE","aiConfig":{"provider":"NONE","apiKey":"","baseUrl":"","model":""},"draft":true}

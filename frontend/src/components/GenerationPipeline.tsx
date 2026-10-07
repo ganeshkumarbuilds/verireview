@@ -71,10 +71,17 @@ function mapStageToAgent(stageKey: string): AgentType {
   return map[stageKey] || 'planner';
 }
 
+interface PipelineAgent extends AgentConfig {
+  state: AgentState;
+  hint?: string;
+  /** Unique key for React reconciliation - uses the original stage key. */
+  stageKey: string;
+}
+
 /**
  * Converts PipelineStage to AgentConfig with proper state mapping.
  */
-function stagesToAgents(stages: PipelineStage[]): (AgentConfig & { state: AgentState; hint?: string })[] {
+function stagesToAgents(stages: PipelineStage[]): PipelineAgent[] {
   return stages.map(stage => {
     const agentType = mapStageToAgent(stage.key);
     const baseAgent = AGENT_PIPELINE.find(a => a.type === agentType);
@@ -83,6 +90,7 @@ function stagesToAgents(stages: PipelineStage[]): (AgentConfig & { state: AgentS
       label: stage.label,
       state: stage.state === 'done' ? 'completed' : stage.state === 'active' ? 'active' : 'waiting',
       hint: stage.hint,
+      stageKey: stage.key,
     };
   });
 }

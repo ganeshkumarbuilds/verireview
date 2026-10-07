@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
+import org.springframework.context.annotation.Primary;
 
 /**
  * Jackson ObjectMapper configuration (Phase 1).
@@ -15,17 +15,21 @@ import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
  * <p>- Fail on unknown properties for strict contract enforcement
  * <p>- No default typing (security)
  * <p>- Write dates as ISO strings, not arrays
+ *
+ * <p>Uses direct {@link ObjectMapper} configuration for Spring Boot 4.1.1 compatibility.
+ * The deprecated {@code Jackson2ObjectMapperBuilder} bean is no longer auto-registered.
  */
 @Configuration
 public class JacksonConfig {
 
   @Bean
-  ObjectMapper objectMapper(Jackson2ObjectMapperBuilder builder) {
-    return builder
-        .modules(new JavaTimeModule())
-        .featuresToDisable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-        .featuresToEnable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-        .featuresToDisable(DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
-        .build();
+  @Primary
+  ObjectMapper objectMapper() {
+    ObjectMapper mapper = new ObjectMapper();
+    mapper.registerModule(new JavaTimeModule());
+    mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    mapper.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+    mapper.disable(DeserializationFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE);
+    return mapper;
   }
 }

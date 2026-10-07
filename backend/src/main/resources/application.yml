@@ -27,8 +27,9 @@ spring:
   servlet:
     multipart:
       # Phase 5: admits the 50 MB project cap (larger bodies -> 413).
-      max-file-size: 50MB
-      max-request-size: 55MB
+      # Increased to 60MB/65MB to handle multipart overhead for 50MB files.
+      max-file-size: 60MB
+      max-request-size: 65MB
 
 # Phase 3 auth (SECURITY_DESIGN 2, ADR-009). Secret comes from the
 # JWT_SIGNING_KEY environment variable only — never commit a real value.
@@ -100,7 +101,7 @@ server:
     # swallow-size check entirely, letting the multipart limits above be
     # the sole gate (a clean 413/Payload Too Large instead of a reset).
     max-swallow-size: -1
-    max-http-form-post-size: 55MB
+    max-http-form-post-size: 65MB
 
 # Actuator (Phase 1) - expose health, info, metrics
 management:

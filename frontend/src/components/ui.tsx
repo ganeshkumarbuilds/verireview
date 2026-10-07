@@ -665,7 +665,7 @@ export function AgentPipeline({
   states, 
   className = '',
 }: { 
-  agents: AgentConfig[]; 
+  agents: (AgentConfig & { stageKey?: string })[]; 
   states: Record<AgentType, AgentState>;
   className?: string;
 }) {
@@ -673,7 +673,7 @@ export function AgentPipeline({
     <div className={`space-y-0 ${className}`}>
       {agents.map((agent, index) => (
         <AgentTimelineStep
-          key={agent.type}
+          key={agent.stageKey ?? agent.type}
           agent={agent}
           state={states[agent.type] || 'waiting'}
           isLast={index === agents.length - 1}
