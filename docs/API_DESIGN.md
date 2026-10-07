@@ -120,8 +120,8 @@ Rules: explicit stack enums only (`JAVA_SPRING_BOOT`/`PYTHON_FASTAPI`/`NODEJS`, 
 
 ## 4. Upload / Import Rules (API-level)
 
-- `multipart/form-data` with `file` (.zip), size ≤ 50 MB (configurable), MIME + magic-byte check, filename sanitized.
-- ZIP entries capped (e.g. ≤2000 files, ≤200 MB uncompressed, no symlinks, no `..`, no absolute paths) — rejected with `VALIDATION_FAILED` + reason before any extraction.
+- `multipart/form-data` with `file` (.zip), size ≤ 1 GB (configurable), MIME + magic-byte check, filename sanitized.
+- ZIP entries capped (e.g. ≤50000 files, ≤4 GB uncompressed, no symlinks, no `..`, no absolute paths) — rejected with `VALIDATION_FAILED` + reason before any extraction.
 - GitHub import: URL must match `https://github.com/<owner>/<repo>(.git)?`; branch name allowlisted charset; shallow clone `--depth 1`; repo size cap; private repos → 422 until OAuth phase.
 
 ## 5. Auth & RBAC Matrix (Summary)

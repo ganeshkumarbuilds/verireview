@@ -1,9 +1,12 @@
 package com.verireview.project;
 
+import com.verireview.ingestion.IngestionLimits;
 import com.verireview.ingestion.PasteIngestionService;
 import com.verireview.project.dto.CreateProjectRequest;
 import com.verireview.project.dto.FileContentResponse;
 import com.verireview.project.dto.GitHubImportRequest;
+import com.verireview.project.dto.ImportJobResponse;
+import com.verireview.project.dto.ImportLimitsResponse;
 import com.verireview.project.dto.PasteImportRequest;
 import com.verireview.common.PagedResponse;
 import com.verireview.project.dto.ProjectFileResponse;
@@ -40,12 +43,18 @@ public class ProjectController {
 
   private final ProjectService projects;
   private final com.verireview.generation.GenerationService generations;
+  private final ImportJobService importJobs;
+  private final IngestionLimits limits;
 
   public ProjectController(
       ProjectService projects,
-      com.verireview.generation.GenerationService generations) {
+      com.verireview.generation.GenerationService generations,
+      ImportJobService importJobs,
+      IngestionLimits limits) {
     this.projects = projects;
     this.generations = generations;
+    this.importJobs = importJobs;
+    this.limits = limits;
   }
 
   @PostMapping
@@ -90,12 +99,32 @@ public class ProjectController {
   }
 
   /**
-   * ZIP intake. Caps (50 MB archive, 2000 files, 200 MB uncompressed, 10 MB
+   * ZIP intake (async). Caps (1 GB archive, 50000 files, 4 GB uncompressed, 10 MB
    * per file) are enforced in {@code ZipIngestionService}; larger multipart
    * bodies are rejected at 413 before reaching this method.
+   * Returns 202 with jobId; poll GET /import/jobs/{id} for progress.
    */
   @PostMapping(path = "/import/zip", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-  public ResponseEntity<ProjectResponse> importZip(
+  public ResponseEntity<ImportJobResponse> importZip(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @RequestParam("file") MultipartFile file,
+      @RequestParam("name") String name,
+      @RequestParam(value = "description", required = false) String description,
+      @RequestParam(value = "language", required = false) String language) {
+    ImportJob job = importJobs.createZipJob(principal.getId(), name, description, language, file);
+    importJobs.processZipJob(job.getId(), principal.getId());
+    return ResponseEntity.status(HttpStatus.ACCEPTED)
+        .body(ImportJobResponse.from(job));
+  }
+
+  /**
+   * ZIP intake (synchronous, for backward compatibility and testing).
+   * Caps (1 GB archive, 50000 files, 4 GB uncompressed, 10 MB
+   * per file) are enforced in {@code ZipIngestionService}.
+   * Returns 201 with project on success, or appropriate error status.
+   */
+  @PostMapping(path = "/import/zip/sync", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+  public ResponseEntity<ProjectResponse> importZipSync(
       @AuthenticationPrincipal VeriReviewUserDetails principal,
       @RequestParam("file") MultipartFile file,
       @RequestParam("name") String name,
@@ -106,13 +135,28 @@ public class ProjectController {
   }
 
   /**
-   * GitHub shallow-clone import (Phase 5). Public GitHub URLs only, allowlisted
+   * GitHub shallow-clone import (async). Public GitHub URLs only, allowlisted
    * to github.com. Clones with depth=1, extracts files to quarantine, then
-   * stages to project storage. Returns 202-compatible synchronous result with
-   * commit SHA in audit trail.
+   * stages to project storage. Returns 202 with jobId; poll GET /import/jobs/{id} for progress.
+   * Limits: 50000 files, 4 GB total, 10 MB per file.
    */
   @PostMapping(path = "/import/github", consumes = MediaType.APPLICATION_JSON_VALUE)
-  public ResponseEntity<ProjectResponse> importGitHub(
+  public ResponseEntity<ImportJobResponse> importGitHub(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @Valid @RequestBody GitHubImportRequest request) {
+    ImportJob job = importJobs.createGitHubJob(
+        principal.getId(), request.name(), request.description(), request.language(), request.url());
+    importJobs.processGitHubJob(job.getId(), principal.getId());
+    return ResponseEntity.status(HttpStatus.ACCEPTED)
+        .body(ImportJobResponse.from(job));
+  }
+
+  /**
+   * GitHub shallow-clone import (synchronous, for backward compatibility and testing).
+   * Limits: 50000 files, 4 GB total, 10 MB per file.
+   */
+  @PostMapping(path = "/import/github/sync", consumes = MediaType.APPLICATION_JSON_VALUE)
+  public ResponseEntity<ProjectResponse> importGitHubSync(
       @AuthenticationPrincipal VeriReviewUserDetails principal,
       @Valid @RequestBody GitHubImportRequest request) {
     return ResponseEntity.status(HttpStatus.CREATED)
@@ -121,8 +165,8 @@ public class ProjectController {
   }
 
   /**
-   * Paste-file intake (Phase 5). Accepts a list of file paths + contents (max 1 MB
-   * each, 2000 files total, 200 MB aggregate). Files are written to quarantine,
+   * Paste-file intake (Phase 5). Accepts a list of file paths + contents (max 10 MB
+   * each, 50000 files total, 4 GB aggregate). Files are written to quarantine,
    * validated, then staged to project storage.
    */
   @PostMapping(path = "/import/paste", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -136,6 +180,61 @@ public class ProjectController {
             request.description(),
             request.language(),
             request.files()));
+  }
+
+  /**
+   * Returns the current import limits for ZIP and GitHub imports.
+   * No authentication required — public endpoint for UI pre-validation.
+   */
+  @GetMapping("/import/limits")
+  public ResponseEntity<ImportLimitsResponse> importLimits() {
+    long maxZip = limits.maxZipBytes();
+    long maxUncompressed = limits.maxTotalUncompressedBytes();
+    long maxSingle = limits.maxSingleFileBytes();
+    return ResponseEntity.ok(new ImportLimitsResponse(
+        maxZip,
+        limits.maxFiles(),
+        maxUncompressed,
+        maxSingle,
+        formatBytes(maxZip),
+        formatBytes(maxUncompressed),
+        formatBytes(maxSingle)));
+  }
+
+  /**
+   * Get import job status by ID. Owner-scoped.
+   */
+  @GetMapping("/import/jobs/{id}")
+  public ResponseEntity<ImportJobResponse> getImportJob(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id) {
+    ImportJob job = importJobs.findByIdAndOwner(id, principal.getId())
+        .orElseThrow(() -> new org.springframework.web.server.ResponseStatusException(
+            HttpStatus.NOT_FOUND, "Import job not found"));
+    return ResponseEntity.ok(ImportJobResponse.from(job));
+  }
+
+  /**
+   * List import jobs for the current user. Owner-scoped.
+   */
+  @GetMapping("/import/jobs")
+  public ResponseEntity<PagedResponse<ImportJobResponse>> listImportJobs(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PageableDefault(size = 20, sort = "createdAt",
+          direction = org.springframework.data.domain.Sort.Direction.DESC) Pageable pageable) {
+    return ResponseEntity.ok(
+        PagedResponse.of(importJobs.findByOwner(principal.getId(), pageable).map(ImportJobResponse::from)));
+  }
+
+  private static String formatBytes(long bytes) {
+    if (bytes >= 1024L * 1024L * 1024L) {
+      return String.format("%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0));
+    } else if (bytes >= 1024L * 1024L) {
+      return String.format("%.0f MB", bytes / (1024.0 * 1024.0));
+    } else if (bytes >= 1024L) {
+      return String.format("%.0f KB", bytes / 1024.0);
+    }
+    return bytes + " bytes";
   }
 
   @GetMapping("/{id}/files")

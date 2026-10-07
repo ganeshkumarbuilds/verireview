@@ -21,6 +21,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -33,10 +34,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 /**
  * ZIP intake pipeline (SECURITY_DESIGN §3, API_DESIGN §4): extension + magic
- * bytes → entry scan (count, declared sizes, traversal/symlink rejection) →
- * streaming extract to quarantine with per-file and total uncompressed caps →
- * hash + inventory → move to the project store. Any failure deletes the
- * quarantine. Uploaded code is stored, never executed.
+ * bytes → entry scan (count, declared sizes, traversal/symlink rejection,
+ * junk directory filtering) → streaming extract to quarantine with per-file
+ * and total uncompressed caps → hash + inventory → move to the project store.
+ * Any failure deletes the quarantine. Uploaded code is stored, never executed.
  */
 @Service
 public class ZipIngestionService {
@@ -52,6 +53,12 @@ public class ZipIngestionService {
       Map.entry("json", "json"), Map.entry("yml", "yaml"), Map.entry("yaml", "yaml"),
       Map.entry("md", "markdown"), Map.entry("txt", "text"), Map.entry("sh", "shell"),
       Map.entry("gradle", "gradle"), Map.entry("properties", "properties"));
+
+  private static final Set<String> JUNK_DIRS = Set.of(
+      "node_modules", ".git", "target", "build", "dist", ".next",
+      ".venv", "venv", "__pycache__", ".idea", ".gradle", ".mypy_cache");
+  private static final Set<String> BINARY_EXTS = Set.of(
+      "class", "jar", "exe", "dll", "so", "dylib", "o", "obj", "pyc", "pyo", "pyd");
 
   private final IngestionLimits limits;
   private final ProjectStorage storage;
@@ -82,6 +89,8 @@ public class ZipIngestionService {
   public ImportedProject ingest(
       UUID ownerId, String name, String description, String language, MultipartFile upload) {
     String projectName = validateName(name);
+    String filename = upload.getOriginalFilename() == null ? "" : upload.getOriginalFilename();
+    long fileSize = upload.getSize();
     Path staged = stageUpload(upload);
     Path quarantine;
     try {
@@ -93,10 +102,7 @@ public class ZipIngestionService {
     }
     boolean moved = false;
     try {
-      List<ExtractedFile> extracted = extract(quarantine, staged);
-      if (extracted.isEmpty()) {
-        throw badRequest("Archive contains no files");
-      }
+      List<ExtractedFile> extracted = extract(quarantine, staged, filename, fileSize);
       if (projects.existsByOwnerIdAndNameAndDeletedAtIsNull(ownerId, projectName)) {
         throw new ResponseStatusException(HttpStatus.CONFLICT, "Project name is already used");
       }
@@ -140,82 +146,84 @@ public class ZipIngestionService {
 
   private Path stageUpload(MultipartFile upload) {
     if (upload == null || upload.isEmpty()) {
-      throw badRequest("A non-empty .zip file is required");
-    }
-    if (upload.getSize() > limits.maxZipBytes()) {
-      throw badRequest("Archive exceeds the 50 MB project limit");
+      throw ZipImportException.corruptZip("", 0, "A non-empty .zip file is required");
     }
     String filename = upload.getOriginalFilename() == null ? "" : upload.getOriginalFilename();
     if (!filename.toLowerCase(Locale.ROOT).endsWith(".zip")) {
-      throw badRequest("Only .zip uploads are accepted");
+      throw ZipImportException.invalidExtension(filename, upload.getSize());
+    }
+    if (upload.getSize() > limits.maxZipBytes()) {
+      throw ZipImportException.oversizedZip(filename, upload.getSize(), limits.maxZipBytes());
     }
     try {
       Path staged = Files.createTempFile("verireview-upload-", ".zip");
       upload.transferTo(staged);
-      assertZipMagic(staged);
+      assertZipMagic(staged, filename, upload.getSize());
       return staged;
     } catch (IOException e) {
-      throw badRequest("Could not read the uploaded archive");
+      throw ZipImportException.corruptZip(filename, upload.getSize(), "Could not read the uploaded archive");
     }
   }
 
-  private static void assertZipMagic(Path staged) throws IOException {
+  private static void assertZipMagic(Path staged, String filename, long fileSize) throws IOException {
     try (InputStream in = Files.newInputStream(staged)) {
       byte[] magic = in.readNBytes(4);
       if (magic.length < 4 || magic[0] != 'P' || magic[1] != 'K') {
-        throw badRequest("File is not a ZIP archive");
+        throw ZipImportException.corruptZip(filename, fileSize, "File is not a ZIP archive");
       }
     }
   }
 
-  private List<ExtractedFile> extract(Path quarantine, Path staged) {
+  private List<ExtractedFile> extract(Path quarantine, Path staged, String filename, long fileSize) {
     List<ExtractedFile> extracted = new ArrayList<>();
     long totalUncompressed = 0;
     try (ZipFile zip = new ZipFile(staged.toFile())) {
       Enumeration<? extends ZipEntry> entries = zip.entries();
       while (entries.hasMoreElements()) {
         ZipEntry entry = entries.nextElement();
-        String relative = sanitizeEntryName(entry.getName());
+        String relative = sanitizeEntryName(entry.getName(), filename, fileSize);
         if (relative == null) {
-          continue; // directory, macOS metadata, or DS_Store
+          continue; // directory, macOS metadata, junk dirs, or binary artifacts
         }
         if (extracted.size() >= limits.maxFiles()) {
-          throw badRequest("Archive exceeds the 2000 file limit");
+          throw ZipImportException.tooManyFiles(filename, fileSize, extracted.size() + 1, limits.maxFiles());
         }
         Path target = storage.resolveJailed(quarantine, relative);
-        totalUncompressed = copyCapped(zip, entry, target, totalUncompressed);
+        totalUncompressed = copyCapped(zip, entry, target, totalUncompressed, filename, fileSize);
         long size;
         try {
           size = Files.size(target);
         } catch (IOException e) {
-          throw new ResponseStatusException(
-              HttpStatus.INTERNAL_SERVER_ERROR, "Could not extract the archive");
+          throw ZipImportException.corruptZip(filename, fileSize, "Could not extract the archive");
         }
         extracted.add(new ExtractedFile(relative, size, sha256Hex(target), languageOf(relative)));
       }
+      if (extracted.isEmpty()) {
+        throw ZipImportException.emptyArchive(filename, fileSize);
+      }
     } catch (IOException e) {
       if (e instanceof java.util.zip.ZipException) {
-        throw badRequest("File is not a readable ZIP archive");
+        throw ZipImportException.corruptZip(filename, fileSize, e.getMessage());
       }
-      throw new ResponseStatusException(
-          HttpStatus.INTERNAL_SERVER_ERROR, "Could not extract the archive");
+      throw ZipImportException.corruptZip(filename, fileSize, "Could not extract the archive");
     }
     return extracted;
   }
 
   /**
    * Returns the jail-relative posix path, or null for entries to skip
-   * (directories, macOS metadata). Throws 400 on absolute paths, drive
-   * letters, or any {@code ..} component. The authoritative jail check runs
-   * again at extraction time via {@code ProjectStorage.resolveJailed}.
+   * (directories, macOS metadata, junk dirs, binary artifacts). Throws
+   * ZipImportException on absolute paths, drive letters, or any {@code ..}
+   * component. The authoritative jail check runs again at extraction time via
+   * {@code ProjectStorage.resolveJailed}.
    */
-  private String sanitizeEntryName(String raw) {
+  private String sanitizeEntryName(String raw, String filename, long fileSize) {
     if (raw == null) {
       return null;
     }
     String unified = raw.replace('\\', '/');
     if (unified.startsWith("/") || unified.matches("^[A-Za-z]:.*")) {
-      throw badRequest("Archive entry escapes the project: " + raw);
+      throw ZipImportException.zipSlip(filename, fileSize, raw);
     }
     if (unified.endsWith("/")) {
       return null;
@@ -229,22 +237,34 @@ public class ZipIngestionService {
         continue;
       }
       if (part.equals("..")) {
-        throw badRequest("Archive entry escapes the project: " + raw);
+        throw ZipImportException.zipSlip(filename, fileSize, raw);
       }
       parts.add(part);
     }
     if (parts.isEmpty()) {
       return null;
     }
-    return String.join("/", parts);
+    String firstPart = parts.get(0);
+    if (JUNK_DIRS.contains(firstPart)) {
+      return null;
+    }
+    String joined = String.join("/", parts);
+    int dot = joined.lastIndexOf('.');
+    if (dot >= 0 && dot < joined.length() - 1) {
+      String ext = joined.substring(dot + 1).toLowerCase(Locale.ROOT);
+      if (BINARY_EXTS.contains(ext)) {
+        return null;
+      }
+    }
+    return joined;
   }
 
-  private long copyCapped(ZipFile zip, ZipEntry entry, Path target, long totalSoFar)
-      throws IOException {
+  private long copyCapped(ZipFile zip, ZipEntry entry, Path target, long totalSoFar,
+                           String filename, long fileSize) throws IOException {
     try {
       Files.createDirectories(target.getParent());
     } catch (IOException e) {
-      throw badRequest("Archive entry escapes the project: " + entry.getName());
+      throw ZipImportException.zipSlip(filename, fileSize, entry.getName());
     }
     long fileBytes = 0;
     try (InputStream in = zip.getInputStream(entry);
@@ -254,14 +274,14 @@ public class ZipIngestionService {
       while ((read = in.read(buffer)) != -1) {
         fileBytes += read;
         if (fileBytes > limits.maxSingleFileBytes()) {
-          throw badRequest("Archive contains an oversized file: " + entry.getName());
+          throw ZipImportException.oversizedFile(filename, fileSize, entry.getName(), limits.maxSingleFileBytes());
         }
         if (totalSoFar + fileBytes > limits.maxTotalUncompressedBytes()) {
-          throw badRequest("Archive exceeds the 200 MB uncompressed limit");
+          throw ZipImportException.uncompressedTooLarge(filename, fileSize, totalSoFar + fileBytes, limits.maxTotalUncompressedBytes());
         }
         out.write(buffer, 0, read);
       }
-    } catch (ResponseStatusException e) {
+    } catch (ZipImportException e) {
       deleteQuietly(target);
       throw e;
     } catch (IOException e) {
@@ -270,7 +290,7 @@ public class ZipIngestionService {
     }
     if (Files.isSymbolicLink(target)) {
       deleteQuietly(target);
-      throw badRequest("Archive contains a symlink: " + entry.getName());
+      throw ZipImportException.symlinkDetected(filename, fileSize, entry.getName());
     }
     return totalSoFar + fileBytes;
   }
@@ -302,7 +322,7 @@ public class ZipIngestionService {
 
   private static String validateName(String name) {
     if (name == null || name.isBlank() || name.trim().length() > 200) {
-      throw badRequest("Project name must be 1-200 characters");
+      throw new IllegalArgumentException("Project name must be 1-200 characters");
     }
     return name.trim();
   }
@@ -317,9 +337,5 @@ public class ZipIngestionService {
     } catch (IOException ignored) {
       // Best effort cleanup.
     }
-  }
-
-  private static ResponseStatusException badRequest(String message) {
-    return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
   }
 }

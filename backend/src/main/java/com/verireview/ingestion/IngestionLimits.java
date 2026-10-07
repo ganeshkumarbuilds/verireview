@@ -16,14 +16,14 @@ public class IngestionLimits {
   private final long maxSingleFileBytes;
 
   public IngestionLimits(
-      @Value("${app.ingestion.max-zip-mb:50}") long maxZipMb,
-      @Value("${app.ingestion.max-files:2000}") int maxFiles,
-      @Value("${app.ingestion.max-total-uncompressed-mb:200}") long maxTotalUncompressedMb,
-      @Value("${app.ingestion.max-single-file-mb:10}") long maxSingleFileMb) {
-    this.maxZipBytes = maxZipMb * 1024L * 1024L;
+      @Value("${app.import.max-zip-bytes:1073741824}") long maxZipBytes,
+      @Value("${app.import.max-files:50000}") int maxFiles,
+      @Value("${app.import.max-total-uncompressed-bytes:4294967296}") long maxTotalUncompressedBytes,
+      @Value("${app.import.max-single-file-bytes:10485760}") long maxSingleFileBytes) {
+    this.maxZipBytes = maxZipBytes;
     this.maxFiles = maxFiles;
-    this.maxTotalUncompressedBytes = maxTotalUncompressedMb * 1024L * 1024L;
-    this.maxSingleFileBytes = maxSingleFileMb * 1024L * 1024L;
+    this.maxTotalUncompressedBytes = maxTotalUncompressedBytes;
+    this.maxSingleFileBytes = maxSingleFileBytes;
   }
 
   public long maxZipBytes() {

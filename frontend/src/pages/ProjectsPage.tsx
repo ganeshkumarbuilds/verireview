@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { listFindings, listReviews } from '../api/analysis';
-import { listProjects, uploadZip, importGitHub, importPaste, type PasteFileInput } from '../api/projects';
+import { listProjects, importGitHub, importPaste, fetchImportLimits, type PasteFileInput, type ImportLimits } from '../api/projects';
 import { createGeneration } from '../api/generations';
 import type { FindingResponse, ProjectResponse, ReviewResponse } from '../api/types';
 import type {
@@ -20,6 +20,7 @@ import {
   ErrorAlert,
   LoadingState,
   PageHeader,
+  Progress,
   SkeletonList,
   inputClass,
   primaryButtonClass,
@@ -85,6 +86,10 @@ export function ProjectsPage() {
   const [zipName, setZipName] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+
+  // --- Import limits (fetched from backend) ---
+  const [limits, setLimits] = useState<ImportLimits | null>(null);
 
   // --- GitHub import form (section 3) ---
   const [ghName, setGhName] = useState('');
@@ -142,6 +147,14 @@ export function ProjectsPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    fetchImportLimits(apiClient())
+      .then(setLimits)
+      .catch(() => {
+        // Silently fail; validation will fall back to server-side errors
+      });
+  }, []);
 
   const genWantsDb = genDatabase !== '' && genDatabase !== 'NONE';
 
@@ -250,18 +263,107 @@ export function ProjectsPage() {
     if (!token || !file || !zipName.trim()) {
       return;
     }
+    // Client-side validation before upload
+    if (limits) {
+      if (!file.name.toLowerCase().endsWith('.zip')) {
+        setError('Only .zip files are accepted.');
+        return;
+      }
+      if (file.size > limits.maxZipBytes) {
+        setError(`File size ${formatFileSize(file.size)} exceeds the maximum allowed size of ${limits.maxZipBytesHuman}.`);
+        return;
+      }
+    }
     setBusy(true);
+    setUploadProgress(0);
     setError(null);
     try {
-      await uploadZip(apiClient(), token, { file, name: zipName.trim() });
+      // Use XMLHttpRequest for progress tracking
+      await uploadZipWithProgress(apiClient(), token, { file, name: zipName.trim() }, setUploadProgress);
       setZipName('');
       setFile(null);
+      setUploadProgress(100);
       await reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Upload failed.');
     } finally {
       setBusy(false);
+      setUploadProgress(0);
     }
+  };
+
+  const uploadZipWithProgress = (
+    client: ReturnType<typeof apiClient>,
+    token: string,
+    input: { file: File; name: string; description?: string; language?: string },
+    onProgress: (progress: number) => void
+  ): Promise<ProjectResponse> => {
+    return new Promise((resolve, reject) => {
+      const form = new FormData();
+      form.append('file', input.file);
+      form.append('name', input.name);
+      if (input.description) {
+        form.append('description', input.description);
+      }
+      if (input.language) {
+        form.append('language', input.language);
+      }
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', client.buildUrl('/projects/import/zip'));
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          onProgress(Math.round((event.loaded / event.total) * 100));
+        }
+      });
+
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText);
+            resolve(response);
+          } catch {
+            reject(new ApiError(xhr.status, 'parse_error', 'Invalid response from server'));
+          }
+        } else {
+          let message = `Request failed with status ${xhr.status}.`;
+          let code = `HTTP_${xhr.status}`;
+          try {
+            const errorBody = JSON.parse(xhr.responseText);
+            message = errorBody.error?.message ?? message;
+            code = errorBody.error?.code ?? code;
+          } catch {
+            // Use default message
+          }
+          reject(new ApiError(xhr.status, code, message));
+        }
+      });
+
+      xhr.addEventListener('error', () => {
+        reject(new ApiError(0, 'network_error', 'Network error occurred'));
+      });
+
+      xhr.addEventListener('abort', () => {
+        reject(new ApiError(0, 'aborted', 'Upload aborted'));
+      });
+
+      xhr.send(form);
+    });
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes >= 1024 * 1024 * 1024) {
+      return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    }
+    if (bytes >= 1024 * 1024) {
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+    if (bytes >= 1024) {
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+    return `${bytes} bytes`;
   };
 
   const handleGitHubImport = async (event: FormEvent) => {
@@ -624,7 +726,9 @@ export function ProjectsPage() {
 
       <Card
         title="2 · Upload an existing codebase"
-        subtitle="Import a codebase snapshot for sandboxed analysis. Maximum 50 MB and 2,000 files."
+        subtitle={limits
+          ? `Import a codebase snapshot for sandboxed analysis. Maximum ${limits.maxZipBytesHuman} and ${limits.maxFiles.toLocaleString()} files.`
+          : 'Import a codebase snapshot for sandboxed analysis. Loading limits…'}
       >
         <form onSubmit={handleUpload} aria-label="Upload ZIP form" className="space-y-3">
           <div>
@@ -638,6 +742,7 @@ export function ProjectsPage() {
               placeholder="e.g. billing-service"
               maxLength={200}
               className={inputClass}
+              disabled={busy}
             />
           </div>
           <div>
@@ -650,26 +755,40 @@ export function ProjectsPage() {
               accept=".zip"
               onChange={(event) => setFile(event.target.files?.[0] ?? null)}
               className="w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-indigo-700 file:transition-colors hover:file:bg-indigo-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
+              disabled={busy}
             />
             {file && (
               <p className="mt-1 truncate text-xs text-slate-500">
-                Selected: {file.name} · {(file.size / 1024 / 1024).toFixed(2)} MB
+                Selected: {file.name} · {formatFileSize(file.size)}
               </p>
             )}
+            <p className="mt-1 text-xs text-slate-500">
+              Tip: exclude node_modules, .git, build outputs before zipping.
+            </p>
           </div>
+          {busy && uploadProgress > 0 && (
+            <Progress value={uploadProgress} className="h-2" />
+          )}
+          {error && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+              {error}
+            </p>
+          )}
           <button
             type="submit"
             disabled={busy || !file || !zipName.trim()}
             className={primaryButtonClass}
           >
-            {busy ? 'Working…' : 'Upload and import'}
+            {busy ? `Uploading… ${uploadProgress}%` : 'Upload and import'}
           </button>
         </form>
       </Card>
 
       <Card
         title="3 · Import from GitHub"
-        subtitle="Shallow-clone a public GitHub repository (github.com only). Maximum 2,000 files and 200 MB total."
+        subtitle={limits
+          ? `Shallow-clone a public GitHub repository (github.com only). Maximum ${limits.maxFiles.toLocaleString()} files and ${limits.maxTotalUncompressedBytesHuman} total.`
+          : 'Shallow-clone a public GitHub repository (github.com only). Loading limits…'}
       >
         <form onSubmit={handleGitHubImport} aria-label="GitHub import form" className="space-y-3">
           <div>
@@ -747,7 +866,9 @@ export function ProjectsPage() {
 
       <Card
         title="4 · Paste code files"
-        subtitle="Manually add files by pasting their path and content. Maximum 2,000 files, 1 MB per file, 200 MB total."
+        subtitle={limits
+          ? `Manually add files by pasting their path and content. Maximum ${limits.maxFiles.toLocaleString()} files, ${limits.maxSingleFileBytesHuman} per file, ${limits.maxTotalUncompressedBytesHuman} total.`
+          : 'Manually add files by pasting their path and content. Loading limits…'}
       >
         <form onSubmit={handlePasteImport} aria-label="Paste import form" className="space-y-3">
           <div>

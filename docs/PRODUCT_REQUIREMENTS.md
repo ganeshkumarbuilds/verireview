@@ -93,7 +93,7 @@ Approval gates: plan approval and per-finding fix approval. No destructive or la
 | FR-01 | Auth | Register, login (JWT access + refresh rotation), logout, current-user profile |
 | FR-02 | AuthZ | RBAC: USER owns only own projects; ADMIN can view system metrics/audit |
 | FR-03 | Projects | CRUD projects; list with pagination/filter/sort; ownership enforced |
-| FR-04 | Ingestion-ZIP | Accept `.zip` ≤ defined limit (e.g. 50 MB), validate MIME/extension, safe extraction (ZipSlip protection), file-count/size caps |
+| FR-04 | Ingestion-ZIP | Accept `.zip` ≤ defined limit (e.g. 1 GB), validate MIME/extension, safe extraction (ZipSlip protection), file-count/size caps |
 | FR-05 | Ingestion-Paste | Accept single file: filename + language + content, size-capped, validated |
 | FR-06 | Ingestion-GitHub | Accept public repo URL (allowlist github.com), shallow clone by branch/commit, size cap |
 | FR-07 | Files | Browse project tree, view file content (read-only, size-capped), search |

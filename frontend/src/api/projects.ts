@@ -37,6 +37,16 @@ export type PasteImportInput = {
   files: PasteFileInput[];
 };
 
+export type ImportLimits = {
+  maxZipBytes: number;
+  maxFiles: number;
+  maxTotalUncompressedBytes: number;
+  maxSingleFileBytes: number;
+  maxZipBytesHuman: string;
+  maxTotalUncompressedBytesHuman: string;
+  maxSingleFileBytesHuman: string;
+};
+
 function query(params: Record<string, string | number | undefined>): string {
   const parts = Object.entries(params)
     .filter((entry): entry is [string, string | number] => entry[1] !== undefined)
@@ -154,4 +164,12 @@ export async function getFileContent(
     `/projects/${encodeURIComponent(projectId)}/files/content?path=${encodeURIComponent(path)}`,
     { headers: bearer(token) },
   );
+}
+
+export async function fetchImportLimits(
+  client: ApiClient,
+): Promise<ImportLimits> {
+  return client.request<ImportLimits>('/projects/import/limits', {
+    method: 'GET',
+  });
 }

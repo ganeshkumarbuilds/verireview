@@ -16,8 +16,8 @@ Initial sandbox limits (runtime-overridable via env, see `.env.example`):
 | Memory | 512 MB | `SANDBOX_MEMORY_MB` |
 | CPU | 1 core | `SANDBOX_CPU_COUNT` |
 | Captured output | 5 MB | `SANDBOX_MAX_OUTPUT_MB` |
-| Project size | 50 MB | `SANDBOX_MAX_PROJECT_MB` |
-| File count | 2000 files | `SANDBOX_MAX_FILES` |
+| Project size | 1 GB | `SANDBOX_MAX_PROJECT_MB` |
+| File count | 50000 files | `SANDBOX_MAX_FILES` |
 
 Uploaded/generated code never executes in the Spring Boot JVM, frontend, or AI-service shell — only the sandbox dispatcher (Phase 10), hardened in Phase 16.
 

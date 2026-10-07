@@ -93,10 +93,7 @@ public class GitHubIngestionService {
     boolean moved = false;
     try {
       String commitSha = shallowClone(quarantine, validatedUrl);
-      List<ExtractedFile> extracted = scanQuarantine(quarantine);
-      if (extracted.isEmpty()) {
-        throw badRequest("Repository contains no files");
-      }
+      List<ExtractedFile> extracted = scanQuarantine(quarantine, validatedUrl);
       if (projects.existsByOwnerIdAndNameAndDeletedAtIsNull(ownerId, projectName)) {
         throw new ResponseStatusException(HttpStatus.CONFLICT, "Project name is already used");
       }
@@ -139,33 +136,33 @@ public class GitHubIngestionService {
 
   private String validateAndNormalizeUrl(String url) {
     if (url == null || url.isBlank()) {
-      throw badRequest("A GitHub repository URL is required");
+      throw GitHubImportException.invalidUrl(url, "A GitHub repository URL is required");
     }
     String trimmed = url.trim();
     try {
       java.net.URI uri = new java.net.URI(trimmed);
       String host = uri.getHost();
       if (host == null) {
-        throw badRequest("Invalid URL: missing host");
+        throw GitHubImportException.invalidUrl(url, "missing host");
       }
       String lowerHost = host.toLowerCase(Locale.ROOT);
       boolean allowed = ALLOWED_HOSTS.stream().anyMatch(lowerHost::equals);
       if (!allowed) {
-        throw badRequest("Only public GitHub repositories are allowed (github.com)");
+        throw GitHubImportException.hostNotAllowed(url);
       }
       String path = uri.getPath();
       if (path == null || path.isBlank() || path.equals("/")) {
-        throw badRequest("Invalid GitHub URL: missing repository path");
+        throw GitHubImportException.invalidUrl(url, "missing repository path");
       }
       if (!path.contains("/")) {
-        throw badRequest("Invalid GitHub URL: must include owner and repository");
+        throw GitHubImportException.invalidUrl(url, "must include owner and repository");
       }
       if (trimmed.endsWith(".git")) {
         trimmed = trimmed.substring(0, trimmed.length() - 4);
       }
       return trimmed;
     } catch (java.net.URISyntaxException e) {
-      throw badRequest("Invalid URL format: " + e.getMessage());
+      throw GitHubImportException.invalidUrl(url, "Invalid URL format: " + e.getMessage());
     }
   }
 
@@ -182,7 +179,7 @@ public class GitHubIngestionService {
              RevWalk walk = new RevWalk(repo)) {
           ObjectId head = repo.resolve("HEAD");
           if (head == null) {
-            throw badRequest("Repository has no commits");
+            throw GitHubImportException.noCommits(url);
           }
           RevCommit commit = walk.parseCommit(head);
           return commit.getName();
@@ -204,25 +201,25 @@ public class GitHubIngestionService {
                  RevWalk walk = new RevWalk(repo)) {
               ObjectId head = repo.resolve("HEAD");
               if (head == null) {
-                throw badRequest("Repository has no commits");
+                throw GitHubImportException.noCommits(url);
               }
               RevCommit commit = walk.parseCommit(head);
               return commit.getName();
             }
           }
         } catch (GitAPIException e2) {
-          throw badRequest("Could not clone repository: " + e2.getMessage());
+          throw GitHubImportException.cloneFailed(url, e2.getMessage());
         } catch (IOException e2) {
-          throw badRequest("Could not read repository: " + e2.getMessage());
+          throw GitHubImportException.cloneFailed(url, e2.getMessage());
         }
       }
-      throw badRequest("Could not clone repository: " + e.getMessage());
+      throw GitHubImportException.cloneFailed(url, e.getMessage());
     } catch (IOException e) {
-      throw badRequest("Could not read repository: " + e.getMessage());
+      throw GitHubImportException.cloneFailed(url, e.getMessage());
     }
   }
 
-  private List<ExtractedFile> scanQuarantine(Path quarantine) {
+  private List<ExtractedFile> scanQuarantine(Path quarantine, String url) {
     List<ExtractedFile> extracted = new ArrayList<>();
     try (var stream = Files.walk(quarantine)) {
       List<Path> filePaths = stream
@@ -230,7 +227,7 @@ public class GitHubIngestionService {
           .filter(p -> !Files.isSymbolicLink(p))
           .collect(Collectors.toList());
       if (filePaths.size() > limits.maxFiles()) {
-        throw badRequest("Repository exceeds the " + limits.maxFiles() + " file limit");
+        throw GitHubImportException.tooManyFiles(url, filePaths.size(), limits.maxFiles());
       }
       long totalUncompressed = 0;
       for (Path file : filePaths) {
@@ -247,15 +244,18 @@ public class GitHubIngestionService {
               HttpStatus.INTERNAL_SERVER_ERROR, "Could not read file: " + relativePath);
         }
         if (size > limits.maxSingleFileBytes()) {
-          throw badRequest("Repository contains an oversized file: " + relativePath);
+          throw GitHubImportException.oversizedFile(url, relativePath, size, limits.maxSingleFileBytes());
         }
         totalUncompressed += size;
         if (totalUncompressed > limits.maxTotalUncompressedBytes()) {
-          throw badRequest("Repository exceeds the " + (limits.maxTotalUncompressedBytes() / 1024 / 1024) + " MB uncompressed limit");
+          throw GitHubImportException.uncompressedTooLarge(url, totalUncompressed, limits.maxTotalUncompressedBytes());
         }
         String sha256 = sha256Hex(file);
         String language = languageOf(relativePath);
         extracted.add(new ExtractedFile(relativePath, size, sha256, language));
+      }
+      if (extracted.isEmpty()) {
+        throw GitHubImportException.emptyRepository(url);
       }
     } catch (IOException e) {
       throw new ResponseStatusException(
@@ -291,17 +291,13 @@ public class GitHubIngestionService {
 
   private static String validateName(String name) {
     if (name == null || name.isBlank() || name.trim().length() > 200) {
-      throw badRequest("Project name must be 1-200 characters");
+      throw new IllegalArgumentException("Project name must be 1-200 characters");
     }
     return name.trim();
   }
 
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value.trim();
-  }
-
-  private static ResponseStatusException badRequest(String message) {
-    return new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
   }
 
   private record ExtractedFile(String relativePath, long sizeBytes, String sha256, String language) {

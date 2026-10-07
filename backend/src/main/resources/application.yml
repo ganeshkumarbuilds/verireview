@@ -26,10 +26,10 @@ spring:
     locations: classpath:db/migration
   servlet:
     multipart:
-      # Phase 5: admits the 50 MB project cap (larger bodies -> 413).
-      # Increased to 60MB/65MB to handle multipart overhead for 50MB files.
-      max-file-size: 60MB
-      max-request-size: 65MB
+      # Admits the 1 GB project cap (larger bodies -> 413).
+      # Increased to 1.1GB/1.15GB to handle multipart overhead for 1GB files.
+      max-file-size: 1100MB
+      max-request-size: 1150MB
 
 # Phase 3 auth (SECURITY_DESIGN 2, ADR-009). Secret comes from the
 # JWT_SIGNING_KEY environment variable only — never commit a real value.
@@ -45,6 +45,14 @@ app:
     # Project blobs live outside the DB (metadata only in PostgreSQL).
     # Overridable: STORAGE_ROOT=/var/lib/verireview/projects
     storage-root: ${STORAGE_ROOT:./uploads/projects}
+
+  import:
+    # ZIP import limits (overridable via env: APP_IMPORT_MAX_ZIP_BYTES, etc.)
+    # Defaults: 1GB zip, 50000 files, 4GB uncompressed, 10MB per file
+    max-zip-bytes: ${APP_IMPORT_MAX_ZIP_BYTES:1073741824}
+    max-files: ${APP_IMPORT_MAX_FILES:50000}
+    max-total-uncompressed-bytes: ${APP_IMPORT_MAX_TOTAL_UNCOMPRESSED_BYTES:4294967296}
+    max-single-file-bytes: ${APP_IMPORT_MAX_SINGLE_FILE_BYTES:10485760}
   sandbox:
     # Gates EVERY Docker invocation in SandboxRunner (generation build/test
     # AND uploaded-project deterministic analysis via AnalysisRunner). Some
@@ -97,11 +105,11 @@ server:
     # maxHttpFormPostSize ~2MB) reset the connection on large multipart
     # uploads BEFORE Spring's servlet.multipart limits above ever run.
     # This is what causes ERR_CONNECTION_RESET on files well under the
-    # 50MB app-level cap. Raised here to match that cap; -1 disables the
+    # 1GB app-level cap. Raised here to match that cap; -1 disables the
     # swallow-size check entirely, letting the multipart limits above be
     # the sole gate (a clean 413/Payload Too Large instead of a reset).
     max-swallow-size: -1
-    max-http-form-post-size: 65MB
+    max-http-form-post-size: 1150MB
 
 # Actuator (Phase 1) - expose health, info, metrics
 management:
