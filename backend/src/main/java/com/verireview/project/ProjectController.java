@@ -113,7 +113,6 @@ public class ProjectController {
       @RequestParam(value = "description", required = false) String description,
       @RequestParam(value = "language", required = false) String language) {
     ImportJob job = importJobs.createZipJob(principal.getId(), name, description, language, file);
-    importJobs.processZipJob(job.getId(), principal.getId());
     return ResponseEntity.status(HttpStatus.ACCEPTED)
         .body(ImportJobCreatedResponse.from(job));
   }
@@ -147,7 +146,6 @@ public class ProjectController {
       @Valid @RequestBody GitHubImportRequest request) {
     ImportJob job = importJobs.createGitHubJob(
         principal.getId(), request.name(), request.description(), request.language(), request.url());
-    importJobs.processGitHubJob(job.getId(), principal.getId());
     return ResponseEntity.status(HttpStatus.ACCEPTED)
         .body(ImportJobCreatedResponse.from(job));
   }
@@ -225,6 +223,17 @@ public class ProjectController {
           direction = org.springframework.data.domain.Sort.Direction.DESC) Pageable pageable) {
     return ResponseEntity.ok(
         PagedResponse.of(importJobs.findByOwner(principal.getId(), pageable).map(ImportJobResponse::from)));
+  }
+
+  /**
+   * Cancel a queued import job. Only QUEUED jobs can be cancelled.
+   */
+  @DeleteMapping("/import/jobs/{id}")
+  public ResponseEntity<Void> cancelImportJob(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id) {
+    importJobs.cancelJob(id, principal.getId());
+    return ResponseEntity.noContent().build();
   }
 
   private static String formatBytes(long bytes) {

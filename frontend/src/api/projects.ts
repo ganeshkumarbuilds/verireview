@@ -215,3 +215,14 @@ export async function listImportJobs(
     { method: 'GET', headers: bearer(token) },
   );
 }
+
+export async function cancelImportJob(
+  client: ApiClient,
+  token: string,
+  jobId: string,
+): Promise<void> {
+  await client.request<void>(`/projects/import/jobs/${encodeURIComponent(jobId)}`, {
+    method: 'DELETE',
+    headers: bearer(token),
+  });
+}

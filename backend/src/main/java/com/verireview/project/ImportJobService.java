@@ -1,9 +1,7 @@
 package com.verireview.project;
 
-import com.verireview.analysis.AnalysisJobService;
 import com.verireview.ingestion.GitHubIngestionService;
 import com.verireview.ingestion.ZipIngestionService;
-import com.verireview.user.User;
 import com.verireview.user.UserRepository;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -14,9 +12,9 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -24,7 +22,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Service for managing async import jobs (ZIP and GitHub).
- * The upload endpoint creates a job and returns 202; this service processes it on a bounded executor.
+ * The upload endpoint creates a job and returns 202; processing happens via
+ * {@link ImportJobWorker} which listens for {@link ImportJobEvent} after commit.
  */
 @Service
 public class ImportJobService {
@@ -32,22 +31,16 @@ public class ImportJobService {
   private static final Logger log = LoggerFactory.getLogger(ImportJobService.class);
 
   private final ImportJobRepository jobs;
-  private final ZipIngestionService zipIngestion;
-  private final GitHubIngestionService githubIngestion;
   private final UserRepository users;
-  private final AnalysisJobService analysisJobService;
+  private final ApplicationEventPublisher eventPublisher;
 
   public ImportJobService(
       ImportJobRepository jobs,
-      ZipIngestionService zipIngestion,
-      GitHubIngestionService githubIngestion,
       UserRepository users,
-      AnalysisJobService analysisJobService) {
+      ApplicationEventPublisher eventPublisher) {
     this.jobs = jobs;
-    this.zipIngestion = zipIngestion;
-    this.githubIngestion = githubIngestion;
     this.users = users;
-    this.analysisJobService = analysisJobService;
+    this.eventPublisher = eventPublisher;
   }
 
   @Transactional
@@ -63,6 +56,8 @@ public class ImportJobService {
     try {
       staged = Files.createTempFile("verireview-import-", ".zip");
       file.transferTo(staged);
+      long stagedSize = Files.size(staged);
+      log.info("Job file staged: path={}, size={} bytes", staged, stagedSize);
     } catch (IOException e) {
       throw new ResponseStatusException(org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR,
           "Could not stage the uploaded archive");
@@ -76,7 +71,13 @@ public class ImportJobService {
     job.setCurrentStep("File staged, waiting for processing");
     job.setStagedFilePath(staged.toString());
 
-    return jobs.save(job);
+    ImportJob saved = jobs.save(job);
+    log.info("Import job created: jobId={}, ownerId={}, name={}, status=QUEUED", saved.getId(), ownerId, name);
+
+    // Publish event AFTER commit to trigger async processing
+    eventPublisher.publishEvent(new ImportJobEvent(saved.getId(), ownerId, ImportJobEvent.ImportJobType.ZIP));
+
+    return saved;
   }
 
   @Transactional
@@ -88,206 +89,14 @@ public class ImportJobService {
     job.setGithubUrl(url);
     job.setStatus(ImportJobStatus.QUEUED);
     job.setCurrentStep("GitHub import queued");
-    return jobs.save(job);
-  }
 
-  @Async("importExecutor")
-  @Transactional
-  public void processZipJob(UUID jobId, UUID ownerId) {
-    ImportJob job = jobs.findByIdAndOwnerId(jobId, ownerId)
-        .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+    ImportJob saved = jobs.save(job);
+    log.info("Import job created: jobId={}, ownerId={}, name={}, status=QUEUED", saved.getId(), ownerId, name);
 
-    Instant start = Instant.now();
-    Path stagedFile = null;
-    try {
-      job.setStatus(ImportJobStatus.EXTRACTING);
-      job.setStartedAt(Instant.now());
-      job.setCurrentStep("Extracting archive");
-      jobs.save(job);
+    // Publish event AFTER commit to trigger async processing
+    eventPublisher.publishEvent(new ImportJobEvent(saved.getId(), ownerId, ImportJobEvent.ImportJobType.GITHUB));
 
-      // Read the staged file
-      stagedFile = Path.of(job.getStagedFilePath());
-      if (!Files.exists(stagedFile)) {
-        throw new IllegalStateException("Staged file not found: " + stagedFile);
-      }
-
-      job.setCurrentStep("Processing archive entries");
-      jobs.save(job);
-
-      // Simulate progress updates
-      for (int i = 0; i < 5; i++) {
-        Thread.sleep(200);
-        job.setFilesProcessed(Math.min(job.getFilesProcessed() + 1000, 50000));
-        job.setBytesProcessed(Math.min(job.getBytesProcessed() + 200 * 1024 * 1024, job.getBytesTotal()));
-        job.setCurrentStep("Extracting files... " + job.getFilesProcessed() + " / " + job.getFilesTotal());
-        jobs.save(job);
-      }
-
-// Actually ingest the staged file by creating a MultipartFile wrapper
-      // We need to use the existing ingestion service
-      // Create a simple MultipartFile implementation from the staged file
-      // that streams content instead of loading entirely into memory
-      class StagedMultipartFile implements org.springframework.web.multipart.MultipartFile {
-        private final Path path;
-        private final String originalFilename;
-
-        StagedMultipartFile(Path path, String originalFilename) {
-          this.path = path;
-          this.originalFilename = originalFilename;
-        }
-
-        @Override
-        public String getName() {
-          return "file";
-        }
-
-        @Override
-        public String getOriginalFilename() {
-          return originalFilename;
-        }
-
-        @Override
-        public String getContentType() {
-          return "application/zip";
-        }
-
-        @Override
-        public boolean isEmpty() {
-          try {
-            return Files.size(path) == 0;
-          } catch (IOException e) {
-            return true;
-          }
-        }
-
-        @Override
-        public long getSize() {
-          try {
-            return Files.size(path);
-          } catch (IOException e) {
-            return 0;
-          }
-        }
-
-        @Override
-        public byte[] getBytes() throws IOException {
-          // Avoid loading entire file into memory for large uploads
-          // The ingestion service uses getInputStream() which streams
-          throw new UnsupportedOperationException("Use getInputStream() for streaming");
-        }
-
-        @Override
-        public java.io.InputStream getInputStream() throws IOException {
-          return Files.newInputStream(path);
-        }
-
-        @Override
-        public void transferTo(java.io.File dest) throws IOException, IllegalStateException {
-          Files.copy(path, dest.toPath());
-        }
-      }
-
-      StagedMultipartFile multipartFile = new StagedMultipartFile(stagedFile, job.getName() + ".zip");
-
-      ZipIngestionService.ImportedProject imported =
-          zipIngestion.ingest(ownerId, job.getName(), job.getDescription(),
-              job.getLanguage(), multipartFile);
-
-      job.setProject(imported.project());
-      job.setFilesTotal(imported.fileCount());
-      job.setFilesProcessed(imported.fileCount());
-      job.setBytesProcessed(job.getBytesTotal());
-      job.setStatus(ImportJobStatus.DONE);
-      job.setFinishedAt(Instant.now());
-      job.setDurationMs(java.time.Duration.between(start, job.getFinishedAt()).toMillis());
-      job.setCurrentStep("Import completed, project created, triggering analysis");
-
-      // Trigger analysis automatically on successful import
-      try {
-        analysisJobService.trigger(ownerId, imported.project().getId());
-        job.setCurrentStep("Import completed, analysis started");
-      } catch (Exception ex) {
-        log.warn("Failed to trigger analysis for project {}: {}", imported.project().getId(), ex.getMessage());
-        job.setCurrentStep("Import completed, analysis trigger failed: " + ex.getMessage());
-      }
-
-    } catch (Exception e) {
-      log.error("Import job {} failed", jobId, e);
-      job.setStatus(ImportJobStatus.FAILED);
-      job.setFinishedAt(Instant.now());
-      job.setDurationMs(java.time.Duration.between(start, job.getFinishedAt()).toMillis());
-      job.setErrorMessage(e.getMessage());
-      job.setCurrentStep("Import failed: " + e.getMessage());
-    } finally {
-      jobs.save(job);
-      // Cleanup staged file
-      if (stagedFile != null) {
-        try {
-          Files.deleteIfExists(stagedFile);
-        } catch (IOException ex) {
-          log.warn("Failed to cleanup staged file: {}", stagedFile, ex);
-        }
-      }
-    }
-  }
-
-  @Async("importExecutor")
-  @Transactional
-  public void processGitHubJob(UUID jobId, UUID ownerId) {
-    ImportJob job = jobs.findByIdAndOwnerId(jobId, ownerId)
-        .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
-
-    Instant start = Instant.now();
-    try {
-      job.setStatus(ImportJobStatus.EXTRACTING);
-      job.setStartedAt(Instant.now());
-      job.setCurrentStep("Cloning repository");
-      jobs.save(job);
-
-      // Simulate clone progress
-      for (int i = 0; i < 5; i++) {
-        Thread.sleep(200);
-        job.setFilesProcessed(Math.min(job.getFilesProcessed() + 1000, 50000));
-        job.setBytesProcessed(Math.min(job.getBytesProcessed() + 200 * 1024 * 1024, job.getBytesTotal()));
-        job.setCurrentStep("Cloning and indexing... " + job.getFilesProcessed() + " files");
-        jobs.save(job);
-      }
-
-      job.setStatus(ImportJobStatus.INDEXING);
-      job.setCurrentStep("Indexing files");
-      jobs.save(job);
-
-      GitHubIngestionService.ImportedProject imported =
-          githubIngestion.ingest(ownerId, job.getName(), job.getDescription(),
-              job.getLanguage(), job.getGithubUrl());
-
-      job.setProject(imported.project());
-      job.setFilesTotal(imported.fileCount());
-      job.setFilesProcessed(imported.fileCount());
-      job.setStatus(ImportJobStatus.DONE);
-      job.setFinishedAt(Instant.now());
-      job.setDurationMs(java.time.Duration.between(start, job.getFinishedAt()).toMillis());
-      job.setCurrentStep("Import completed, triggering analysis");
-
-      // Trigger analysis automatically on successful import
-      try {
-        analysisJobService.trigger(ownerId, imported.project().getId());
-        job.setCurrentStep("Import completed, analysis started");
-      } catch (Exception ex) {
-        log.warn("Failed to trigger analysis for project {}: {}", imported.project().getId(), ex.getMessage());
-        job.setCurrentStep("Import completed, analysis trigger failed: " + ex.getMessage());
-      }
-
-    } catch (Exception e) {
-      log.error("GitHub import job {} failed", jobId, e);
-      job.setStatus(ImportJobStatus.FAILED);
-      job.setFinishedAt(Instant.now());
-      job.setDurationMs(java.time.Duration.between(start, job.getFinishedAt()).toMillis());
-      job.setErrorMessage(e.getMessage());
-      job.setCurrentStep("Import failed: " + e.getMessage());
-    } finally {
-      jobs.save(job);
-    }
+    return saved;
   }
 
   @Transactional(readOnly = true)
@@ -304,5 +113,25 @@ public class ImportJobService {
   public long countRunningJobs(UUID ownerId) {
     return jobs.countByOwnerIdAndStatusIn(ownerId,
         List.of(ImportJobStatus.QUEUED, ImportJobStatus.EXTRACTING, ImportJobStatus.INDEXING));
+  }
+
+  /**
+   * Cancel a queued job by marking it FAILED.
+   */
+  @Transactional
+  public void cancelJob(UUID jobId, UUID ownerId) {
+    ImportJob job = jobs.findByIdAndOwnerId(jobId, ownerId)
+        .orElseThrow(() -> new ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND,
+            "Import job not found"));
+    if (job.getStatus() != ImportJobStatus.QUEUED) {
+      throw new ResponseStatusException(org.springframework.http.HttpStatus.CONFLICT,
+          "Only QUEUED jobs can be cancelled");
+    }
+    job.setStatus(ImportJobStatus.FAILED);
+    job.setErrorMessage("Cancelled by user");
+    job.setCurrentStep("Import cancelled by user");
+    job.setFinishedAt(Instant.now());
+    jobs.save(job);
+    log.info("Import job cancelled: jobId={}", jobId);
   }
 }

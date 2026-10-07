@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { listFindings, listReviews } from '../api/analysis';
-import { listProjects, importGitHub, importPaste, fetchImportLimits, getImportJob, type PasteFileInput, type ImportLimits, type ImportJobStatus } from '../api/projects';
+import { listProjects, importGitHub, importPaste, fetchImportLimits, getImportJob, cancelImportJob, type PasteFileInput, type ImportLimits, type ImportJobStatus } from '../api/projects';
 import { createGeneration } from '../api/generations';
 import type { FindingResponse, ProjectResponse, ReviewResponse } from '../api/types';
 import type {
@@ -208,9 +208,11 @@ export function ProjectsPage() {
 
     let cancelled = false;
     const POLL_INTERVAL_MS = 1500;
+    const QUEUED_STUCK_THRESHOLD_MS = 60_000; // 60 seconds
+    let queuedStartTime: number | null = null;
 
     const poll = async () => {
-      if (cancelled) return;
+      if (cancelled || !token) return;
       try {
         const job = await getImportJob(apiClient(), token, importJobId);
         if (cancelled) return;
@@ -225,10 +227,23 @@ export function ProjectsPage() {
           errorMessage: job.errorMessage,
         });
 
+        // Track QUEUED stuck time
+        if (job.status === 'QUEUED') {
+          if (queuedStartTime === null) {
+            queuedStartTime = Date.now();
+          } else if (Date.now() - queuedStartTime > QUEUED_STUCK_THRESHOLD_MS) {
+            setImportJobProgress(prev => prev ? {
+              ...prev,
+              currentStep: 'Still waiting for the server... (stuck in QUEUED for over 60s)'
+            } : null);
+          }
+        } else {
+          queuedStartTime = null; // Reset when leaving QUEUED
+        }
+
         if (job.status === 'DONE') {
           setPolling(false);
           if (job.projectId) {
-            // Clear sessionStorage and navigate
             sessionStorage.removeItem('verireview_import_job_id');
             setImportJobId(null);
             setImportJobStatus(null);
@@ -237,13 +252,11 @@ export function ProjectsPage() {
           }
         } else if (job.status === 'FAILED') {
           setPolling(false);
-          // Keep jobId in sessionStorage for retry
         } else {
           // Still QUEUED, EXTRACTING, or INDEXING - continue polling
         }
       } catch (err) {
         if (cancelled) return;
-        // Network error or 5xx - check if we should resume polling
         if (err instanceof ApiError) {
           if (err.status === 0 || err.status === 502 || err.status === 503) {
             // Backend may be restarting, keep polling
@@ -252,6 +265,26 @@ export function ProjectsPage() {
           if (err.status === 404) {
             // Job not found - clear and stop
             setPolling(false);
+            sessionStorage.removeItem('verireview_import_job_id');
+            setImportJobId(null);
+            setImportJobStatus(null);
+            setImportJobProgress(null);
+            return;
+          }
+          if (err.status === 401) {
+            // Token expired - try to refresh once and retry
+            try {
+              const refreshed = await refresh();
+              if (refreshed) {
+                // Retry immediately with new token
+                return;
+              }
+            } catch {
+              // Refresh failed
+            }
+            // Refresh failed or not available - show session expired
+            setPolling(false);
+            setError('Session expired, please log in again');
             sessionStorage.removeItem('verireview_import_job_id');
             setImportJobId(null);
             setImportJobStatus(null);
@@ -270,7 +303,7 @@ export function ProjectsPage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [polling, importJobId, token]);
+  }, [polling, importJobId, token, refresh]);
 
   const genWantsDb = genDatabase !== '' && genDatabase !== 'NONE';
 
@@ -998,6 +1031,43 @@ export function ProjectsPage() {
             )}
             {importJobProgress?.currentStep && (
               <p className="text-xs text-slate-500">{importJobProgress.currentStep}</p>
+            )}
+            {/* Stuck guard: QUEUED > 60s */}
+            {importJobStatus === 'QUEUED' && importJobProgress?.currentStep?.includes('stuck') && (
+              <div className="space-y-2 border-t border-amber-100 pt-3 mt-3" role="alert">
+                <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  Import is stuck in QUEUED for over 60 seconds. The server may not be processing jobs.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPolling(true);
+                    }}
+                    className={primaryButtonClass}
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!token) return;
+                      try {
+                        await cancelImportJob(apiClient(), token, importJobId);
+                      } catch {
+                        // Ignore cancel errors
+                      }
+                      sessionStorage.removeItem('verireview_import_job_id');
+                      setImportJobId(null);
+                      setImportJobStatus(null);
+                      setImportJobProgress(null);
+                    }}
+                    className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-600 focus-visible:ring-offset-2"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         )}

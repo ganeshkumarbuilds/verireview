@@ -21,4 +21,5 @@ COPY --from=build /app/target/*.jar app.jar
 
 EXPOSE 8080
 
-ENTRYPOINT ["sh", "-c", "java -jar app.jar --server.port=${PORT:-8080}"]
+# Memory settings for 512MB container: use 70% of RAM, exit on OOM
+ENTRYPOINT ["sh", "-c", "java -XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError -jar app.jar --server.port=${PORT:-8080}"]
