@@ -62,6 +62,7 @@ export function ProjectsPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [wakeUpMessage, setWakeUpMessage] = useState<string | null>(null);
 
   // --- Quick generation form (section 1) ---
   const [genName, setGenName] = useState('');
@@ -162,11 +163,46 @@ export function ProjectsPage() {
   }, [reload]);
 
   useEffect(() => {
-    fetchImportLimits(apiClient())
-      .then(setLimits)
-      .catch(() => {
-        // Silently fail; validation will fall back to server-side errors
-      });
+    let cancelled = false;
+    let wakeUpTimeout: ReturnType<typeof setTimeout> | null = null;
+    const showWakeUp = () => {
+      if (!cancelled) setWakeUpMessage('Loading limits… (backend may be waking up)');
+    };
+    // Show wake-up message after 2s
+    wakeUpTimeout = setTimeout(showWakeUp, 2000);
+
+    const fetchWithTimeout = async () => {
+      try {
+        // 10s timeout for the request
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        const limits = await fetchImportLimits(apiClient());
+        clearTimeout(timeoutId);
+        if (!cancelled) {
+          setLimits(limits);
+          if (wakeUpTimeout) clearTimeout(wakeUpTimeout);
+          setWakeUpMessage(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          if (err instanceof ApiError && (err.status === 0 || err.status === 503)) {
+            // Backend cold - retry with backoff
+            setWakeUpMessage('Backend waking up (free tier)… retrying in 3s');
+            setTimeout(() => fetchWithTimeout(), 3000);
+          } else {
+            // Silently fail; validation will fall back to server-side errors
+            if (wakeUpTimeout) clearTimeout(wakeUpTimeout);
+            setWakeUpMessage(null);
+          }
+        }
+      }
+    };
+
+    fetchWithTimeout();
+    return () => {
+      cancelled = true;
+      if (wakeUpTimeout) clearTimeout(wakeUpTimeout);
+    };
   }, []);
 
   // Restore import job from sessionStorage on mount
@@ -672,6 +708,11 @@ export function ProjectsPage() {
         }
       />
       {error && <ErrorAlert message={error} onRetry={() => void reload()} />}
+      {wakeUpMessage && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 animate-pulse">
+          {wakeUpMessage}
+        </div>
+      )}
 
       <Card
         title="1 · Generate a new project"

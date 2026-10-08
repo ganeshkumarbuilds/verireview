@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { isTerminal, listFindings, listReviews, getAllDashboardStats, type DashboardStatsResponse } from '../api/analysis';
 import { listProjects } from '../api/projects';
-import type { FindingResponse, ProjectResponse, ReviewResponse } from '../api/types';
+import { getDashboardSummary, getCheckStatusInfo, getHealthScoreColor, type DashboardSummaryResponse } from '../api/checks';
+import type { ProjectResponse, FeatureSummary, ProjectHealthScore, RunSummary } from '../api/types';
 import { apiClient, useAuth } from '../auth/AuthContext';
 import {
   Badge,
@@ -19,34 +19,30 @@ import {
   quietButtonClass,
 } from '../components/ui';
 import {
-  FindingSourcesCard,
   ProjectAvatar,
   formatDate,
-  reviewStatusTone,
 } from '../components/workflow';
 
-interface RecentProject {
+interface ProjectSummary {
   project: ProjectResponse;
-  latest: ReviewResponse | null;
-  findings: FindingResponse[];
+  healthScore: ProjectHealthScore | null;
+  checks: {
+    generate: FeatureSummary | null;
+    review: FeatureSummary | null;
+    fix: FeatureSummary | null;
+    verify: FeatureSummary | null;
+  };
 }
 
-interface ActivityEntry {
-  key: string;
-  projectId: string;
-  projectName: string;
-  review: ReviewResponse;
-}
-
-/** Dashboard backed by real project/review/finding data + new dashboard-stats endpoint.
- *  Shows pipeline: issues found → fixes proposed → fixes verified. */
+/** Dashboard backed by unified check runs and health scores. */
 export function DashboardPage() {
   const { token } = useAuth();
-  const [recent, setRecent] = useState<RecentProject[]>([]);
+  const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [totalProjects, setTotalProjects] = useState(0);
-  const [dashboardStats, setDashboardStats] = useState<DashboardStatsResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [wakeUpMessage, setWakeUpMessage] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     if (!token) {
@@ -55,32 +51,38 @@ export function DashboardPage() {
     }
     setLoading(true);
     setError(null);
+    setWakeUpMessage(null);
     try {
-      const [projectsPage, stats] = await Promise.all([
-        listProjects(apiClient(), token, { size: 5 }),
-        getAllDashboardStats(apiClient(), token),
+      const [projectsPage, dashboardSummary] = await Promise.all([
+        listProjects(apiClient(), token, { size: 20 }),
+        getDashboardSummary(apiClient(), token),
       ]);
       setTotalProjects(projectsPage.totalElements);
-      setDashboardStats(stats);
-      const withReviews = await Promise.all(
-        projectsPage.content.map(async (project) => {
-          const history = await listReviews(apiClient(), token, project.id);
-          const latest = history.content[0] ?? null;
-          let findings: FindingResponse[] = [];
-          if (latest) {
-            try {
-              const findingsPage = await listFindings(apiClient(), token, latest.id);
-              findings = findingsPage.content;
-            } catch {
-              findings = [];
-            }
-          }
-          return { project, latest, findings };
-        }),
-      );
-      setRecent(withReviews);
+      setSummary(dashboardSummary);
+
+      // Build project summaries with health scores
+      const projectSummaries: ProjectSummary[] = projectsPage.content.map(project => {
+        const healthScore = dashboardSummary.latestHealthScore?.projectId === project.id
+          ? dashboardSummary.latestHealthScore
+          : null;
+        
+        const checks = {
+          generate: dashboardSummary.features.find(f => f.feature === 'GENERATE') ?? null,
+          review: dashboardSummary.features.find(f => f.feature === 'REVIEW') ?? null,
+          fix: dashboardSummary.features.find(f => f.feature === 'FIX') ?? null,
+          verify: dashboardSummary.features.find(f => f.feature === 'VERIFY') ?? null,
+        };
+
+        return { project, healthScore, checks };
+      });
+      setProjects(projectSummaries);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not load the dashboard.');
+      if (err instanceof ApiError && (err.status === 0 || err.status === 503)) {
+        setWakeUpMessage('Backend waking up (free tier)… retrying in 3s');
+        setTimeout(() => void reload(), 3000);
+      } else {
+        setError(err instanceof ApiError ? err.message : 'Could not load the dashboard.');
+      }
     } finally {
       setLoading(false);
     }
@@ -90,61 +92,13 @@ export function DashboardPage() {
     void reload();
   }, [reload]);
 
-  const totalFiles = recent.reduce((sum, item) => sum + item.project.fileCount, 0);
-  const analyzed = recent.filter((item) => item.latest !== null).length;
-  const allFindings = recent.flatMap((item) => item.findings);
-  const activeAnalyses = recent.filter(
-    (item) => item.latest !== null && !isTerminal(item.latest.status),
-  ).length;
+  // Computed from summary
+  const criticalHigh = summary?.openIssuesBySeverity
+    .filter((s: { severity: string; count: number }) => s.severity === 'CRITICAL' || s.severity === 'HIGH')
+    .reduce((sum: number, s: { count: number }) => sum + s.count, 0) ?? 0;
 
-  // Aggregate stats across all projects from new dashboard-stats endpoint
-  const aggregateStats = dashboardStats.reduce(
-    (acc, stat) => {
-      acc.totalFindings += stat.totalFindings;
-      acc.openFindings += stat.openFindings;
-      acc.fixedFindings += stat.fixedFindings;
-      acc.verifiedFindings += stat.verifiedFindings;
-      acc.rejectedFindings += stat.rejectedFindings;
-      acc.wontfixFindings += stat.wontfixFindings;
-      acc.criticalHighFindings += stat.criticalHighFindings;
-      acc.deterministicFindings += stat.deterministicFindings;
-      acc.aiFindings += stat.aiFindings;
-      return acc;
-    },
-    {
-      totalFindings: 0,
-      openFindings: 0,
-      fixedFindings: 0,
-      verifiedFindings: 0,
-      rejectedFindings: 0,
-      wontfixFindings: 0,
-      criticalHighFindings: 0,
-      deterministicFindings: 0,
-      aiFindings: 0,
-    }
-  );
-
-  const { totalFindings, openFindings, fixedFindings, verifiedFindings, rejectedFindings, wontfixFindings, criticalHighFindings, deterministicFindings, aiFindings } = aggregateStats;
-
-  const criticalHigh = allFindings.filter(
-    (finding) => finding.severity === 'CRITICAL' || finding.severity === 'HIGH',
-  ).length;
-
-  // Pipeline progress: Found → Fixed → Verified
-  const pipelineTotal = totalFindings > 0 ? totalFindings : 1; // avoid div by zero
-  const fixedPct = Math.round((fixedFindings / pipelineTotal) * 100);
-  const verifiedPct = Math.round((verifiedFindings / pipelineTotal) * 100);
-
-  const activity: ActivityEntry[] = recent
-    .filter((item) => item.latest !== null)
-    .map((item) => ({
-      key: (item.latest as ReviewResponse).id,
-      projectId: item.project.id,
-      projectName: item.project.name,
-      review: item.latest as ReviewResponse,
-    }))
-    .sort((a, b) => b.review.createdAt.localeCompare(a.review.createdAt))
-    .slice(0, 5);
+  const totalFindings = summary?.openIssuesBySeverity
+    .reduce((sum: number, s: { count: number }) => sum + s.count, 0) ?? 0;
 
   return (
     <div className="space-y-6">
@@ -158,70 +112,100 @@ export function DashboardPage() {
         }
       />
       {error && <ErrorAlert message={error} onRetry={() => void reload()} />}
-
-      <Card
-        title="Start a workflow"
-        subtitle="Generate a new project or review an existing codebase."
-      >
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
-            <p className="text-sm font-bold text-indigo-950">Review existing code</p>
-            <p className="mt-1 text-sm leading-relaxed text-slate-600">
-              Upload or import a project, run the sandboxed analyzers, and work
-              findings through Fix → Execute → Verify.
-            </p>
-            <div className="mt-3">
-              <Link to="/projects" className={primaryButtonClass}>
-                Open Projects
-              </Link>
-            </div>
-          </div>
-          <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-4">
-            <p className="text-sm font-bold text-indigo-950">Generate a project</p>
-            <p className="mt-1 text-sm leading-relaxed text-slate-600">
-              Describe a requirement, choose the stack, and let the AI service
-              draft a starter project you can review like any other codebase.
-            </p>
-            <div className="mt-3">
-              <Link to="/generate" className={primaryButtonClass}>
-                Start generating
-              </Link>
-            </div>
-          </div>
+      {wakeUpMessage && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 animate-pulse">
+          {wakeUpMessage}
         </div>
-      </Card>
+      )}
 
-      {/* Pipeline Progress Card */}
-      <Card title="Fix Pipeline Progress" subtitle="Issues flow through: Found → Fix Proposed → Verified">
-        <div className="space-y-4">
-          <div>
-            <div className="flex justify-between text-xs font-semibold text-slate-500 mb-1">
-              <span>Found: {totalFindings}</span>
-              <span>100%</span>
-            </div>
-            <Progress value={100} max={100} className="h-2 bg-indigo-100" />
-          </div>
-          <div>
-            <div className="flex justify-between text-xs font-semibold text-slate-500 mb-1">
-              <span>Fixes Proposed: {fixedFindings}</span>
-              <span>{fixedPct}%</span>
-            </div>
-            <Progress value={fixedPct} max={100} className="h-2 bg-amber-100" />
-          </div>
-          <div>
-            <div className="flex justify-between text-xs font-semibold text-slate-500 mb-1">
-              <span>Verified Fixed: {verifiedFindings}</span>
-              <span>{verifiedPct}%</span>
-            </div>
-            <Progress value={verifiedPct} max={100} className="h-2 bg-emerald-100" />
-          </div>
-          <p className="text-xs text-slate-500">
-            Open: {openFindings} · Fixed: {fixedFindings} · Verified: {verifiedFindings} · Rejected: {rejectedFindings} · Won't Fix: {wontfixFindings}
-          </p>
-        </div>
-      </Card>
+      {/* 4 Feature Cards with Live Status */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {summary?.features.map((feature: { feature: string; totalRuns: number; running: number; failed: number; succeeded: number; skipped: number; lastRunAt: string | null }) => {
+          const statusInfo = getCheckStatusInfo(
+            (feature.running > 0 ? 'RUNNING' :
+              feature.failed > 0 ? 'FAILED' :
+                feature.succeeded > 0 ? 'SUCCEEDED' :
+                  feature.skipped > 0 ? 'SKIPPED' : 'QUEUED') as any
+          );
+          return (
+            <Card
+              key={feature.feature}
+              title={feature.feature.charAt(0) + feature.feature.slice(1).toLowerCase()}
+              subtitle={`Runs: ${feature.totalRuns} · Last: ${feature.lastRunAt ? formatDate(feature.lastRunAt) : 'Never'}`}
+            >
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <Badge tone={statusInfo.color}>{statusInfo.icon} {statusInfo.label}</Badge>
+                  <div className="flex-1">
+                    <div className="flex justify-between text-xs font-semibold text-slate-500 mb-1">
+                      <span>Succeeded: {feature.succeeded}</span>
+                      <span>Failed: {feature.failed}</span>
+                      <span>Running: {feature.running}</span>
+                    </div>
+                    <Progress value={feature.totalRuns > 0 ? Math.round((feature.succeeded / feature.totalRuns) * 100) : 0} className="h-2" />
+                  </div>
+                </div>
+                <Link
+                  to="/projects"
+                  className={quietButtonClass}
+                  style={{ fontSize: '0.875rem' }}
+                >
+                  View projects →
+                </Link>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      {/* Health Score & Pipeline Progress */}
+      <div className="grid gap-4 lg:grid-cols-5">
+        <Card title="Health Score">
+          {loading ? (
+            <LoadingState label="Loading…" />
+          ) : (
+            <Stat
+              label="Overall"
+              value={`${summary?.latestHealthScore?.score ?? 0}`}
+              hint={
+                <span className={`text-sm font-semibold ${
+                  getHealthScoreColor(summary?.latestHealthScore?.score ?? 0) === 'emerald' ? 'text-emerald-600' :
+                  getHealthScoreColor(summary?.latestHealthScore?.score ?? 0) === 'amber' ? 'text-amber-600' : 'text-red-600'
+                }`}>
+                  {getHealthScoreColor(summary?.latestHealthScore?.score ?? 0).toUpperCase()}
+                </span>
+              }
+            />
+          )}
+        </Card>
+        <Card title="Open Issues">
+          {loading ? (
+            <LoadingState label="Loading…" />
+          ) : (
+            <Stat
+              label="Total"
+              value={totalFindings}
+              hint={
+                <span>{criticalHigh} critical/high</span>
+              }
+            />
+          )}
+        </Card>
+        <Card title="Pipeline">
+          {loading ? (
+            <LoadingState label="Loading…" />
+          ) : (
+            <Stat
+              label="Fixed / Verified"
+              value={`${summary?.features.find((f: { feature: string; succeeded: number }) => f.feature === 'FIX')?.succeeded ?? 0} / ${summary?.features.find((f: { feature: string; succeeded: number }) => f.feature === 'VERIFY')?.succeeded ?? 0}`}
+              hint={
+                <span>
+                  Open: {summary?.features.find((f: { feature: string; totalRuns: number }) => f.feature === 'REVIEW')?.totalRuns ?? 0}
+                </span>
+              }
+            />
+          )}
+        </Card>
         <Card title="Projects">
           {loading ? (
             <LoadingState label="Loading…" />
@@ -237,57 +221,14 @@ export function DashboardPage() {
             />
           )}
         </Card>
-        <Card title="Files indexed">
-          {loading ? (
-            <LoadingState label="Loading…" />
-          ) : (
-            <Stat label="Total" value={totalFiles} hint={<span>Across all your projects.</span>} />
-          )}
-        </Card>
-        <Card title="Findings (All Reviews)">
+        <Card title="Activity">
           {loading ? (
             <LoadingState label="Loading…" />
           ) : (
             <Stat
-              label="Total"
-              value={totalFindings}
-              hint={
-                <span>
-                  {criticalHighFindings} critical/high · {deterministicFindings} deterministic · {aiFindings} AI
-                </span>
-              }
-            />
-          )}
-        </Card>
-        <Card title="Pipeline Status">
-          {loading ? (
-            <LoadingState label="Loading…" />
-          ) : (
-            <Stat
-              label="Fixed / Verified"
-              value={`${fixedFindings} / ${verifiedFindings}`}
-              hint={
-                <span>
-                  {openFindings} open · {rejectedFindings} rejected · {wontfixFindings} won't fix
-                </span>
-              }
-            />
-          )}
-        </Card>
-        <Card title="Analyses">
-          {loading ? (
-            <LoadingState label="Loading…" />
-          ) : (
-            <Stat
-              label="Coverage"
-              value={`${analyzed}/${recent.length}`}
-              hint={
-                <span>
-                  {activeAnalyses > 0
-                    ? `${activeAnalyses} running now.`
-                    : 'Recent projects with at least one analysis.'}
-                </span>
-              }
+              label="Recent Runs"
+              value={summary?.lastRuns.length ?? 0}
+              hint={<span>Last 10 runs across all features</span>}
             />
           )}
         </Card>
@@ -299,122 +240,192 @@ export function DashboardPage() {
           className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
         >
           <span className="font-bold">{criticalHigh} critical/high findings</span> need attention
-          in your recent reviews.{' '}
-          <Link to="/review" className="font-semibold underline hover:text-red-900">
-            Open the Review workspace
+          in your projects.{' '}
+          <Link to="/projects" className="font-semibold underline hover:text-red-900">
+            Open Projects
           </Link>
           .
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-5">
-        <div className="lg:col-span-3">
-          <Card
-            title="Recent projects"
-            subtitle="Your five most recent projects with their latest analysis state."
-          >
-            {loading ? (
-              <>
-                <LoadingState label="Loading…" />
-                <SkeletonList rows={3} />
-              </>
-            ) : recent.length === 0 ? (
-              <EmptyState
-                title="No projects yet."
-                body="Create a project shell or upload a ZIP to start your first analysis."
-                action={
-                  <Link to="/projects" className={quietButtonClass}>
-                    Create or upload one
-                  </Link>
-                }
-              />
-            ) : (
-              <ul className="divide-y divide-indigo-50">
-                {recent.map(({ project, latest, findings }) => (
-                  <li key={project.id}>
-                    <Link
-                      to={`/projects/${project.id}`}
-                      className="flex items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-600"
-                    >
-                      <ProjectAvatar name={project.name} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-semibold text-indigo-950">
-                          {project.name}
-                        </span>
-                        <span className="block truncate text-xs text-slate-500">
-                          {project.fileCount} files
-                          {latest
-                            ? ` · ${latest.findingCount} findings · ${findings.filter((finding) => finding.severity === 'CRITICAL' || finding.severity === 'HIGH').length} crit/high`
-                            : ''}
-                        </span>
-                      </span>
-                      <span className="ml-auto shrink-0">
-                        {latest ? (
-                          <Badge tone={reviewStatusTone(latest.status)}>{latest.status}</Badge>
-                        ) : (
-                          <Badge tone="gray">NEVER ANALYZED</Badge>
-                        )}
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
-        <div className="lg:col-span-2">
-          <Card title="Recent activity" subtitle="Latest analysis runs across your projects.">
-            {loading ? (
-              <>
-                <LoadingState label="Loading…" />
-                <SkeletonList rows={3} />
-              </>
-            ) : activity.length === 0 ? (
-              <EmptyState
-                title="No analysis activity yet."
-                body="Run your first analysis from any project to see it here. Fix, patch, and verification activity is tracked per finding in the Review workspace."
-              />
-            ) : (
-              <ul className="space-y-3">
-                {activity.map((entry) => (
-                  <li
-                    key={entry.key}
-                    className="flex items-start gap-3 rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-2.5"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
-                        entry.review.status === 'COMPLETED'
-                          ? 'bg-emerald-500'
-                          : entry.review.status === 'FAILED'
-                            ? 'bg-red-500'
-                            : 'bg-sky-500'
-                      }`}
-                    />
-                    <span className="min-w-0 flex-1 text-sm">
-                      <span className="block font-medium text-indigo-950">
-                        Analysis {entry.review.status.toLowerCase()} ·{' '}
-                        {entry.review.findingCount} findings
-                      </span>
-                      <span className="block text-xs text-slate-500">
-                        {formatDate(entry.review.createdAt)}
-                      </span>
+      {/* Project List with Per-Project Status Chips */}
+      <Card title="Your Projects" subtitle="Per-project feature status and health score">
+        {loading ? (
+          <>
+            <LoadingState label="Loading…" />
+            <SkeletonList rows={5} />
+          </>
+        ) : projects.length === 0 ? (
+          <EmptyState
+            title="No projects yet."
+            body="Create a project shell or upload a ZIP to start your first analysis."
+            action={
+              <Link to="/projects" className={quietButtonClass}>
+                Create or upload one
+              </Link>
+            }
+          />
+        ) : (
+          <ul className="divide-y divide-indigo-50">
+            {projects.map(({ project, healthScore, checks }) => (
+              <li key={project.id}>
+                <Link
+                  to={`/projects/${project.id}`}
+                  className="flex items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-600"
+                >
+                  <ProjectAvatar name={project.name} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold text-indigo-950">
+                      {project.name}
                     </span>
-                    <Link
-                      to={`/projects/${entry.projectId}`}
-                      aria-label={`Open project ${entry.projectName}`}
-                      className="shrink-0 rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600"
-                    >
-                      Open
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
-      </div>
-      <FindingSourcesCard />
+                    <span className="block truncate text-xs text-slate-500">
+                      {project.fileCount} files · Health: {healthScore?.score ?? 0}
+                    </span>
+                  </span>
+                  <span className="ml-auto shrink-0 flex flex-wrap gap-1">
+                    {[
+                      { key: 'generate', label: 'Gen', check: checks.generate },
+                      { key: 'review', label: 'Rev', check: checks.review },
+                      { key: 'fix', label: 'Fix', check: checks.fix },
+                      { key: 'verify', label: 'Ver', check: checks.verify },
+                    ].map(({ key, label, check }) => (
+                      <Badge
+                        key={key}
+                        tone={
+                          (check?.running ?? 0) > 0 ? 'blue' :
+                            (check?.failed ?? 0) > 0 ? 'red' :
+                              (check?.succeeded ?? 0) > 0 ? 'green' : 'gray'
+                        }
+                      >
+                        {label}
+                      </Badge>
+                    ))}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      {/* Recent Activity */}
+      <Card title="Recent Activity" subtitle="Last 10 runs across all features">
+        {loading ? (
+          <LoadingState label="Loading…" />
+        ) : summary?.lastRuns.length === 0 ? (
+          <EmptyState
+            title="No runs yet."
+            body="Start a generation, review, fix, or verify to see activity here."
+          />
+        ) : (
+          <ul className="space-y-3">
+            {summary?.lastRuns.map((run: RunSummary) => (
+              <li
+                key={run.runId}
+                className="flex items-start gap-3 rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-2.5"
+              >
+                <Badge tone={
+                  run.status === 'SUCCEEDED' ? 'green' :
+                    run.status === 'FAILED' ? 'red' :
+                      run.status === 'RUNNING' ? 'blue' : 'gray'
+                }>
+                  {run.feature}
+                </Badge>
+                <span className="min-w-0 flex-1 text-sm">
+                  <span className="block font-medium text-indigo-950">
+                    {run.feature} {run.status.toLowerCase()}
+                  </span>
+<span className="block text-xs text-slate-500">
+                      {run.startedAt ? formatDate(run.startedAt) : 'N/A'} · {run.totalIssues} issues
+                    </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      {/* Trend Sparkline */}
+      {summary?.trend && summary.trend.length > 1 && (
+        <Card title="Health Trend (Last 10)" subtitle="Overall health score over time">
+          <div className="h-32 relative">
+            <canvas
+              id="health-trend"
+              className="w-full h-full"
+              ref={el => {
+                if (el) drawTrend(el, summary.trend!);
+              }}
+            />
+          </div>
+        </Card>
+      )}
     </div>
   );
+}
+
+function drawTrend(canvas: HTMLCanvasElement, trend: Array<{ timestamp: string; totalScore: number }>) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+
+  const width = rect.width;
+  const height = rect.height;
+  const padding = 20;
+  const innerWidth = width - padding * 2;
+  const innerHeight = height - padding * 2;
+
+  // Clear
+  ctx.clearRect(0, 0, width, height);
+
+  // Grid
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = padding + (innerHeight / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(padding, y);
+    ctx.lineTo(width - padding, y);
+    ctx.stroke();
+  }
+
+  // Draw line
+  const scores = trend.map(t => t.totalScore);
+  const minScore = Math.min(0, ...scores);
+  const maxScore = Math.max(100, ...scores);
+  const range = maxScore - minScore || 1;
+
+  ctx.strokeStyle = '#6366f1';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+
+  trend.forEach((point, i) => {
+    const x = padding + (innerWidth / (trend.length - 1)) * i;
+    const y = padding + innerHeight - ((point.totalScore - minScore) / range) * innerHeight;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Draw points
+  ctx.fillStyle = '#6366f1';
+  trend.forEach((point, i) => {
+    const x = padding + (innerWidth / (trend.length - 1)) * i;
+    const y = padding + innerHeight - ((point.totalScore - minScore) / range) * innerHeight;
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Labels
+  ctx.fillStyle = '#64748b';
+  ctx.font = '10px system-ui';
+  ctx.textAlign = 'center';
+  ctx.fillText('100', padding - 15, padding + 10);
+  ctx.fillText('0', padding - 15, padding + innerHeight + 4);
 }

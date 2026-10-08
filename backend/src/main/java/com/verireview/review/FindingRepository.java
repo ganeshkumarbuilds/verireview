@@ -20,9 +20,11 @@ public interface FindingRepository extends JpaRepository<Finding, UUID> {
         AND (:severity IS NULL OR f.severity = :severity)
         AND (:category IS NULL OR f.category = :category)
         AND (:status IS NULL OR f.status = :status)
+        AND (:source IS NULL OR f.source = :source)
+        AND (:toolConfirmed IS NULL OR f.toolConfirmed = :toolConfirmed)
       """)
   Page<Finding> search(UUID reviewId, FindingSeverity severity, FindingCategory category,
-      FindingStatus status, Pageable pageable);
+      FindingStatus status, FindingSource source, Boolean toolConfirmed, Pageable pageable);
 
   List<Finding> findByReviewProjectIdAndSeverityInAndCreatedAtAfter(
       UUID projectId, List<FindingSeverity> severities, Instant after);
@@ -38,4 +40,24 @@ public interface FindingRepository extends JpaRepository<Finding, UUID> {
   long countByReviewProjectIdAndSeverityIn(UUID projectId, List<FindingSeverity> severities);
 
   long countByReviewProjectIdAndSource(UUID projectId, FindingSource source);
+
+  long countByReviewProjectIdAndToolConfirmed(UUID projectId, boolean toolConfirmed);
+
+  // Dedupe across re-runs
+  @Query("""
+      SELECT f FROM Finding f
+      WHERE f.dedupKey = :dedupKey
+        AND f.review.project.id = :projectId
+      ORDER BY f.createdAt DESC
+      """)
+  List<Finding> findByDedupKeyAndProjectId(String dedupKey, UUID projectId);
+
+  // For FIX: find findings by severity for bulk fix
+  @Query("""
+      SELECT f FROM Finding f
+      WHERE f.review.project.id = :projectId
+        AND f.status = 'OPEN'
+        AND f.severity = :severity
+      """)
+  List<Finding> findOpenByProjectIdAndSeverity(UUID projectId, FindingSeverity severity);
 }

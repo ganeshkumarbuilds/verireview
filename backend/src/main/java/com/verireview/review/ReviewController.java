@@ -77,9 +77,11 @@ public class ReviewController {
       @RequestParam(value = "severity", required = false) FindingSeverity severity,
       @RequestParam(value = "category", required = false) FindingCategory category,
       @RequestParam(value = "status", required = false) FindingStatus status,
+      @RequestParam(value = "source", required = false) FindingSource source,
+      @RequestParam(value = "toolConfirmed", required = false) Boolean toolConfirmed,
       @PageableDefault(size = 50) Pageable pageable) {
     return ResponseEntity.ok(
-        reviews.findings(principal.getId(), reviewId, severity, category, status, pageable));
+        reviews.findings(principal.getId(), reviewId, severity, category, status, source, toolConfirmed, pageable));
   }
 
   /**

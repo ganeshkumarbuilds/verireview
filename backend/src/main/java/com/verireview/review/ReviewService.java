@@ -96,10 +96,10 @@ public class ReviewService {
   @Transactional(readOnly = true)
   public PagedResponse<FindingResponse> findings(
       UUID ownerId, UUID reviewId, FindingSeverity severity, FindingCategory category,
-      FindingStatus status, Pageable pageable) {
+      FindingStatus status, FindingSource source, Boolean toolConfirmed, Pageable pageable) {
     Review review = ownedReview(ownerId, reviewId);
     Page<Finding> page =
-        findings.search(review.getId(), severity, category, status, pageable);
+        findings.search(review.getId(), severity, category, status, source, toolConfirmed, pageable);
     return PagedResponse.of(page.map(this::toFindingResponseInstance));
   }
 
@@ -142,13 +142,17 @@ public class ReviewService {
   }
 
   private static FindingResponse toFindingResponse(Finding finding, ObjectMapper objects) {
-    String analyzer = null;
-    String rule = null;
+    String analyzer = finding.getAnalyzer();
+    String rule = finding.getRule();
     try {
       if (finding.getEvidence() != null) {
         JsonNode evidence = objects.readTree(finding.getEvidence());
-        analyzer = textOrNull(evidence, "analyzer");
-        rule = textOrNull(evidence, "rule");
+        if (analyzer == null) {
+          analyzer = textOrNull(evidence, "analyzer");
+        }
+        if (rule == null) {
+          rule = textOrNull(evidence, "rule");
+        }
       }
     } catch (Exception ignored) {
       // Evidence is best-effort display metadata; the row stays valid.
@@ -168,6 +172,11 @@ public class ReviewService {
         finding.getLineStart(),
         finding.getLineEnd(),
         finding.getEvidence(),
+        finding.getEvidenceSnippet(),
+        finding.getExplanation(),
+        finding.getSuggestedFix(),
+        finding.getConfidence(),
+        finding.isToolConfirmed(),
         finding.getDedupKey(),
         finding.getCreatedAt());
   }

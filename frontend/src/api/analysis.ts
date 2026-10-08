@@ -57,9 +57,21 @@ export async function listFindings(
   client: ApiClient,
   token: string,
   reviewId: string,
+  severity?: string,
+  category?: string,
+  status?: string,
+  source?: string,
+  toolConfirmed?: boolean,
 ): Promise<Page<FindingResponse>> {
+  const params = new URLSearchParams();
+  if (severity) params.append('severity', severity);
+  if (category) params.append('category', category);
+  if (status) params.append('status', status);
+  if (source) params.append('source', source);
+  if (toolConfirmed !== undefined) params.append('toolConfirmed', String(toolConfirmed));
+  params.append('size', '200');
   return client.request<Page<FindingResponse>>(
-    `/reviews/${encodeURIComponent(reviewId)}/findings?size=200`,
+    `/reviews/${encodeURIComponent(reviewId)}/findings?${params.toString()}`,
     { headers: bearer(token) },
   );
 }

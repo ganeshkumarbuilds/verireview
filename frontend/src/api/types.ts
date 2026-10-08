@@ -82,8 +82,121 @@ export interface FindingResponse {
   lineStart: number | null;
   lineEnd: number | null;
   evidence: string | null;
+  evidenceSnippet: string | null;
+  explanation: string | null;
+  suggestedFix: string | null;
+  confidence: number | null;
+  toolConfirmed: boolean | null;
   dedupKey: string | null;
   createdAt: string;
+}
+
+/** Check run status shared by all 4 features */
+export type CheckStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
+
+export interface CheckStepResponse {
+  id: string;
+  checkRunId: string;
+  stepOrder: number;
+  name: string;
+  status: string;
+  progress: number;
+  currentMessage: string | null;
+  errorMessage: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  logTail: string | null;
+}
+
+export interface CheckRunGateResponse {
+  id: string;
+  checkRunId: string;
+  gateName: string;
+  gateDescription: string | null;
+  passed: boolean;
+  evidence: string | null;
+  details: string | null;
+}
+
+export interface CheckRunResponse {
+  id: string;
+  projectId: string;
+  generationId: string | null;
+  feature: string;
+  status: CheckStatus;
+  progress: number;
+  currentStep: string | null;
+  errorMessage: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  severityCritical: number;
+  severityHigh: number;
+  severityMedium: number;
+  severityLow: number;
+  severityInfo: number;
+  createdAt: string;
+  updatedAt: string;
+  steps?: CheckStepResponse[];
+  gates?: CheckRunGateResponse[];
+}
+
+export interface FeatureSummary {
+  feature: string;
+  totalRuns: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  lastRunAt: string | null;
+}
+
+export interface SeveritySummary {
+  severity: string;
+  count: number;
+}
+
+export interface RunSummary {
+  runId: string;
+  feature: string;
+  status: string;
+  progress: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  totalIssues: number;
+}
+
+export interface TrendPoint {
+  timestamp: string;
+  generateScore: number;
+  reviewScore: number;
+  fixScore: number;
+  verifyScore: number;
+  totalScore: number;
+}
+
+export interface ProjectHealthScore {
+  id: string;
+  projectId: string;
+  score: number;
+  generateScore: number;
+  reviewScore: number;
+  fixScore: number;
+  verifyScore: number;
+  openCriticalHigh: number;
+  openFindingsTotal: number;
+  fixedVerifiedRatio: number | null;
+  lastComputedAt: string;
+}
+
+export interface DashboardSummaryResponse {
+  features: FeatureSummary[];
+  openIssuesBySeverity: SeveritySummary[];
+  lastRuns: RunSummary[];
+  trend: TrendPoint[];
+  latestHealthScore: ProjectHealthScore;
 }
 
 export type FixRequestStatus = 'REQUESTED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED';

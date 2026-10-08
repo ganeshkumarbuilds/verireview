@@ -26,6 +26,11 @@ const FINDING: FindingResponse = {
   lineStart: 42,
   lineEnd: 42,
   evidence: JSON.stringify({ analyzer: 'checkstyle', rule: 'LineLength', suggestedFixHint: 'shorten line' }),
+  evidenceSnippet: 'Line too long (120 > 100)',
+  explanation: 'Line exceeds maximum allowed length',
+  suggestedFix: 'Break line into multiple lines',
+  confidence: 0.9,
+  toolConfirmed: true,
   dedupKey: 'k1',
   createdAt: '2026-01-01T00:00:00Z',
 };

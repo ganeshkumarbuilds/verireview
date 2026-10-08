@@ -7,7 +7,7 @@ import com.verireview.review.FindingStatus;
 import java.time.Instant;
 import java.util.UUID;
 
-/** Normalized deterministic finding (roadmap schema frozen for Phase 7). */
+/** Normalized finding with unified schema for deterministic and AI findings. */
 public record FindingResponse(
     UUID id,
     UUID reviewId,
@@ -23,6 +23,11 @@ public record FindingResponse(
     Integer lineStart,
     Integer lineEnd,
     String evidence,
+    String evidenceSnippet,
+    String explanation,
+    String suggestedFix,
+    Double confidence,
+    Boolean toolConfirmed,
     String dedupKey,
     Instant createdAt) {
 }
