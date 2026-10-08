@@ -43,9 +43,9 @@ public class ImportJobService {
     this.eventPublisher = eventPublisher;
   }
 
-  @Transactional
+@Transactional
   public ImportJob createZipJob(UUID ownerId, String name, String description, String language,
-                                MultipartFile file) {
+                                 MultipartFile file) {
     String filename = file.getOriginalFilename() == null ? "" : file.getOriginalFilename();
     if (!filename.toLowerCase().endsWith(".zip")) {
       throw new ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST,
@@ -72,7 +72,8 @@ public class ImportJobService {
     job.setStagedFilePath(staged.toString());
 
     ImportJob saved = jobs.save(job);
-    log.info("Import job created: jobId={}, ownerId={}, name={}, status=QUEUED", saved.getId(), ownerId, name);
+    log.info("Job {} QUEUED (ZIP import): ownerId={}, name={}, stagedFile={}, size={} bytes",
+        saved.getId(), ownerId, name, staged, file.getSize());
 
     // Publish event AFTER commit to trigger async processing
     eventPublisher.publishEvent(new ImportJobEvent(saved.getId(), ownerId, ImportJobEvent.ImportJobType.ZIP));
@@ -80,9 +81,9 @@ public class ImportJobService {
     return saved;
   }
 
-  @Transactional
+@Transactional
   public ImportJob createGitHubJob(UUID ownerId, String name, String description, String language,
-                                   String url) {
+                                    String url) {
     ImportJob job = new ImportJob(users.getReferenceById(ownerId), ProjectSourceType.GITHUB, name);
     job.setDescription(description);
     job.setLanguage(language);
@@ -91,7 +92,8 @@ public class ImportJobService {
     job.setCurrentStep("GitHub import queued");
 
     ImportJob saved = jobs.save(job);
-    log.info("Import job created: jobId={}, ownerId={}, name={}, status=QUEUED", saved.getId(), ownerId, name);
+    log.info("Job {} QUEUED (GitHub import): ownerId={}, name={}, url={}",
+        saved.getId(), ownerId, name, url);
 
     // Publish event AFTER commit to trigger async processing
     eventPublisher.publishEvent(new ImportJobEvent(saved.getId(), ownerId, ImportJobEvent.ImportJobType.GITHUB));

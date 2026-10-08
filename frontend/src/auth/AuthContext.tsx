@@ -221,3 +221,13 @@ export function RequireAuth({ children }: { children: ReactNode }) {
 export function apiClient(): ApiClient {
   return sharedClient ?? new ApiClient({});
 }
+
+/**
+ * Returns an ApiClient instance WITHOUT the onUnauthorized handler.
+ * Use this for long-polling requests (e.g. import job status) where we want
+ * to catch 401, attempt token refresh, and retry — instead of immediately
+ * clearing the session and redirecting to login.
+ */
+export function pollingApiClient(): ApiClient {
+  return new ApiClient({});
+}

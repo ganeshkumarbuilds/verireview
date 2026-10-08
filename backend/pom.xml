@@ -137,6 +137,14 @@
       <artifactId>org.eclipse.jgit</artifactId>
       <version>7.8.0.202609011348-r</version>
     </dependency>
+
+    <!-- Test: awaitility for async polling -->
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <version>4.2.2</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

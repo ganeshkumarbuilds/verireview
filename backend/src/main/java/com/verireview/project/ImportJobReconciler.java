@@ -18,8 +18,8 @@ import org.springframework.transaction.annotation.Transactional;
  * Reconciles stale import jobs on application startup.
  * - Jobs in EXTRACTING/INDEXING from a previous process are marked FAILED.
  * - Jobs in QUEUED older than 2 minutes:
- *   - If staged file exists, re-dispatch for processing.
- *   - If staged file missing (ephemeral disk wiped), mark FAILED with "Server restarted, please retry".
+ *   - If staged file exists and is readable, re-dispatch for processing.
+ *   - If staged file missing (ephemeral disk wiped) or not readable, mark FAILED with "Server restarted, please retry".
  */
 @Component
 public class ImportJobReconciler implements ApplicationRunner {
@@ -71,17 +71,27 @@ public class ImportJobReconciler implements ApplicationRunner {
         if (age.compareTo(QUEUED_STALE_THRESHOLD) > 0) {
           String stagedPath = job.getStagedFilePath();
           boolean stagedFileExists = stagedPath != null && Files.exists(Path.of(stagedPath));
+          boolean stagedFileReadable = stagedFileExists && Files.isReadable(Path.of(stagedPath));
 
-          if (stagedFileExists) {
+          if (stagedFileReadable) {
             // Re-dispatch for processing by publishing event
-            log.info("Re-dispatching stale QUEUED job {} (age={}, staged file exists at {})",
-                job.getId(), age, stagedPath);
+            try {
+              long stagedSize = Files.size(Path.of(stagedPath));
+              log.info("Re-dispatching stale QUEUED job {} (age={}, staged file exists at {}, size={} bytes)",
+                  job.getId(), age, stagedPath, stagedSize);
+            } catch (IOException e) {
+              log.info("Re-dispatching stale QUEUED job {} (age={}, staged file exists at {})",
+                  job.getId(), age, stagedPath);
+            }
             eventPublisher.publishEvent(new ImportJobEvent(job.getId(), job.getOwner().getId(), ImportJobEvent.ImportJobType.ZIP));
             // Job stays QUEUED, worker will pick it up
           } else {
-            // Staged file missing (likely ephemeral disk wiped on restart)
-            log.warn("Marking QUEUED job {} as FAILED: age={}, staged file missing at {}",
-                job.getId(), age, stagedPath);
+            // Staged file missing (likely ephemeral disk wiped on restart) or not readable
+            String reason = stagedFileExists
+                ? "staged file exists but is not readable"
+                : "staged file missing (ephemeral disk likely wiped on restart)";
+            log.warn("Marking QUEUED job {} as FAILED: age={}, {}",
+                job.getId(), age, reason);
             job.setStatus(ImportJobStatus.FAILED);
             job.setErrorMessage("Server restarted and staged file was lost, please retry upload");
             job.setCurrentStep("Import failed: server restart lost staged file, please retry");

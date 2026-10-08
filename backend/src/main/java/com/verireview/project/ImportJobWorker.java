@@ -14,6 +14,8 @@ import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 
 /**
  * Worker bean that executes import jobs asynchronously.
@@ -43,8 +45,9 @@ public class ImportJobWorker {
 
   /**
    * Called after transaction commits via ImportJobEvent. The @Async ensures this runs on the importExecutor.
+   * Using @TransactionalEventListener(AFTER_COMMIT) guarantees the job row is visible to this worker.
    */
-  @EventListener
+  @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   @Async("importExecutor")
   public void handleImportJobEvent(ImportJobEvent event) {
     if (event.getType() == ImportJobEvent.ImportJobType.ZIP) {
@@ -56,14 +59,14 @@ public class ImportJobWorker {
 
   @Transactional
   public void processZipJob(UUID jobId, UUID ownerId) {
-    log.info("Starting ZIP import job: jobId={}, ownerId={}", jobId, ownerId);
+    log.info("Job {} STARTED (ZIP import), ownerId={}", jobId, ownerId);
     ImportJob job = jobs.findByIdAndOwnerId(jobId, ownerId)
         .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
 
     Instant start = Instant.now();
     Path stagedFile = null;
     try {
-      log.info("Job {} transitioning to EXTRACTING", jobId);
+      log.info("Job {} transitioning QUEUED -> EXTRACTING", jobId);
       job.setStatus(ImportJobStatus.EXTRACTING);
       job.setStartedAt(Instant.now());
       job.setCurrentStep("Extracting archive");
@@ -77,6 +80,11 @@ public class ImportJobWorker {
       }
       long stagedSize = Files.size(stagedFile);
       log.info("Job {} reading staged file: path={}, size={} bytes", jobId, stagedFile, stagedSize);
+
+      // Verify the staged file is readable
+      if (!Files.isReadable(stagedFile)) {
+        throw new IllegalStateException("Staged file exists but is not readable: " + stagedFile);
+      }
 
       job.setCurrentStep("Processing archive entries");
       jobs.save(job);
@@ -141,11 +149,11 @@ public class ImportJobWorker {
         job.setCurrentStep("Import completed, analysis trigger failed: " + ex.getMessage());
       }
 
-      log.info("Job {} completed successfully: projectId={}, files={}, durationMs={}",
+      log.info("Job {} COMPLETED (DONE): projectId={}, files={}, durationMs={}",
           jobId, imported.project().getId(), imported.fileCount(), job.getDurationMs());
 
     } catch (Throwable e) {
-      log.error("Import job {} failed: {}", jobId, e.getMessage(), e);
+      log.error("Import job {} FAILED: {}", jobId, e.getMessage(), e);
       job.setStatus(ImportJobStatus.FAILED);
       job.setFinishedAt(Instant.now());
       job.setDurationMs(java.time.Duration.between(start, job.getFinishedAt()).toMillis());
@@ -167,13 +175,13 @@ public class ImportJobWorker {
 
   @Transactional
   public void processGitHubJob(UUID jobId, UUID ownerId) {
-    log.info("Starting GitHub import job: jobId={}, ownerId={}", jobId, ownerId);
+    log.info("Job {} STARTED (GitHub import), ownerId={}", jobId, ownerId);
     ImportJob job = jobs.findByIdAndOwnerId(jobId, ownerId)
         .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
 
     Instant start = Instant.now();
     try {
-      log.info("Job {} transitioning to EXTRACTING (GitHub clone)", jobId);
+      log.info("Job {} transitioning QUEUED -> EXTRACTING (GitHub clone)", jobId);
       job.setStatus(ImportJobStatus.EXTRACTING);
       job.setStartedAt(Instant.now());
       job.setCurrentStep("Cloning repository");
@@ -188,7 +196,7 @@ public class ImportJobWorker {
         jobs.save(job);
       }
 
-      log.info("Job {} transitioning to INDEXING", jobId);
+      log.info("Job {} transitioning EXTRACTING -> INDEXING", jobId);
       job.setStatus(ImportJobStatus.INDEXING);
       job.setCurrentStep("Indexing files");
       jobs.save(job);
@@ -213,11 +221,11 @@ public class ImportJobWorker {
         job.setCurrentStep("Import completed, analysis trigger failed: " + ex.getMessage());
       }
 
-      log.info("Job {} completed successfully (GitHub): projectId={}, files={}, durationMs={}",
+      log.info("Job {} COMPLETED (DONE) GitHub: projectId={}, files={}, durationMs={}",
           jobId, imported.project().getId(), imported.fileCount(), job.getDurationMs());
 
     } catch (Throwable e) {
-      log.error("GitHub import job {} failed: {}", jobId, e.getMessage(), e);
+      log.error("GitHub import job {} FAILED: {}", jobId, e.getMessage(), e);
       job.setStatus(ImportJobStatus.FAILED);
       job.setFinishedAt(Instant.now());
       job.setDurationMs(java.time.Duration.between(start, job.getFinishedAt()).toMillis());

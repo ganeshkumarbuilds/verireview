@@ -12,7 +12,7 @@ import type {
   GenerationDatabase,
   GenerationFrontend,
 } from '../api/generationTypes';
-import { apiClient, useAuth } from '../auth/AuthContext';
+import { apiClient, pollingApiClient, useAuth } from '../auth/AuthContext';
 import {
   Badge,
   Card,
@@ -174,8 +174,8 @@ export function ProjectsPage() {
     const savedJobId = sessionStorage.getItem('verireview_import_job_id');
     if (savedJobId && token) {
       setImportJobId(savedJobId);
-      // Immediately poll to get current status
-      getImportJob(apiClient(), token, savedJobId)
+      // Immediately poll to get current status (use polling client to handle 401 gracefully)
+      getImportJob(pollingApiClient(), token, savedJobId)
         .then((job) => {
           setImportJobStatus(job.status);
           setImportJobProgress({
@@ -209,12 +209,24 @@ export function ProjectsPage() {
     let cancelled = false;
     const POLL_INTERVAL_MS = 1500;
     const QUEUED_STUCK_THRESHOLD_MS = 60_000; // 60 seconds
+    const HARD_CAP_MS = 10 * 60 * 1000; // 10 minutes hard cap
     let queuedStartTime: number | null = null;
+    const pollingStartTime = Date.now();
 
     const poll = async () => {
       if (cancelled || !token) return;
+      // Hard cap: stop polling after 10 minutes regardless of status
+      if (Date.now() - pollingStartTime > HARD_CAP_MS) {
+        setPolling(false);
+        setError('Import polling timed out after 10 minutes. Please check the project list or try again.');
+        sessionStorage.removeItem('verireview_import_job_id');
+        setImportJobId(null);
+        setImportJobStatus(null);
+        setImportJobProgress(null);
+        return;
+      }
       try {
-        const job = await getImportJob(apiClient(), token, importJobId);
+        const job = await getImportJob(pollingApiClient(), token, importJobId);
         if (cancelled) return;
 
         setImportJobStatus(job.status);
