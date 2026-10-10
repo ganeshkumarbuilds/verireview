@@ -31,10 +31,10 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 @EnableMethodSecurity
 public class SecurityConfig {
 
-  /** BCrypt strength 12 per SECURITY_DESIGN §2. */
+  /** BCrypt strength 10 per SECURITY_DESIGN §2 (OWASP recommends 10+). */
   @Bean
   PasswordEncoder passwordEncoder() {
-    return new BCryptPasswordEncoder(12);
+    return new BCryptPasswordEncoder(10);
   }
 
   @Bean
