@@ -485,7 +485,7 @@ public class CheckRunService {
 
   private ProjectHealthScore buildAggregateHealthScore(List<Project> projects) {
     if (projects.isEmpty()) {
-      return new ProjectHealthScore(projects.get(0)); // Will throw but projects checked above
+      return null;
     }
     int totalGenerate = 0, totalReview = 0, totalFix = 0, totalVerify = 0;
     int totalCriticalHigh = 0, totalOpen = 0;
@@ -510,11 +510,11 @@ public class CheckRunService {
     }
 
     ProjectHealthScore aggregate = new ProjectHealthScore(projects.get(0));
-    aggregate.setGenerateScore(projects.isEmpty() ? 0 : totalGenerate / projects.size());
-    aggregate.setReviewScore(projects.isEmpty() ? 0 : totalReview / projects.size());
-    aggregate.setFixScore(projects.isEmpty() ? 0 : totalFix / projects.size());
-    aggregate.setVerifyScore(projects.isEmpty() ? 0 : totalVerify / projects.size());
-    aggregate.setScore(projects.isEmpty() ? 0 : (totalGenerate + totalReview + totalFix + totalVerify) / (4 * projects.size()));
+    aggregate.setGenerateScore(totalGenerate / projects.size());
+    aggregate.setReviewScore(totalReview / projects.size());
+    aggregate.setFixScore(totalFix / projects.size());
+    aggregate.setVerifyScore(totalVerify / projects.size());
+    aggregate.setScore((totalGenerate + totalReview + totalFix + totalVerify) / (4 * projects.size()));
     aggregate.setOpenCriticalHigh(totalCriticalHigh);
     aggregate.setOpenFindingsTotal(totalOpen);
     aggregate.setFixedVerifiedRatio(count > 0 ? totalRatio / count : null);
