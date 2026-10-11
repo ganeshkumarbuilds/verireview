@@ -122,6 +122,16 @@
       <artifactId>spring-boot-starter-webmvc-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-test</artifactId>
+      <scope>test</scope>
+    </dependency>
     <!-- Phase 2: real PostgreSQL in tests via Testcontainers. No H2.
          Single-container singleton wired with @DynamicPropertySource, so no
          Boot @ServiceConnection glue or JUnit extension is needed. -->

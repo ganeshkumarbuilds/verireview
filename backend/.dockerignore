@@ -1,0 +1,62 @@
+# Git
+.git
+.gitignore
+
+# Build outputs
+target/
+*.jar
+*.war
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python virtual env
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test outputs
+*.dump
+*.dumpstream
+
+# Coverage
+coverage/
+.jacoco/
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
+
+# Gradle (if any)
+.gradle/
+gradlew
+gradlew.cmd

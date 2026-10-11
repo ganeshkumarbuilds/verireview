@@ -15,6 +15,13 @@ spring:
     username: ${SPRING_DATASOURCE_USERNAME:verireview}
     password: ${SPRING_DATASOURCE_PASSWORD:change-me-in-your-local-env}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-timeout: 30000
+      initialization-fail-timeout: 60000
+      idle-timeout: 600000
+      max-lifetime: 1800000
   jpa:
     # Flyway owns the schema. Hibernate only validates; it must never create
     # or drop tables (no create / create-drop anywhere, including tests).
@@ -100,7 +107,8 @@ app:
 
 server:
   # Overridable at runtime: PORT=8081 ./mvnw spring-boot:run
-  port: ${PORT:8080}
+  port: ${PORT:10000}
+  address: 0.0.0.0
   tomcat:
     # Without these, Tomcat's own defaults (maxSwallowSize ~2MB,
     # maxHttpFormPostSize ~2MB) reset the connection on large multipart
@@ -113,6 +121,7 @@ server:
     max-http-form-post-size: 1150MB
 
 # Actuator (Phase 1) - expose health, info, metrics
+# /actuator/health is permitAll in SecurityConfig for Render health checks
 management:
   endpoints:
     web:

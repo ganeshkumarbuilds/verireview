@@ -13,6 +13,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -34,7 +35,7 @@ public class CheckRunSseService {
   private final CheckRunService checkRunService;
   private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
 
-  public CheckRunSseService(ProjectRepository projects, CheckRunService checkRunService) {
+  public CheckRunSseService(ProjectRepository projects, @Lazy CheckRunService checkRunService) {
     this.projects = projects;
     this.checkRunService = checkRunService;
 

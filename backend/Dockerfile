@@ -19,7 +19,8 @@ WORKDIR /app
 
 COPY --from=build /app/target/*.jar app.jar
 
-EXPOSE 8080
+EXPOSE 10000
 
-# Memory settings for 512MB container: use 70% of RAM, exit on OOM
-ENTRYPOINT ["sh", "-c", "java -XX:MaxRAMPercentage=70 -XX:+ExitOnOutOfMemoryError -jar app.jar --server.port=${PORT:-8080}"]
+# Low-CPU container JVM flags: SerialGC, tiered compilation stop at level 1,
+# 70% RAM, small stack, disable background preinitializer
+ENTRYPOINT ["sh", "-c", "java -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:MaxRAMPercentage=70 -Xss512k -Dspring.backgroundpreinitializer.ignore=true -XX:+ExitOnOutOfMemoryError -jar app.jar --server.port=${PORT:-10000}"]
