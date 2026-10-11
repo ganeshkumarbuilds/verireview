@@ -191,16 +191,240 @@ export function EmptyState({
   title,
   body,
   action,
+  icon,
 }: {
   title: string;
   body?: ReactNode;
   action?: ReactNode;
+  icon?: ReactNode;
 }) {
   return (
     <div className="rounded-xl border border-dashed border-indigo-200 bg-indigo-50/50 px-4 py-8 text-center">
+      {icon && <div className="mx-auto mb-3 text-4xl">{icon}</div>}
       <p className="text-sm font-semibold text-indigo-950">{title}</p>
       {body && <div className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-slate-600">{body}</div>}
       {action && <div className="mt-4 flex items-center justify-center gap-2">{action}</div>}
+    </div>
+  );
+}
+
+/** Circular gauge for health score with color bands. */
+export function CircularGauge({
+  value,
+  size = 100,
+  strokeWidth = 8,
+  trendDirection = 'neutral',
+}: {
+  value: number | null;
+  size?: number;
+  strokeWidth?: number;
+  trendDirection?: 'up' | 'down' | 'neutral';
+}) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const clampedValue = value ?? 0;
+  const offset = circumference * (1 - Math.min(1, Math.max(0, clampedValue / 100)));
+
+  // Determine color based on score
+  let strokeColor = '#ef4444'; // red < 50
+  let textColor = '#dc2626';
+  let bgColor = '#fef2f2';
+  if (clampedValue >= 80) {
+    strokeColor = '#10b981'; // green >= 80
+    textColor = '#059669';
+    bgColor = '#f0fdf4';
+  } else if (clampedValue >= 50) {
+    strokeColor = '#f59e0b'; // amber 50-79
+    textColor = '#d97706';
+    bgColor = '#fffbeb';
+  }
+
+  const trendIcons = {
+    up: '↗',
+    down: '↘',
+    neutral: '→',
+  };
+
+  if (value === null) {
+    return (
+      <div className="flex flex-col items-center gap-2" style={{ width: size, height: size + 40 }}>
+        <div
+          className="relative flex items-center justify-center rounded-full"
+          style={{ width: size, height: size, backgroundColor: '#f1f5f9' }}
+        >
+          <svg width={size} height={size} className="transform -rotate-90">
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={radius}
+              fill="none"
+              stroke="#e2e8f0"
+              strokeWidth={strokeWidth}
+            />
+            <circle
+              cx={size / 2}
+              cy={size / 2}
+              r={radius}
+              fill="none"
+              stroke="#94a3b8"
+              strokeWidth={strokeWidth}
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              strokeDashoffset={circumference * 0.75}
+              className="animate-spin"
+            />
+          </svg>
+          <span className="text-sm font-semibold text-slate-400">—</span>
+        </div>
+        <p className="text-xs text-slate-500">No data yet</p>
+        <p className="text-[11px] text-slate-400">Run a review to get your score</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-2" style={{ width: size, height: size + 40 }}>
+      <div className="relative flex items-center justify-center rounded-full" style={{ width: size, height: size, backgroundColor: bgColor }}>
+        <svg width={size} height={size} className="transform -rotate-90">
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke="#e2e8f0"
+            strokeWidth={strokeWidth}
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke={strokeColor}
+            strokeWidth={strokeWidth}
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+            className="transition-all duration-700 ease-out"
+            style={{ strokeDasharray: circumference, strokeDashoffset: offset }}
+          />
+        </svg>
+        <span className="text-xl font-bold" style={{ color: textColor }}>{clampedValue}</span>
+      </div>
+      <div className="flex items-center gap-1 text-xs">
+        <span style={{ color: textColor }}>{trendIcons[trendDirection]}</span>
+        <span className="text-slate-500">
+          {trendDirection === 'up' ? 'Improving' : trendDirection === 'down' ? 'Declining' : 'Stable'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Stat chip for pipeline cards: label above value, color-coded. */
+export function StatChip({
+  label,
+  value,
+  tone = 'gray',
+}: {
+  label: string;
+  value: number | string;
+  tone?: 'gray' | 'green' | 'red' | 'blue' | 'amber';
+}) {
+  const toneClasses: Record<string, string> = {
+    gray: 'bg-slate-100 text-slate-700',
+    green: 'bg-emerald-50 text-emerald-700',
+    red: 'bg-red-50 text-red-700',
+    blue: 'bg-sky-50 text-sky-700',
+    amber: 'bg-amber-50 text-amber-700',
+  };
+  return (
+    <div className="flex flex-col items-center gap-0.5 px-3 py-2 rounded-lg" style={{ minWidth: '64px' }}>
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</span>
+      <span className={`text-lg font-bold ${toneClasses[tone]}`}>{value}</span>
+    </div>
+  );
+}
+
+/** Clickable stat card for dashboard metrics. */
+export function StatCard({
+  title,
+  value,
+  subtitle,
+  trend,
+  onClick,
+  severityBreakdown,
+}: {
+  title: string;
+  value: ReactNode;
+  subtitle?: ReactNode;
+  trend?: { direction: 'up' | 'down' | 'neutral'; label: string };
+  onClick?: () => void;
+  severityBreakdown?: { label: string; count: number; tone: 'red' | 'amber' | 'blue' | 'green' | 'gray' }[];
+}) {
+  const content = (
+    <div className="text-sm text-slate-600">
+      <p className="text-xs font-semibold uppercase tracking-wider text-indigo-400">{title}</p>
+      <p className="mt-1 text-3xl font-bold tracking-tight text-indigo-950">{value}</p>
+      {subtitle && <div className="mt-1 text-sm text-slate-600">{subtitle}</div>}
+      {trend && (
+        <div className="mt-2 flex items-center gap-1 text-xs">
+          <span className={trend.direction === 'up' ? 'text-emerald-600' : trend.direction === 'down' ? 'text-red-600' : 'text-slate-500'}>
+            {trend.direction === 'up' ? '↗' : trend.direction === 'down' ? '↘' : '→'}
+          </span>
+          <span className="text-slate-500">{trend.label}</span>
+        </div>
+      )}
+      {severityBreakdown && severityBreakdown.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {severityBreakdown.map((s) => (
+            <Badge key={s.label} tone={s.tone}>
+              {s.label}: {s.count}
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="w-full text-left rounded-xl border border-indigo-100 bg-white p-4 shadow-sm shadow-indigo-100 transition-colors hover:bg-indigo-50 hover:border-indigo-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <section className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm shadow-indigo-100">
+      {content}
+    </section>
+  );
+}
+
+/** Skeleton variants for different content shapes. */
+export function SkeletonCard({ className }: { className?: string }) {
+  return (
+    <div className={`rounded-2xl border border-indigo-100 bg-white p-5 shadow-sm shadow-indigo-100 animate-pulse ${className ?? ''}`}>
+      <div className="h-5 w-3/4 rounded bg-indigo-50 mb-3" />
+      <div className="h-4 w-1/2 rounded bg-indigo-50 mb-4" />
+      <div className="space-y-3">
+        <div className="h-12 w-full rounded bg-indigo-50" />
+        <div className="h-12 w-full rounded bg-indigo-50" />
+      </div>
+    </div>
+  );
+}
+
+export function SkeletonStatCard({ className }: { className?: string }) {
+  return (
+    <div className={`rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm shadow-indigo-100 animate-pulse ${className ?? ''}`}>
+      <div className="h-4 w-1/3 rounded bg-indigo-50 mb-2" />
+      <div className="h-10 w-1/2 rounded bg-indigo-50 mb-2" />
+      <div className="h-4 w-2/3 rounded bg-indigo-50" />
     </div>
   );
 }

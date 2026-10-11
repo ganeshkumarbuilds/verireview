@@ -37,6 +37,20 @@ export interface ApiClientOptions {
 const DEFAULT_BASE_URL = 'http://localhost:8080/api/v1';
 const ENV_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
+/** Clear tokens and redirect to login. Exported for use in onUnauthorized. */
+export function clearSessionAndRedirect(): void {
+  try {
+    window.localStorage.removeItem('verireview.accessToken');
+    window.localStorage.removeItem('verireview.refreshToken');
+  } catch {
+    // Ignore
+  }
+  // Use window.location for a full redirect (bypasses React Router)
+  if (window.location.pathname !== '/login') {
+    window.location.href = '/login';
+  }
+}
+
 export class ApiClient {
   readonly baseUrl: string;
   private readonly fetchImpl?: typeof fetch;
@@ -50,7 +64,7 @@ export class ApiClient {
 ).replace(/\/+$/, '');
     // Resolved per call (not in the constructor) so tests can stub fetch.
     this.fetchImpl = options.fetchImpl;
-    this.onUnauthorized = options.onUnauthorized;
+    this.onUnauthorized = options.onUnauthorized ?? clearSessionAndRedirect;
   }
 
   /** Joins a resource path onto the configured API base URL. */

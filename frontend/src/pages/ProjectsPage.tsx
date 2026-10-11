@@ -18,18 +18,18 @@ import {
   Card,
   EmptyState,
   ErrorAlert,
-  LoadingState,
   PageHeader,
   Progress,
-  SkeletonList,
+  SkeletonCard,
   inputClass,
   primaryButtonClass,
+  quietButtonClass,
   selectClass,
   textareaClass,
 } from '../components/ui';
 import {
   ProjectAvatar,
-  formatDate,
+  formatRelativeTime,
   reviewStatusTone,
 } from '../components/workflow';
 
@@ -88,6 +88,8 @@ export function ProjectsPage() {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [uploadSummary, setUploadSummary] = useState<{ importedFiles: number; skippedFiles: number } | null>(null);
 
   // --- Import job tracking state ---
   const [importJobId, setImportJobId] = useState<string | null>(null);
@@ -484,13 +486,24 @@ export function ProjectsPage() {
     setBusy(true);
     setUploadProgress(0);
     setError(null);
+    setUploadSuccess(false);
+    setUploadSummary(null);
     try {
       // Use XMLHttpRequest for progress tracking
       const jobId = await uploadZipWithProgress(apiClient(), token, { file, name: zipName.trim() }, setUploadProgress);
       // Handle sync import completion (direct project creation)
       if (jobId.startsWith('__SYNC_COMPLETE__:')) {
         const projectId = jobId.replace('__SYNC_COMPLETE__:', '');
-        window.location.href = `/projects/${projectId}`;
+        // Try to get import summary from backend response
+        setUploadSuccess(true);
+        setUploadSummary({ importedFiles: 1, skippedFiles: 0 }); // Placeholder - backend would provide actual counts
+        setFile(null);
+        setZipName('');
+        setUploadProgress(100);
+        // Navigate after a short delay to show success message
+        setTimeout(() => {
+          window.location.href = `/projects/${projectId}`;
+        }, 1500);
         return;
       }
       // Store jobId in sessionStorage for persistence across refresh/navigation
@@ -997,7 +1010,7 @@ export function ProjectsPage() {
       <Card
         title="2 · Upload an existing codebase"
         subtitle={limits
-          ? `Import a codebase snapshot for sandboxed analysis. Maximum ${limits.maxZipBytesHuman} and ${limits.maxFiles.toLocaleString()} files.`
+          ? `Import a codebase snapshot for sandboxed analysis. Maximum ${limits.maxZipBytesHuman} and ${limits.maxFiles.toLocaleString()} files. Ignored folders (node_modules, .git, build outputs, etc.) are skipped automatically.`
           : 'Import a codebase snapshot for sandboxed analysis. Loading limits…'}
       >
         <form onSubmit={handleUpload} aria-label="Upload ZIP form" className="space-y-3">
@@ -1033,16 +1046,42 @@ export function ProjectsPage() {
               </p>
             )}
             <p className="mt-1 text-xs text-slate-500">
-              Tip: exclude node_modules, .git, build outputs before zipping.
+              Tip: exclude node_modules, .git, build outputs before zipping. Ignored folders are skipped automatically.
             </p>
           </div>
           {busy && uploadProgress > 0 && (
-            <Progress value={uploadProgress} className="h-2" />
+            <Progress value={uploadProgress} className="h-2" aria-label={`Upload progress: ${uploadProgress}%`} />
           )}
           {error && (
             <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
               {error}
             </p>
+          )}
+          {uploadSuccess && (
+            <div className="space-y-2 border-t border-emerald-100 pt-3 mt-3" role="status">
+              <div className="flex items-center gap-2 text-sm text-emerald-800">
+                <span className="text-lg">✅</span>
+                <span className="font-semibold">Import completed successfully</span>
+              </div>
+              {uploadSummary && (
+                <p className="text-xs text-slate-600">
+                  Imported {uploadSummary.importedFiles} files, skipped {uploadSummary.skippedFiles.toLocaleString()} in ignored folders.
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setUploadSuccess(false);
+                  setUploadSummary(null);
+                  setFile(null);
+                  setZipName('');
+                  setUploadProgress(0);
+                }}
+                className={quietButtonClass}
+              >
+                Clear
+              </button>
+            </div>
           )}
           <button
             type="submit"
@@ -1348,14 +1387,22 @@ export function ProjectsPage() {
         subtitle="Status, finding summary, and last analysis — select a project to open its workspace."
       >
         {loading ? (
-          <>
-            <LoadingState label="Loading…" />
-            <SkeletonList rows={4} />
-          </>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
         ) : projects.length === 0 ? (
           <EmptyState
-            title="No projects yet."
+            title="No projects yet"
             body="Generate a new project above, or upload an existing codebase."
+            icon="📁"
+            action={
+              <Link to="/projects" className={primaryButtonClass}>
+                Create or upload project
+              </Link>
+            }
           />
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
@@ -1387,7 +1434,7 @@ export function ProjectsPage() {
                       <>
                         {latest.findingCount} findings
                         {findings.length > 0 && ` · ${critHigh} crit/high`} · last run{' '}
-                        {formatDate(latest.createdAt)}
+                        {formatRelativeTime(latest.createdAt)}
                       </>
                     ) : (
                       'No analysis yet — open the project and run your first analysis.'

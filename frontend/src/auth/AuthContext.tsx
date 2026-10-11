@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
-import { ApiClient } from '../api/client';
+import { ApiClient, clearSessionAndRedirect } from '../api/client';
 import { login as apiLogin, logout as apiLogout, me as apiMe, register as apiRegister, refreshToken as apiRefreshToken } from '../api/auth';
 import type { UserResponse } from '../api/types';
 
@@ -92,6 +92,8 @@ export function AuthProvider({
     setToken(null);
     setRefreshToken(null);
     setUser(null);
+    // Redirect to login (clearSessionAndRedirect handles localStorage and navigation)
+    clearSessionAndRedirect();
   };
 
   const [client] = useState(() => {

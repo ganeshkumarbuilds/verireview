@@ -1,26 +1,29 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useCallback, useEffect, useState, useRef } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { listProjects } from '../api/projects';
-import { getDashboardSummary, getCheckStatusInfo, getHealthScoreColor, type DashboardSummaryResponse } from '../api/checks';
+import { getDashboardSummary, getCheckStatusInfo, type DashboardSummaryResponse } from '../api/checks';
 import type { ProjectResponse, FeatureSummary, ProjectHealthScore, RunSummary } from '../api/types';
 import { apiClient, useAuth } from '../auth/AuthContext';
 import {
   Badge,
   Card,
+  CircularGauge,
   EmptyState,
   ErrorAlert,
-  LoadingState,
   PageHeader,
   Progress,
+  SkeletonCard,
   SkeletonList,
-  Stat,
+  StatCard,
+  StatChip,
   primaryButtonClass,
   quietButtonClass,
 } from '../components/ui';
 import {
   ProjectAvatar,
-  formatDate,
+  formatRelativeTime,
+  severityTone,
 } from '../components/workflow';
 
 interface ProjectSummary {
@@ -37,12 +40,16 @@ interface ProjectSummary {
 /** Dashboard backed by unified check runs and health scores. */
 export function DashboardPage() {
   const { token } = useAuth();
+  const navigate = useNavigate();
   const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [totalProjects, setTotalProjects] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [wakeUpMessage, setWakeUpMessage] = useState<string | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const hasRunningRuns = summary?.features.some(f => f.running > 0) ?? false;
 
   const reload = useCallback(async () => {
     if (!token) {
@@ -65,7 +72,7 @@ export function DashboardPage() {
         const healthScore = dashboardSummary.latestHealthScore?.projectId === project.id
           ? dashboardSummary.latestHealthScore
           : null;
-        
+
         const checks = {
           generate: dashboardSummary.features.find(f => f.feature === 'GENERATE') ?? null,
           review: dashboardSummary.features.find(f => f.feature === 'REVIEW') ?? null,
@@ -88,6 +95,20 @@ export function DashboardPage() {
     }
   }, [token]);
 
+  // Auto-refresh every 30s while a run is in progress
+  useEffect(() => {
+    if (hasRunningRuns) {
+      refreshTimerRef.current = setInterval(() => {
+        void reload();
+      }, 30_000);
+    }
+    return () => {
+      if (refreshTimerRef.current) {
+        clearInterval(refreshTimerRef.current);
+      }
+    };
+  }, [hasRunningRuns, reload]);
+
   useEffect(() => {
     void reload();
   }, [reload]);
@@ -100,6 +121,28 @@ export function DashboardPage() {
   const totalFindings = summary?.openIssuesBySeverity
     .reduce((sum: number, s: { count: number }) => sum + s.count, 0) ?? 0;
 
+  const severityBreakdown = summary?.openIssuesBySeverity.map(s => ({
+    label: s.severity,
+    count: s.count,
+    tone: severityTone(s.severity) as 'red' | 'amber' | 'blue' | 'green' | 'gray',
+  })) ?? [];
+
+  // Health score trend direction
+  const healthScore = summary?.latestHealthScore?.score ?? null;
+  const trend = summary?.trend ?? [];
+  let trendDirection: 'up' | 'down' | 'neutral' = 'neutral';
+  if (trend.length >= 2) {
+    const last = trend[trend.length - 1].totalScore;
+    const prev = trend[trend.length - 2].totalScore;
+    if (last > prev + 2) trendDirection = 'up';
+    else if (last < prev - 2) trendDirection = 'down';
+  }
+
+  const handleRetry = useCallback(() => {
+    setError(null);
+    void reload();
+  }, [reload]);
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -111,127 +154,114 @@ export function DashboardPage() {
           </Link>
         }
       />
-      {error && <ErrorAlert message={error} onRetry={() => void reload()} />}
+      {error && <ErrorAlert message={error} onRetry={handleRetry} />}
       {wakeUpMessage && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 animate-pulse">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 animate-pulse" role="status">
           {wakeUpMessage}
         </div>
       )}
 
-      {/* 4 Feature Cards with Live Status */}
+      {/* 4 Pipeline Feature Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {summary?.features.map((feature: { feature: string; totalRuns: number; running: number; failed: number; succeeded: number; skipped: number; lastRunAt: string | null }) => {
+        {summary?.features.map((feature: FeatureSummary) => {
           const statusInfo = getCheckStatusInfo(
             (feature.running > 0 ? 'RUNNING' :
               feature.failed > 0 ? 'FAILED' :
                 feature.succeeded > 0 ? 'SUCCEEDED' :
                   feature.skipped > 0 ? 'SKIPPED' : 'QUEUED') as any
           );
+          const hasRuns = feature.totalRuns > 0;
+          const progressPct = hasRuns ? Math.round((feature.succeeded / feature.totalRuns) * 100) : 0;
+
           return (
             <Card
               key={feature.feature}
               title={feature.feature.charAt(0) + feature.feature.slice(1).toLowerCase()}
-              subtitle={`Runs: ${feature.totalRuns} · Last: ${feature.lastRunAt ? formatDate(feature.lastRunAt) : 'Never'}`}
+              subtitle={hasRuns ? `Runs: ${feature.totalRuns} · Last: ${feature.lastRunAt ? formatRelativeTime(feature.lastRunAt) : 'Never'}` : 'Never run'}
             >
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
+              <div className="space-y-4">
+                {/* Status badge + three stat chips */}
+                <div className="flex flex-wrap items-center gap-3">
                   <Badge tone={statusInfo.color}>{statusInfo.icon} {statusInfo.label}</Badge>
-                  <div className="flex-1">
-                    <div className="flex justify-between text-xs font-semibold text-slate-500 mb-1">
-                      <span>Succeeded: {feature.succeeded}</span>
-                      <span>Failed: {feature.failed}</span>
-                      <span>Running: {feature.running}</span>
-                    </div>
-                    <Progress value={feature.totalRuns > 0 ? Math.round((feature.succeeded / feature.totalRuns) * 100) : 0} className="h-2" />
+                  <div className="flex-1 flex flex-wrap gap-2">
+                    <StatChip label="Succeeded" value={feature.succeeded} tone="green" />
+                    <StatChip label="Failed" value={feature.failed} tone="red" />
+                    <StatChip label="Running" value={feature.running} tone="blue" />
                   </div>
                 </div>
-                <Link
-                  to="/projects"
-                  className={quietButtonClass}
-                  style={{ fontSize: '0.875rem' }}
-                >
-                  View projects →
-                </Link>
+
+                {/* Progress bar */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs font-medium text-slate-500">
+                    <span>Progress</span>
+                    <span>{progressPct}%</span>
+                  </div>
+                  <Progress value={progressPct} className="h-2" />
+                </div>
+
+                {/* Action button */}
+                <div className="flex gap-2 pt-2">
+                  {hasRuns ? (
+                    <Link to="/projects" className={quietButtonClass}>
+                      View projects →
+                    </Link>
+                  ) : (
+                    <Link to="/projects" className={primaryButtonClass}>
+                      Start {feature.feature.charAt(0) + feature.feature.slice(1).toLowerCase()}
+                    </Link>
+                  )}
+                </div>
               </div>
             </Card>
           );
         })}
       </div>
 
-      {/* Health Score & Pipeline Progress */}
-      <div className="grid gap-4 lg:grid-cols-5">
-        <Card title="Health Score">
-          {loading ? (
-            <LoadingState label="Loading…" />
-          ) : (
-            <Stat
-              label="Overall"
-              value={`${summary?.latestHealthScore?.score ?? 0}`}
-              hint={
-                <span className={`text-sm font-semibold ${
-                  getHealthScoreColor(summary?.latestHealthScore?.score ?? 0) === 'emerald' ? 'text-emerald-600' :
-                  getHealthScoreColor(summary?.latestHealthScore?.score ?? 0) === 'amber' ? 'text-amber-600' : 'text-red-600'
-                }`}>
-                  {getHealthScoreColor(summary?.latestHealthScore?.score ?? 0).toUpperCase()}
-                </span>
-              }
-            />
-          )}
-        </Card>
-        <Card title="Open Issues">
-          {loading ? (
-            <LoadingState label="Loading…" />
-          ) : (
-            <Stat
-              label="Total"
-              value={totalFindings}
-              hint={
-                <span>{criticalHigh} critical/high</span>
-              }
-            />
-          )}
-        </Card>
-        <Card title="Pipeline">
-          {loading ? (
-            <LoadingState label="Loading…" />
-          ) : (
-            <Stat
-              label="Fixed / Verified"
-              value={`${summary?.features.find((f: { feature: string; succeeded: number }) => f.feature === 'FIX')?.succeeded ?? 0} / ${summary?.features.find((f: { feature: string; succeeded: number }) => f.feature === 'VERIFY')?.succeeded ?? 0}`}
-              hint={
-                <span>
-                  Open: {summary?.features.find((f: { feature: string; totalRuns: number }) => f.feature === 'REVIEW')?.totalRuns ?? 0}
-                </span>
-              }
-            />
-          )}
-        </Card>
-        <Card title="Projects">
-          {loading ? (
-            <LoadingState label="Loading…" />
-          ) : (
-            <Stat
-              label="Total"
-              value={totalProjects}
-              hint={
-                <Link to="/projects" className={quietButtonClass}>
-                  Open projects
-                </Link>
-              }
-            />
-          )}
-        </Card>
-        <Card title="Activity">
-          {loading ? (
-            <LoadingState label="Loading…" />
-          ) : (
-            <Stat
-              label="Recent Runs"
-              value={summary?.lastRuns.length ?? 0}
-              hint={<span>Last 10 runs across all features</span>}
-            />
-          )}
-        </Card>
+      {/* Health Score & Pipeline Progress - 5 stat cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <StatCard
+          title="Health Score"
+          value={<CircularGauge value={healthScore} size={80} strokeWidth={6} trendDirection={trendDirection} />}
+          subtitle={<span className="text-xs text-slate-500">Overall project health</span>}
+          onClick={() => navigate('/projects')}
+        />
+
+        <StatCard
+          title="Open Issues"
+          value={totalFindings}
+          subtitle={<span className="text-sm text-slate-500">{criticalHigh} critical/high</span>}
+          severityBreakdown={severityBreakdown}
+          onClick={() => navigate('/projects')}
+        />
+
+        <StatCard
+          title="Pipeline"
+          value={
+            <>
+              {summary?.features.find(f => f.feature === 'FIX')?.succeeded ?? 0} / {summary?.features.find(f => f.feature === 'VERIFY')?.succeeded ?? 0}
+            </>
+          }
+          subtitle={
+            <span>
+              Fixed / Verified · Open: {summary?.features.find(f => f.feature === 'REVIEW')?.totalRuns ?? 0}
+            </span>
+          }
+          onClick={() => navigate('/projects')}
+        />
+
+        <StatCard
+          title="Projects"
+          value={totalProjects}
+          subtitle={<Link to="/projects" className={quietButtonClass}>Open projects</Link>}
+          onClick={() => navigate('/projects')}
+        />
+
+        <StatCard
+          title="Activity"
+          value={summary?.lastRuns.length ?? 0}
+          subtitle={<span>Last 10 runs across all features</span>}
+          onClick={() => navigate('/projects')}
+        />
       </div>
 
       {criticalHigh > 0 && !loading && (
@@ -248,81 +278,128 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Project List with Per-Project Status Chips */}
+      {/* Your Projects */}
       <Card title="Your Projects" subtitle="Per-project feature status and health score">
         {loading ? (
-          <>
-            <LoadingState label="Loading…" />
-            <SkeletonList rows={5} />
-          </>
+          <div className="space-y-3">
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
         ) : projects.length === 0 ? (
           <EmptyState
-            title="No projects yet."
+            title="No projects yet"
             body="Create a project shell or upload a ZIP to start your first analysis."
+            icon="📦"
             action={
-              <Link to="/projects" className={quietButtonClass}>
-                Create or upload one
+              <Link to="/projects" className={primaryButtonClass}>
+                Create or upload project
               </Link>
             }
           />
         ) : (
-          <ul className="divide-y divide-indigo-50">
-            {projects.map(({ project, healthScore, checks }) => (
-              <li key={project.id}>
-                <Link
-                  to={`/projects/${project.id}`}
-                  className="flex items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-600"
-                >
-                  <ProjectAvatar name={project.name} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-semibold text-indigo-950">
-                      {project.name}
-                    </span>
-                    <span className="block truncate text-xs text-slate-500">
-                      {project.fileCount} files · Health: {healthScore?.score ?? 0}
-                    </span>
-                  </span>
-                  <span className="ml-auto shrink-0 flex flex-wrap gap-1">
-                    {[
-                      { key: 'generate', label: 'Gen', check: checks.generate },
-                      { key: 'review', label: 'Rev', check: checks.review },
-                      { key: 'fix', label: 'Fix', check: checks.fix },
-                      { key: 'verify', label: 'Ver', check: checks.verify },
-                    ].map(({ key, label, check }) => (
-                      <Badge
-                        key={key}
-                        tone={
-                          (check?.running ?? 0) > 0 ? 'blue' :
-                            (check?.failed ?? 0) > 0 ? 'red' :
-                              (check?.succeeded ?? 0) > 0 ? 'green' : 'gray'
-                        }
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" role="grid">
+              <thead>
+                <tr className="border-b border-indigo-100 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th className="pb-2 pr-4">Project</th>
+                  <th className="pb-2 pr-4">Last Run</th>
+                  <th className="pb-2 pr-4">Status</th>
+                  <th className="pb-2 pr-4">Health</th>
+                  <th className="pb-2 pr-4">Open Issues</th>
+                  <th className="pb-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-indigo-50">
+                {projects.map(({ project, healthScore, checks }) => (
+                  <tr key={project.id} className="hover:bg-indigo-50/50 transition-colors">
+                    <td className="py-3 pr-4">
+                      <Link to={`/projects/${project.id}`} className="flex items-center gap-3">
+                        <ProjectAvatar name={project.name} />
+                        <span className="font-medium text-indigo-950 truncate max-w-[200px]">{project.name}</span>
+                      </Link>
+                    </td>
+                    <td className="py-3 pr-4 text-slate-500">
+                      {checks.generate?.lastRunAt || checks.review?.lastRunAt || checks.fix?.lastRunAt || checks.verify?.lastRunAt
+                        ? formatRelativeTime(
+                            ([checks.generate, checks.review, checks.fix, checks.verify]
+                              .filter(Boolean) as FeatureSummary[])
+                              .filter(c => c.lastRunAt)
+                              .sort((a, b) => new Date(b.lastRunAt!).getTime() - new Date(a.lastRunAt!).getTime())[0].lastRunAt!
+                          )
+                        : '—'}
+                    </td>
+                    <td className="py-3 pr-4">
+                      <div className="flex flex-wrap gap-1">
+                        {[
+                          { key: 'generate', label: 'Gen', check: checks.generate },
+                          { key: 'review', label: 'Rev', check: checks.review },
+                          { key: 'fix', label: 'Fix', check: checks.fix },
+                          { key: 'verify', label: 'Ver', check: checks.verify },
+                        ].map(({ key, label, check }) => (
+                          <Badge
+                            key={key}
+                            tone={
+                              (check?.running ?? 0) > 0 ? 'blue' :
+                                (check?.failed ?? 0) > 0 ? 'red' :
+                                  (check?.succeeded ?? 0) > 0 ? 'green' : 'gray'
+                            }
+                          >
+                            {label}
+                          </Badge>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="py-3 pr-4">
+                      {healthScore ? (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${
+                          healthScore.score >= 80 ? 'bg-emerald-50 text-emerald-700' :
+                          healthScore.score >= 50 ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700'
+                        }`}>
+                          {healthScore.score}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="py-3 pr-4 text-slate-600">
+                      {healthScore ? healthScore.openFindingsTotal : 0}
+                    </td>
+                    <td className="py-3">
+                      <Link
+                        to={`/projects/${project.id}`}
+                        className={quietButtonClass}
+                        aria-label={`Review ${project.name}`}
                       >
-                        {label}
-                      </Badge>
-                    ))}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
+                        Review
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 
       {/* Recent Activity */}
       <Card title="Recent Activity" subtitle="Last 10 runs across all features">
         {loading ? (
-          <LoadingState label="Loading…" />
+          <SkeletonList rows={5} />
         ) : summary?.lastRuns.length === 0 ? (
           <EmptyState
-            title="No runs yet."
+            title="No runs yet"
             body="Start a generation, review, fix, or verify to see activity here."
+            icon="📋"
           />
         ) : (
-          <ul className="space-y-3">
+          <ul className="space-y-2" role="list">
             {summary?.lastRuns.map((run: RunSummary) => (
               <li
                 key={run.runId}
-                className="flex items-start gap-3 rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-2.5"
+                className="flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-2.5"
               >
                 <Badge tone={
                   run.status === 'SUCCEEDED' ? 'green' :
@@ -332,12 +409,12 @@ export function DashboardPage() {
                   {run.feature}
                 </Badge>
                 <span className="min-w-0 flex-1 text-sm">
-                  <span className="block font-medium text-indigo-950">
+                  <span className="block font-medium text-indigo-950 truncate">
                     {run.feature} {run.status.toLowerCase()}
                   </span>
-<span className="block text-xs text-slate-500">
-                      {run.startedAt ? formatDate(run.startedAt) : 'N/A'} · {run.totalIssues} issues
-                    </span>
+                  <span className="block text-xs text-slate-500">
+                    {run.startedAt ? formatRelativeTime(run.startedAt) : 'N/A'} · {run.totalIssues} issues
+                  </span>
                 </span>
               </li>
             ))}
@@ -345,7 +422,7 @@ export function DashboardPage() {
         )}
       </Card>
 
-      {/* Trend Sparkline */}
+      {/* Health Trend Sparkline */}
       {summary?.trend && summary.trend.length > 1 && (
         <Card title="Health Trend (Last 10)" subtitle="Overall health score over time">
           <div className="h-32 relative">
@@ -398,6 +475,27 @@ function drawTrend(canvas: HTMLCanvasElement, trend: Array<{ timestamp: string; 
   const maxScore = Math.max(100, ...scores);
   const range = maxScore - minScore || 1;
 
+  // Gradient for area under curve
+  const gradient = ctx.createLinearGradient(0, padding, 0, padding + innerHeight);
+  gradient.addColorStop(0, 'rgba(99, 102, 241, 0.15)');
+  gradient.addColorStop(1, 'rgba(99, 102, 241, 0)');
+
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.moveTo(padding, padding + innerHeight);
+
+  trend.forEach((point, i) => {
+    const x = padding + (innerWidth / (trend.length - 1)) * i;
+    const y = padding + innerHeight - ((point.totalScore - minScore) / range) * innerHeight;
+    if (i === 0) ctx.lineTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+
+  ctx.lineTo(padding + innerWidth, padding + innerHeight);
+  ctx.closePath();
+  ctx.fill();
+
+  // Draw line
   ctx.strokeStyle = '#6366f1';
   ctx.lineWidth = 2;
   ctx.lineCap = 'round';

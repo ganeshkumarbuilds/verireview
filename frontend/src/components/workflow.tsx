@@ -53,6 +53,37 @@ export function formatDate(value: string | null): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
+/** Relative time like "5 min ago", "2 hours ago", "3 days ago". */
+export function formatRelativeTime(value: string | null): string {
+  if (!value) {
+    return 'Never';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSecs = Math.floor(diffMs / 1000);
+  const diffMins = Math.floor(diffSecs / 60);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSecs < 60) {
+    return 'just now';
+  }
+  if (diffMins < 60) {
+    return `${diffMins} min ago`;
+  }
+  if (diffHours < 24) {
+    return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+  }
+  if (diffDays < 7) {
+    return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+  }
+  return formatDate(value);
+}
+
 /** Initials avatar used across dashboard / projects / history lists. */
 export function ProjectAvatar({ name }: { name: string }) {
   return (
