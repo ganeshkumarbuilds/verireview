@@ -245,9 +245,15 @@ export function CircularGauge({
     neutral: '→',
   };
 
+  const trendLabels = {
+    up: 'Improving',
+    down: 'Declining',
+    neutral: 'Stable',
+  };
+
   if (value === null) {
     return (
-      <div className="flex flex-col items-center gap-2" style={{ width: size, height: size + 40 }}>
+      <div className="flex flex-col items-center gap-1" style={{ width: size, minHeight: size + 48 }}>
         <div
           className="relative flex items-center justify-center rounded-full"
           style={{ width: size, height: size, backgroundColor: '#f1f5f9' }}
@@ -270,20 +276,19 @@ export function CircularGauge({
               strokeWidth={strokeWidth}
               strokeLinecap="round"
               strokeDasharray={circumference}
-              strokeDashoffset={circumference * 0.75}
-              className="animate-spin"
+              strokeDashoffset={circumference * 0.25}
             />
           </svg>
-          <span className="text-sm font-semibold text-slate-400">—</span>
+          <span className="text-lg font-semibold text-slate-400">—</span>
         </div>
-        <p className="text-xs text-slate-500">No data yet</p>
-        <p className="text-[11px] text-slate-400">Run a review to get your score</p>
+        <p className="text-xs text-slate-500 text-center">Overall project health</p>
+        <p className="text-[11px] text-slate-400 text-center">Run a review to get your score</p>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col items-center gap-2" style={{ width: size, height: size + 40 }}>
+    <div className="flex flex-col items-center gap-1" style={{ width: size, minHeight: size + 48 }}>
       <div className="relative flex items-center justify-center rounded-full" style={{ width: size, height: size, backgroundColor: bgColor }}>
         <svg width={size} height={size} className="transform -rotate-90">
           <circle
@@ -310,12 +315,12 @@ export function CircularGauge({
         </svg>
         <span className="text-xl font-bold" style={{ color: textColor }}>{clampedValue}</span>
       </div>
-      <div className="flex items-center gap-1 text-xs">
+      <div className="flex items-center justify-center gap-1">
+        <p className="text-xs text-slate-500">Overall project health</p>
         <span style={{ color: textColor }}>{trendIcons[trendDirection]}</span>
-        <span className="text-slate-500">
-          {trendDirection === 'up' ? 'Improving' : trendDirection === 'down' ? 'Declining' : 'Stable'}
-        </span>
+        <span className="text-[11px] text-slate-500">{trendLabels[trendDirection]}</span>
       </div>
+      <p className="text-[11px] text-slate-400 text-center">Run a review to get your score</p>
     </div>
   );
 }
@@ -362,7 +367,7 @@ export function StatCard({
   severityBreakdown?: { label: string; count: number; tone: 'red' | 'amber' | 'blue' | 'green' | 'gray' }[];
 }) {
   const content = (
-    <div className="text-sm text-slate-600">
+    <div className="flex flex-col h-full">
       <p className="text-xs font-semibold uppercase tracking-wider text-indigo-400">{title}</p>
       <p className="mt-1 text-3xl font-bold tracking-tight text-indigo-950">{value}</p>
       {subtitle && <div className="mt-1 text-sm text-slate-600">{subtitle}</div>}
@@ -391,7 +396,7 @@ export function StatCard({
       <button
         type="button"
         onClick={onClick}
-        className="w-full text-left rounded-xl border border-indigo-100 bg-white p-4 shadow-sm shadow-indigo-100 transition-colors hover:bg-indigo-50 hover:border-indigo-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
+        className="w-full text-left rounded-xl border border-indigo-100 bg-white p-4 shadow-sm shadow-indigo-100 transition-colors hover:bg-indigo-50 hover:border-indigo-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 flex flex-col h-full"
       >
         {content}
       </button>
@@ -399,7 +404,7 @@ export function StatCard({
   }
 
   return (
-    <section className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm shadow-indigo-100">
+    <section className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm shadow-indigo-100 flex flex-col h-full">
       {content}
     </section>
   );

@@ -178,16 +178,14 @@ export function DashboardPage() {
               key={feature.feature}
               title={feature.feature.charAt(0) + feature.feature.slice(1).toLowerCase()}
               subtitle={hasRuns ? `Runs: ${feature.totalRuns} · Last: ${feature.lastRunAt ? formatRelativeTime(feature.lastRunAt) : 'Never'}` : 'Never run'}
+              actions={<Badge tone={statusInfo.color}>{statusInfo.icon} {statusInfo.label}</Badge>}
             >
-              <div className="space-y-4">
-                {/* Status badge + three stat chips */}
-                <div className="flex flex-wrap items-center gap-3">
-                  <Badge tone={statusInfo.color}>{statusInfo.icon} {statusInfo.label}</Badge>
-                  <div className="flex-1 flex flex-wrap gap-2">
-                    <StatChip label="Succeeded" value={feature.succeeded} tone="green" />
-                    <StatChip label="Failed" value={feature.failed} tone="red" />
-                    <StatChip label="Running" value={feature.running} tone="blue" />
-                  </div>
+              <div className="space-y-3">
+                {/* Three stat chips in one row */}
+                <div className="grid grid-cols-3 gap-2">
+                  <StatChip label="Succeeded" value={feature.succeeded} tone="green" />
+                  <StatChip label="Failed" value={feature.failed} tone="red" />
+                  <StatChip label="Running" value={feature.running} tone="blue" />
                 </div>
 
                 {/* Progress bar */}
@@ -200,7 +198,7 @@ export function DashboardPage() {
                 </div>
 
                 {/* Action button */}
-                <div className="flex gap-2 pt-2">
+                <div className="flex gap-2 pt-1">
                   {hasRuns ? (
                     <Link to="/projects" className={quietButtonClass}>
                       View projects →
@@ -218,7 +216,7 @@ export function DashboardPage() {
       </div>
 
       {/* Health Score & Pipeline Progress - 5 stat cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 items-stretch">
         <StatCard
           title="Health Score"
           value={<CircularGauge value={healthScore} size={80} strokeWidth={6} trendDirection={trendDirection} />}
@@ -241,11 +239,7 @@ export function DashboardPage() {
               {summary?.features.find(f => f.feature === 'FIX')?.succeeded ?? 0} / {summary?.features.find(f => f.feature === 'VERIFY')?.succeeded ?? 0}
             </>
           }
-          subtitle={
-            <span>
-              Fixed / Verified · Open: {summary?.features.find(f => f.feature === 'REVIEW')?.totalRuns ?? 0}
-            </span>
-          }
+          subtitle={<span className="text-sm text-slate-500">Fixed / Verified · Open: {summary?.features.find(f => f.feature === 'REVIEW')?.totalRuns ?? 0}</span>}
           onClick={() => navigate('/projects')}
         />
 
@@ -259,7 +253,7 @@ export function DashboardPage() {
         <StatCard
           title="Activity"
           value={summary?.lastRuns.length ?? 0}
-          subtitle={<span>Last 10 runs across all features</span>}
+          subtitle={<span className="text-sm text-slate-500">Last 10 runs across all features</span>}
           onClick={() => navigate('/projects')}
         />
       </div>
