@@ -55,8 +55,8 @@ public class ZipIngestionService {
       Map.entry("gradle", "gradle"), Map.entry("properties", "properties"));
 
   private static final Set<String> JUNK_DIRS = Set.of(
-      "node_modules", ".git", "target", "build", "dist", ".next",
-      ".venv", "venv", "__pycache__", ".idea", ".gradle", ".mypy_cache");
+      "node_modules", ".git", "dist", "build", ".next", "target",
+      ".venv", "venv", "__pycache__", ".idea", ".vscode", "coverage", ".gradle", ".mypy_cache");
   private static final Set<String> BINARY_EXTS = Set.of(
       "class", "jar", "exe", "dll", "so", "dylib", "o", "obj", "pyc", "pyo", "pyd");
 
@@ -82,7 +82,7 @@ public class ZipIngestionService {
     this.audits = audits;
   }
 
-  public record ImportedProject(Project project, int fileCount) {
+  public record ImportedProject(Project project, int fileCount, int skippedCount) {
   }
 
   @Transactional
@@ -102,7 +102,7 @@ public class ZipIngestionService {
     }
     boolean moved = false;
     try {
-      List<ExtractedFile> extracted = extract(quarantine, staged, filename, fileSize);
+      ExtractResult result = extract(quarantine, staged, filename, fileSize);
       if (projects.existsByOwnerIdAndNameAndDeletedAtIsNull(ownerId, projectName)) {
         throw new ResponseStatusException(HttpStatus.CONFLICT, "Project name is already used");
       }
@@ -124,8 +124,8 @@ public class ZipIngestionService {
             HttpStatus.INTERNAL_SERVER_ERROR, "Could not store the project");
       }
       project.setStorageRef(projectDir.toString());
-      List<ProjectFile> rows = new ArrayList<>(extracted.size());
-      for (ExtractedFile entry : extracted) {
+      List<ProjectFile> rows = new ArrayList<>(result.extracted().size());
+      for (ExtractedFile entry : result.extracted()) {
         ProjectFile row = new ProjectFile(project, entry.relativePath(), entry.sizeBytes(),
             entry.sha256());
         row.setLanguage(entry.language());
@@ -135,7 +135,7 @@ public class ZipIngestionService {
       files.saveAll(rows);
       audits.record(project.getOwner(), "PROJECT_ZIP_IMPORTED", "project",
           project.getId().toString());
-      return new ImportedProject(project, rows.size());
+      return new ImportedProject(project, rows.size(), result.skippedCount());
     } finally {
       deleteQuietly(staged);
       if (!moved) {
@@ -174,8 +174,9 @@ public class ZipIngestionService {
     }
   }
 
-  private List<ExtractedFile> extract(Path quarantine, Path staged, String filename, long fileSize) {
+  private ExtractResult extract(Path quarantine, Path staged, String filename, long fileSize) {
     List<ExtractedFile> extracted = new ArrayList<>();
+    int skippedCount = 0;
     long totalUncompressed = 0;
     try (ZipFile zip = new ZipFile(staged.toFile())) {
       Enumeration<? extends ZipEntry> entries = zip.entries();
@@ -183,7 +184,8 @@ public class ZipIngestionService {
         ZipEntry entry = entries.nextElement();
         String relative = sanitizeEntryName(entry.getName(), filename, fileSize);
         if (relative == null) {
-          continue; // directory, macOS metadata, junk dirs, or binary artifacts
+          skippedCount++;
+          continue; // directory, macOS metadata, junk dirs, .env files, or binary artifacts
         }
         if (extracted.size() >= limits.maxFiles()) {
           throw ZipImportException.tooManyFiles(filename, fileSize, extracted.size() + 1, limits.maxFiles());
@@ -207,13 +209,13 @@ public class ZipIngestionService {
       }
       throw ZipImportException.corruptZip(filename, fileSize, "Could not extract the archive");
     }
-    return extracted;
+    return new ExtractResult(extracted, skippedCount);
   }
 
   /**
    * Returns the jail-relative posix path, or null for entries to skip
-   * (directories, macOS metadata, junk dirs, binary artifacts). Throws
-   * ZipImportException on absolute paths, drive letters, or any {@code ..}
+   * (directories, macOS metadata, junk dirs, .env* files, binary artifacts).
+   * Throws ZipImportException on absolute paths, drive letters, or any {@code ..}
    * component. The authoritative jail check runs again at extraction time via
    * {@code ProjectStorage.resolveJailed}.
    */
@@ -244,8 +246,15 @@ public class ZipIngestionService {
     if (parts.isEmpty()) {
       return null;
     }
-    String firstPart = parts.get(0);
-    if (JUNK_DIRS.contains(firstPart)) {
+    // Check for junk directory at ANY depth (e.g., "src/node_modules/x", "a/b/node_modules/c")
+    for (String part : parts) {
+      if (JUNK_DIRS.contains(part)) {
+        return null;
+      }
+    }
+    // Skip .env* files at any depth (e.g., ".env", ".env.local", "config/.env.production")
+    String fileName = parts.get(parts.size() - 1);
+    if (fileName.startsWith(".env")) {
       return null;
     }
     String joined = String.join("/", parts);
@@ -318,6 +327,9 @@ public class ZipIngestionService {
   }
 
   private record ExtractedFile(String relativePath, long sizeBytes, String sha256, String language) {
+  }
+
+  private record ExtractResult(List<ExtractedFile> extracted, int skippedCount) {
   }
 
   private static String validateName(String name) {

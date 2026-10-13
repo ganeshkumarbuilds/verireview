@@ -16,11 +16,16 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.MediaType;
@@ -31,8 +36,11 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+@AutoConfigureMockMvc
 @SpringBootTest
 class ImportJobAsyncTest extends AbstractPersistenceTest {
+
+  private static final Logger log = LoggerFactory.getLogger(ImportJobAsyncTest.class);
 
   @Autowired
   private MockMvc mockMvc;
@@ -52,8 +60,10 @@ class ImportJobAsyncTest extends AbstractPersistenceTest {
   @Autowired
   private ApplicationEventPublisher eventPublisher;
 
+  @Autowired
+  private JdbcTemplate jdbc;
+
   @Test
-  @Transactional
   void asyncZipImportTransitionsQueuedToDone() throws Exception {
     String token = access(register());
     String name = "async-zip-" + UUID.randomUUID();
@@ -106,7 +116,6 @@ class ImportJobAsyncTest extends AbstractPersistenceTest {
   }
 
   @Test
-  @Transactional
   void startupReconciliationMarksStaleJobsFailed() throws Exception {
     String token = access(register());
     User owner = users.findById(java.util.UUID.fromString(getUserId(token))).orElseThrow();
@@ -120,9 +129,9 @@ class ImportJobAsyncTest extends AbstractPersistenceTest {
     staleQueued.setCurrentStep("File staged, waiting for processing");
     staleQueued.setStagedFilePath("/tmp/nonexistent.zip"); // missing staged file
     staleQueued = jobs.saveAndFlush(staleQueued);
-    // Use reflection to set createdAt to 3 minutes ago
-    setCreatedAt(staleQueued, Instant.now().minusSeconds(180));
-    staleQueued = jobs.saveAndFlush(staleQueued);
+    // Override created_at via native query (bypasses @CreatedDate)
+    jdbc.update("UPDATE import_jobs SET created_at = ? WHERE id = ?",
+        java.sql.Timestamp.from(Instant.now().minusSeconds(180)), staleQueued.getId());
 
     // Create a job in EXTRACTING (simulating in-progress when server stopped)
     ImportJob staleExtracting = new ImportJob();
@@ -133,8 +142,8 @@ class ImportJobAsyncTest extends AbstractPersistenceTest {
     staleExtracting.setCurrentStep("Extracting archive");
     staleExtracting.setStartedAt(Instant.now().minusSeconds(120));
     staleExtracting = jobs.saveAndFlush(staleExtracting);
-    setCreatedAt(staleExtracting, Instant.now().minusSeconds(180));
-    staleExtracting = jobs.saveAndFlush(staleExtracting);
+    jdbc.update("UPDATE import_jobs SET created_at = ? WHERE id = ?",
+        java.sql.Timestamp.from(Instant.now().minusSeconds(180)), staleExtracting.getId());
 
     // Create a QUEUED job WITH existing staged file (should be re-dispatched)
     byte[] zip = zipOf(ZipEntryData.entry("src/Test.java", "class Test {}"));
@@ -148,8 +157,8 @@ class ImportJobAsyncTest extends AbstractPersistenceTest {
     queuedWithFile.setCurrentStep("File staged, waiting for processing");
     queuedWithFile.setStagedFilePath(staged.toString());
     queuedWithFile = jobs.saveAndFlush(queuedWithFile);
-    setCreatedAt(queuedWithFile, Instant.now().minusSeconds(180));
-    queuedWithFile = jobs.saveAndFlush(queuedWithFile);
+    jdbc.update("UPDATE import_jobs SET created_at = ? WHERE id = ?",
+        java.sql.Timestamp.from(Instant.now().minusSeconds(180)), queuedWithFile.getId());
 
     // Run reconciliation
     ImportJobReconciler reconciler = new ImportJobReconciler(jobs, eventPublisher);
@@ -173,11 +182,7 @@ class ImportJobAsyncTest extends AbstractPersistenceTest {
     java.nio.file.Files.deleteIfExists(staged);
   }
 
-  private void setCreatedAt(ImportJob job, Instant createdAt) throws Exception {
-    Field field = com.verireview.common.BaseEntity.class.getDeclaredField("createdAt");
-    field.setAccessible(true);
-    field.set(job, createdAt);
-  }
+  
 
   private String register() throws Exception {
     String email = "async-" + UUID.randomUUID() + "@example.com";

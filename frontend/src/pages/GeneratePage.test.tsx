@@ -25,23 +25,24 @@ function renderGenerate(handler: (url: string, init?: RequestInit) => Response |
   );
 }
 
-function fillRequirement() {
-  fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'todo-api' } });
-  fireEvent.change(screen.getByLabelText('Requirement'), {
+function fillRequirementOnly() {
+  fireEvent.change(screen.getByLabelText('Project title'), { target: { value: 'todo-api' } });
+  fireEvent.change(screen.getByLabelText('Project description'), {
     target: { value: 'A minimal todo REST API with create and list endpoints plus tests.' },
   });
-  fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 }
 
-function chooseStack(database: 'POSTGRESQL' | 'NONE') {
-  fireEvent.click(screen.getByLabelText(/Java Spring Boot/));
-  fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="frontend"]' }));
-  fireEvent.click(
-    screen.getByLabelText(database === 'POSTGRESQL' ? 'PostgreSQL' : 'None', {
-      selector: 'input[name="database"]',
-    }),
-  );
-  fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+async function fillRequirementWithStack() {
+  // Fill with Python/FastAPI keywords to auto-detect stack
+  fireEvent.change(screen.getByLabelText('Project title'), { target: { value: 'fastapi-api' } });
+  fireEvent.change(screen.getByLabelText('Project description'), {
+    target: { value: 'A FastAPI REST API with PostgreSQL database and no frontend.' },
+  });
+  // Wait for stack detection
+  await waitFor(() => expect(screen.getByLabelText('Detected stack')).toBeInTheDocument());
+  expect(screen.getByText('Python FastAPI')).toBeInTheDocument();
+  expect(screen.getByText('No frontend')).toBeInTheDocument();
+  expect(screen.getByText('PostgreSQL')).toBeInTheDocument();
 }
 
 function fillDatabase() {
@@ -50,14 +51,12 @@ function fillDatabase() {
   fireEvent.change(screen.getByLabelText('Database name'), { target: { value: 'todos' } });
   fireEvent.change(screen.getByLabelText('Database username'), { target: { value: 'app' } });
   fireEvent.change(screen.getByLabelText('Database password'), { target: { value: 'db-secret-pw' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 }
 
 function fillAi() {
   fireEvent.click(screen.getByLabelText(/OpenRouter/));
   fireEvent.change(screen.getByLabelText('AI API key'), { target: { value: 'sk-live-key' } });
   fireEvent.change(screen.getByLabelText('AI model'), { target: { value: 'test/model' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
 }
 
 afterEach(() => {
@@ -65,55 +64,115 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-describe('GeneratePage wizard', () => {
-  it('validates the requirement step before continuing', async () => {
+describe('GeneratePage single-form wizard', () => {
+  it('validates required fields before generating', async () => {
     renderGenerate(() => pageOf([]));
-    expect(screen.getByRole('heading', { name: 'Step 1 — Requirement' })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    // Submit without filling required fields
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
     expect(screen.getByText('Please enter a project name.')).toBeInTheDocument();
+    expect(screen.getByText('Please describe the requirement in at least 20 characters.')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'x' } });
-    fireEvent.change(screen.getByLabelText('Requirement'), { target: { value: 'too short' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(
-      screen.getByText('Please describe the requirement in at least 20 characters.'),
-    ).toBeInTheDocument();
+    // Fill project name but not requirement
+    fireEvent.change(screen.getByLabelText('Project title'), { target: { value: 'x' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
+    expect(screen.getByText('Please describe the requirement in at least 20 characters.')).toBeInTheDocument();
+
+    // Fill requirement too short
+    fireEvent.change(screen.getByLabelText('Project description'), { target: { value: 'too short' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
+    expect(screen.getByText('Please describe the requirement in at least 20 characters.')).toBeInTheDocument();
+
+    // Fill valid requirement
+    fireEvent.change(screen.getByLabelText('Project description'), { target: { value: 'A minimal todo REST API with create and list endpoints plus tests.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
+    // Should progress (no validation errors)
+    expect(screen.queryByText('Please describe the requirement in at least 20 characters.')).not.toBeInTheDocument();
   });
 
   it('requires explicit stack choices with no preselection', async () => {
     renderGenerate(() => pageOf([]));
-    fillRequirement();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
+    fillRequirementOnly();
 
-    const checked = document.querySelectorAll('input[type="radio"]:checked');
-    expect(checked.length).toBe(0);
+    // Stack is auto-detected from description - default is Java Spring Boot, React, No DB
+    await waitFor(() => expect(screen.getByLabelText('Detected stack')).toBeInTheDocument());
+    expect(screen.getByText('Java Spring Boot')).toBeInTheDocument();
+    expect(screen.getByText('React + TypeScript')).toBeInTheDocument();
+    expect(screen.getByText('No database')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(screen.getByText('Please choose a backend stack.')).toBeInTheDocument();
+    // Submit without AI provider - should be blocked
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
+    expect(screen.getByText('Please choose an AI provider.')).toBeInTheDocument();
   });
 
-  it('shows database configuration only when a database is selected', async () => {
+  it('detects stack from description keywords', async () => {
     renderGenerate(() => pageOf([]));
-    fillRequirement();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
-    chooseStack('NONE');
-    await waitFor(() => expect(screen.getByRole('heading', { name: /AI configuration/ })).toBeInTheDocument());
+    
+    // Fill with Python/FastAPI keywords
+    fireEvent.change(screen.getByLabelText('Project title'), { target: { value: 'fastapi-api' } });
+    fireEvent.change(screen.getByLabelText('Project description'), {
+      target: { value: 'A FastAPI REST API with PostgreSQL database and no frontend.' },
+    });
+    
+    // Wait for stack detection
+    await waitFor(() => expect(screen.getByLabelText('Detected stack')).toBeInTheDocument());
+    expect(screen.getByText('Python FastAPI')).toBeInTheDocument();
+    expect(screen.getByText('No frontend')).toBeInTheDocument();
+    expect(screen.getByText('PostgreSQL')).toBeInTheDocument();
+  });
+
+  it('shows database configuration only when a database is detected', async () => {
+    renderGenerate(() => pageOf([]));
+    
+    // Description with no database
+    fireEvent.change(screen.getByLabelText('Project title'), { target: { value: 'no-db-api' } });
+    fireEvent.change(screen.getByLabelText('Project description'), {
+      target: { value: 'A simple API with no database, in-memory only.' },
+    });
+    
+    await waitFor(() => expect(screen.getByLabelText('Detected stack')).toBeInTheDocument());
+    expect(screen.getByText('No database')).toBeInTheDocument();
     expect(screen.queryByLabelText('Database password')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Database host')).not.toBeInTheDocument();
+
+    // Change description to include PostgreSQL
+    fireEvent.change(screen.getByLabelText('Project description'), {
+      target: { value: 'A REST API with PostgreSQL database for persistence.' },
+    });
+    
+    await waitFor(() => expect(screen.getByText('PostgreSQL')).toBeInTheDocument());
+    expect(screen.getByLabelText('Database host')).toBeInTheDocument();
+    expect(screen.getByLabelText('Database password')).toHaveAttribute('type', 'password');
+    expect(screen.getByLabelText('Database password')).toBeInTheDocument();
   });
 
   it('masks secrets in review and keeps them out of URLs and storage', async () => {
     renderGenerate(() => pageOf([]));
-    fillRequirement();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
-    chooseStack('POSTGRESQL');
-    await waitFor(() => expect(screen.getByLabelText('Database host')).toBeInTheDocument());
+    fillRequirementOnly();
+
+    // Use description with PostgreSQL and Python FastAPI
+    fireEvent.change(screen.getByLabelText('Project description'), {
+      target: { value: 'A FastAPI REST API with PostgreSQL database and no frontend.' },
+    });
+    await waitFor(() => expect(screen.getByLabelText('Detected stack')).toBeInTheDocument());
+    expect(screen.getByText('Python FastAPI')).toBeInTheDocument();
+    expect(screen.getByText('No frontend')).toBeInTheDocument();
+    expect(screen.getByText('PostgreSQL')).toBeInTheDocument();
+
     expect(screen.getByLabelText('Database password')).toHaveAttribute('type', 'password');
+
+    // Fill database config
     fillDatabase();
-    await waitFor(() => expect(screen.getByRole('heading', { name: /AI configuration/ })).toBeInTheDocument());
+
+    // Select AI provider
+    fireEvent.click(screen.getByLabelText(/OpenRouter/));
     expect(screen.getByLabelText('AI API key')).toHaveAttribute('type', 'password');
-    fillAi();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('AI API key'), { target: { value: 'sk-live-key' } });
+    fireEvent.change(screen.getByLabelText('AI model'), { target: { value: 'test/model' } });
+
+    // Submit
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
 
     // Masked in review, raw values never rendered.
     expect(screen.queryByText('db-secret-pw')).not.toBeInTheDocument();
@@ -130,13 +189,27 @@ describe('GeneratePage wizard', () => {
 
   it('disables Generate until the configuration is valid', async () => {
     renderGenerate(() => pageOf([]));
-    fillRequirement();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
-    chooseStack('NONE');
-    await waitFor(() => expect(screen.getByRole('heading', { name: /AI configuration/ })).toBeInTheDocument());
-    // AI step not yet filled: continuing is blocked.
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    fillRequirementOnly();
+
+    // Select stack via description
+    fireEvent.change(screen.getByLabelText('Project description'), {
+      target: { value: 'A minimal todo REST API with create and list endpoints plus tests. No frontend, no database.' },
+    });
+    await waitFor(() => expect(screen.getByLabelText('Detected stack')).toBeInTheDocument());
+    expect(screen.getByText('No database')).toBeInTheDocument();
+
+    // Submit without AI config - should be blocked
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
     expect(screen.getByText('Please choose an AI provider.')).toBeInTheDocument();
+
+    // Fill AI config
+    fireEvent.click(screen.getByLabelText(/OpenRouter/));
+    fireEvent.change(screen.getByLabelText('AI API key'), { target: { value: 'sk-live-key' } });
+    fireEvent.change(screen.getByLabelText('AI model'), { target: { value: 'test/model' } });
+
+    // Should be enabled now (no validation error)
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
+    expect(screen.queryByText('Please choose an AI provider.')).not.toBeInTheDocument();
   });
 
   it('runs generation to completion and links the project', async () => {
@@ -189,19 +262,11 @@ describe('GeneratePage wizard', () => {
       return pageOf([]);
     });
 
-    fillRequirement();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
-    fireEvent.click(screen.getByLabelText(/Python FastAPI/));
-    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="frontend"]' }));
-    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="database"]' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    await waitFor(() => expect(screen.getByRole('heading', { name: /AI configuration/ })).toBeInTheDocument());
+    await fillRequirementWithStack();
+    await waitFor(() => expect(screen.getByLabelText('Detected stack')).toBeInTheDocument());
+    fillDatabase();
     fillAi();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument());
-
-    const generate = screen.getByRole('button', { name: 'Start Generation' });
-    expect(generate).toBeEnabled();
-    fireEvent.click(generate);
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
 
     await waitFor(() => expect(screen.getAllByText('COMPLETED').length).toBeGreaterThan(0));
 
@@ -279,16 +344,11 @@ describe('GeneratePage wizard', () => {
       return pageOf([]);
     });
 
-    fillRequirement();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
-    fireEvent.click(screen.getByLabelText(/Python FastAPI/));
-    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="frontend"]' }));
-    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="database"]' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    await waitFor(() => expect(screen.getByRole('heading', { name: /AI configuration/ })).toBeInTheDocument());
+    await fillRequirementWithStack();
+    await waitFor(() => expect(screen.getByLabelText('Detected stack')).toBeInTheDocument());
+    fillDatabase();
     fillAi();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: 'Start Generation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
 
     await waitFor(() => expect(screen.getByText('Issues found 2 · Issues fixed 0', { exact: false })).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Download ZIP' })).not.toBeInTheDocument();
@@ -334,21 +394,22 @@ describe('GeneratePage wizard', () => {
       return pageOf([]);
     });
 
-    fillRequirement();
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Step 2 — Technology stack' })).toBeInTheDocument());
-    fireEvent.click(screen.getByLabelText(/Java Spring Boot/));
-    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="frontend"]' }));
-    fireEvent.click(screen.getByLabelText('None', { selector: 'input[name="database"]' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    await waitFor(() => expect(screen.getByRole('heading', { name: /AI configuration/ })).toBeInTheDocument());
+    await fillRequirementWithStack();
+    // Change description to use NONE provider (Java Spring Boot)
+    fireEvent.change(screen.getByLabelText('Project description'), {
+      target: { value: 'A Java Spring Boot REST API with no frontend and no database.' },
+    });
+    await waitFor(() => expect(screen.getByLabelText('Detected stack')).toBeInTheDocument());
+    expect(screen.getByText('Java Spring Boot')).toBeInTheDocument();
+    expect(screen.getByText('No frontend')).toBeInTheDocument();
+    expect(screen.getByText('No database')).toBeInTheDocument();
+
+    // Select NONE provider
     fireEvent.click(screen.getByLabelText(/None — template starter/));
     expect(screen.getByLabelText('AI API key')).toBeDisabled();
     expect(screen.getByLabelText('AI model')).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Review' })).toBeInTheDocument());
-    expect(screen.getByText('None — template starter', { exact: false })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Generate project' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Start Generation' }));
     await waitFor(() =>
       expect(calls.some((call) => call.method === 'POST' && call.url.endsWith('/generations'))).toBe(true),
     );

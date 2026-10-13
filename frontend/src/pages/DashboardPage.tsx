@@ -49,7 +49,7 @@ export function DashboardPage() {
   const [wakeUpMessage, setWakeUpMessage] = useState<string | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const hasRunningRuns = summary?.features.some(f => f.running > 0) ?? false;
+  const hasRunningRuns = summary?.features?.some(f => f.running > 0) ?? false;
 
   const reload = useCallback(async () => {
     if (!token) {
@@ -114,14 +114,12 @@ export function DashboardPage() {
   }, [reload]);
 
   // Computed from summary
-  const criticalHigh = summary?.openIssuesBySeverity
-    .filter((s: { severity: string; count: number }) => s.severity === 'CRITICAL' || s.severity === 'HIGH')
+  const criticalHigh = summary?.openIssuesBySeverity?.filter((s: { severity: string; count: number }) => s.severity === 'CRITICAL' || s.severity === 'HIGH')
     .reduce((sum: number, s: { count: number }) => sum + s.count, 0) ?? 0;
 
-  const totalFindings = summary?.openIssuesBySeverity
-    .reduce((sum: number, s: { count: number }) => sum + s.count, 0) ?? 0;
+  const totalFindings = summary?.openIssuesBySeverity?.reduce((sum: number, s: { count: number }) => sum + s.count, 0) ?? 0;
 
-  const severityBreakdown = summary?.openIssuesBySeverity.map(s => ({
+  const severityBreakdown = summary?.openIssuesBySeverity?.map(s => ({
     label: s.severity,
     count: s.count,
     tone: severityTone(s.severity) as 'red' | 'amber' | 'blue' | 'green' | 'gray',
@@ -163,7 +161,7 @@ export function DashboardPage() {
 
       {/* 4 Pipeline Feature Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {summary?.features.map((feature: FeatureSummary) => {
+        {summary?.features?.map((feature: FeatureSummary) => {
           const statusInfo = getCheckStatusInfo(
             (feature.running > 0 ? 'RUNNING' :
               feature.failed > 0 ? 'FAILED' :
@@ -236,10 +234,10 @@ export function DashboardPage() {
           title="Pipeline"
           value={
             <>
-              {summary?.features.find(f => f.feature === 'FIX')?.succeeded ?? 0} / {summary?.features.find(f => f.feature === 'VERIFY')?.succeeded ?? 0}
+              {summary?.features?.find(f => f.feature === 'FIX')?.succeeded ?? 0} / {summary?.features?.find(f => f.feature === 'VERIFY')?.succeeded ?? 0}
             </>
           }
-          subtitle={<span className="text-sm text-slate-500">Fixed / Verified · Open: {summary?.features.find(f => f.feature === 'REVIEW')?.totalRuns ?? 0}</span>}
+          subtitle={<span className="text-sm text-slate-500">Fixed / Verified · Open: {summary?.features?.find(f => f.feature === 'REVIEW')?.totalRuns ?? 0}</span>}
           onClick={() => navigate('/projects')}
         />
 
@@ -252,7 +250,7 @@ export function DashboardPage() {
 
         <StatCard
           title="Activity"
-          value={summary?.lastRuns.length ?? 0}
+          value={summary?.lastRuns?.length ?? 0}
           subtitle={<span className="text-sm text-slate-500">Last 10 runs across all features</span>}
           onClick={() => navigate('/projects')}
         />
@@ -382,7 +380,7 @@ export function DashboardPage() {
       <Card title="Recent Activity" subtitle="Last 10 runs across all features">
         {loading ? (
           <SkeletonList rows={5} />
-        ) : summary?.lastRuns.length === 0 ? (
+        ) : summary?.lastRuns?.length === 0 ? (
           <EmptyState
             title="No runs yet"
             body="Start a generation, review, fix, or verify to see activity here."
@@ -390,7 +388,7 @@ export function DashboardPage() {
           />
         ) : (
           <ul className="space-y-2" role="list">
-            {summary?.lastRuns.map((run: RunSummary) => (
+            {summary?.lastRuns?.map((run: RunSummary) => (
               <li
                 key={run.runId}
                 className="flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50/40 px-3 py-2.5"

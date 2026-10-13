@@ -206,7 +206,7 @@ class AnalysisJobTest extends AbstractPersistenceTest {
   }
 
   private String uploadProject(String token, byte[] zip) throws Exception {
-    MvcResult result = mockMvc.perform(multipart("/api/v1/projects/import/zip")
+    MvcResult result = mockMvc.perform(multipart("/api/v1/projects/import/zip/sync")
             .file(new MockMultipartFile("file", "sample.zip", "application/zip", zip))
             .param("name", "analysis-" + UUID.randomUUID())
             .header("Authorization", "Bearer " + token))

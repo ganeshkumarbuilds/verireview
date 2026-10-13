@@ -134,6 +134,7 @@ public class ImportJobWorker {
       job.setProject(imported.project());
       job.setFilesTotal(imported.fileCount());
       job.setFilesProcessed(imported.fileCount());
+      job.setFilesSkipped(imported.skippedCount());
       job.setBytesProcessed(job.getBytesTotal());
       job.setStatus(ImportJobStatus.DONE);
       job.setFinishedAt(Instant.now());

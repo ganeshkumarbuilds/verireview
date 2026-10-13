@@ -58,6 +58,9 @@ public class ImportJob extends BaseEntity {
   @Column(name = "files_total", nullable = false)
   private long filesTotal = 0;
 
+  @Column(name = "files_skipped", nullable = false)
+  private long filesSkipped = 0;
+
   @Column(name = "bytes_processed", nullable = false)
   private long bytesProcessed = 0;
 
@@ -169,6 +172,14 @@ public class ImportJob extends BaseEntity {
 
   public void setFilesTotal(long filesTotal) {
     this.filesTotal = filesTotal;
+  }
+
+  public long getFilesSkipped() {
+    return filesSkipped;
+  }
+
+  public void setFilesSkipped(long filesSkipped) {
+    this.filesSkipped = filesSkipped;
   }
 
   public long getBytesProcessed() {
