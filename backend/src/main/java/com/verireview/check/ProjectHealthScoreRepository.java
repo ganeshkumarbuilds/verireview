@@ -1,6 +1,5 @@
 package com.verireview.check;
 
-import com.verireview.project.Project;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -13,7 +12,7 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface ProjectHealthScoreRepository extends JpaRepository<ProjectHealthScore, UUID> {
 
-  Optional<ProjectHealthScore> findFirstByProjectIdOrderByLastComputedAtDesc(Project project);
+  Optional<ProjectHealthScore> findFirstByProjectIdOrderByLastComputedAtDesc(UUID projectId);
 
-  List<ProjectHealthScore> findByProjectIdOrderByLastComputedAtDesc(Project project);
+  List<ProjectHealthScore> findByProjectIdOrderByLastComputedAtDesc(UUID projectId);
 }

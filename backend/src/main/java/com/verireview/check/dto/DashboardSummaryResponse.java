@@ -1,13 +1,14 @@
 package com.verireview.check.dto;
 
-import com.verireview.check.ProjectHealthScore;
 import java.util.List;
 
-/** Dashboard summary response. */
+/**
+ * Dashboard summary response: owner-scoped totals plus a per-project rollup.
+ * DTOs only — no JPA entities are ever serialized (AGENTS.md rule 6).
+ */
 public record DashboardSummaryResponse(
-    List<FeatureSummary> features,
-    List<SeveritySummary> openIssuesBySeverity,
-    List<RunSummary> lastRuns,
-    List<TrendPoint> trend,
-    ProjectHealthScore latestHealthScore) {
+    long totalFilesVerified,
+    long totalIssuesFound,
+    long totalIssuesFixed,
+    List<ProjectSummary> projects) {
 }

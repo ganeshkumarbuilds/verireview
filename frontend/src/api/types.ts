@@ -142,61 +142,21 @@ export interface CheckRunResponse {
   gates?: CheckRunGateResponse[];
 }
 
-export interface FeatureSummary {
-  feature: string;
-  totalRuns: number;
-  running: number;
-  succeeded: number;
-  failed: number;
-  skipped: number;
-  lastRunAt: string | null;
-}
-
-export interface SeveritySummary {
-  severity: string;
-  count: number;
-}
-
-export interface RunSummary {
-  runId: string;
-  feature: string;
-  status: string;
-  progress: number;
-  startedAt: string | null;
-  finishedAt: string | null;
-  durationMs: number | null;
-  totalIssues: number;
-}
-
-export interface TrendPoint {
-  timestamp: string;
-  generateScore: number;
-  reviewScore: number;
-  fixScore: number;
-  verifyScore: number;
-  totalScore: number;
-}
-
-export interface ProjectHealthScore {
+export interface ProjectSummary {
   id: string;
-  projectId: string;
-  score: number;
-  generateScore: number;
-  reviewScore: number;
-  fixScore: number;
-  verifyScore: number;
-  openCriticalHigh: number;
-  openFindingsTotal: number;
-  fixedVerifiedRatio: number | null;
-  lastComputedAt: string;
+  name: string;
+  filesVerified: number;
+  issuesFound: number;
+  issuesFixed: number;
+  lastActivityAt: string | null;
 }
 
+/** Simplified dashboard payload: owner-scoped totals plus a project rollup. */
 export interface DashboardSummaryResponse {
-  features: FeatureSummary[];
-  openIssuesBySeverity: SeveritySummary[];
-  lastRuns: RunSummary[];
-  trend: TrendPoint[];
-  latestHealthScore: ProjectHealthScore;
+  totalFilesVerified: number;
+  totalIssuesFound: number;
+  totalIssuesFixed: number;
+  projects: ProjectSummary[];
 }
 
 export type FixRequestStatus = 'REQUESTED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'CANCELLED';

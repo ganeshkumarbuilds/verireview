@@ -1,66 +1,192 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../auth/AuthContext';
 import { DashboardPage } from './DashboardPage';
 
-function pageOf(content: unknown[], total: number) {
-  return new Response(
-    JSON.stringify({ content, page: 0, size: 5, totalElements: total, totalPages: 1 }),
-    { status: 200 },
+/** Minimal dashboard summary body matching the simplified endpoint shape. */
+function summaryBody(overrides: Record<string, unknown> = {}) {
+  return {
+    totalFilesVerified: 0,
+    totalIssuesFound: 0,
+    totalIssuesFixed: 0,
+    projects: [],
+    ...overrides,
+  };
+}
+
+function installFetch(
+  handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
+) {
+  const mock = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+    handler(String(url), init),
+  );
+  vi.stubGlobal('fetch', mock as unknown as typeof fetch);
+  return mock;
+}
+
+function renderDashboard() {
+  render(
+    <MemoryRouter initialEntries={['/dashboard']}>
+      <AuthProvider initial={{ token: 'tok', refreshToken: null, user: null }}>
+        <DashboardPage />
+      </AuthProvider>
+    </MemoryRouter>,
   );
 }
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe('DashboardPage', () => {
-  it('shows real project counts and latest review states', async () => {
-    vi.stubGlobal(
-      'fetch',
-      (async (url: string | URL | Request) => {
-        const target = String(url);
-        if (target.endsWith('/projects?size=5')) {
-          return pageOf(
-            [
-              { id: 'p1', name: 'demo', fileCount: 3 },
-              { id: 'p2', name: 'empty', fileCount: 0 },
-            ],
-            2,
-          );
-        }
-        if (target.includes('/projects/p1/reviews')) {
-          return pageOf([{ id: 'r1', status: 'COMPLETED', findingCount: 4 }], 1);
-        }
-        return pageOf([], 0);
-      }) as typeof fetch,
+  it('shows the simplified layout with zeros and an empty projects state', async () => {
+    installFetch(() => new Response(JSON.stringify(summaryBody()), { status: 200 }));
+    renderDashboard();
+
+    await waitFor(() => expect(screen.getByText('Dashboard')).toBeInTheDocument());
+    expect(
+      screen.getByText('Generate, review, fix, and verify your code in one place.'),
+    ).toBeInTheDocument();
+
+    // Header primary action points at the review/upload page.
+    expect(screen.getByRole('link', { name: /Review existing code/i })).toHaveAttribute(
+      'href',
+      '/projects',
     );
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <AuthProvider initial={{ token: 'tok', refreshToken: null, user: null }}>
-          <DashboardPage />
-        </AuthProvider>
-      </MemoryRouter>,
+
+    // Four feature cards, each with a working destination.
+    for (const title of ['Generate', 'Review', 'Fix', 'Verify']) {
+      expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+    }
+
+    // Overall tiles render 0 cleanly for missing data.
+    expect(screen.getByText('Files verified')).toBeInTheDocument();
+    expect(screen.getByText('Issues found')).toBeInTheDocument();
+    expect(screen.getByText('Issues fixed')).toBeInTheDocument();
+    expect(screen.getAllByText('0')).toHaveLength(3);
+
+    // Empty projects state with a create/upload action.
+    expect(screen.getByText('No projects yet')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Create or upload project/i })).toHaveAttribute(
+      'href',
+      '/projects',
     );
-    await waitFor(() => expect(screen.getByText('demo')).toBeInTheDocument());
-    expect(screen.getByText('COMPLETED')).toBeInTheDocument();
-    expect(screen.getByText('NEVER ANALYZED')).toBeInTheDocument();
-    expect(screen.getByText('2')).toBeInTheDocument();
   });
 
-  it('explains the empty workspace', async () => {
-    vi.stubGlobal(
-      'fetch',
-      (async () => pageOf([], 0)) as typeof fetch,
+  it('renders totals and the project table when data is present', async () => {
+    installFetch(() =>
+      new Response(
+        JSON.stringify(
+          summaryBody({
+            totalFilesVerified: 42,
+            totalIssuesFound: 10,
+            totalIssuesFixed: 7,
+            projects: [
+              {
+                id: 'p1',
+                name: 'demo',
+                filesVerified: 42,
+                issuesFound: 10,
+                issuesFixed: 7,
+                lastActivityAt: new Date().toISOString(),
+              },
+              {
+                id: 'p2',
+                name: 'empty',
+                filesVerified: 0,
+                issuesFound: 0,
+                issuesFixed: 0,
+                lastActivityAt: null,
+              },
+            ],
+          }),
+        ),
+        { status: 200 },
+      ),
     );
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <AuthProvider initial={{ token: 'tok', refreshToken: null, user: null }}>
-          <DashboardPage />
-        </AuthProvider>
-      </MemoryRouter>,
+    renderDashboard();
+
+    const overall = screen.getByRole('region', { name: 'Overall' });
+    await waitFor(() => expect(within(overall).getByText('42')).toBeInTheDocument());
+    expect(within(overall).getByText('10')).toBeInTheDocument();
+    expect(within(overall).getByText('7')).toBeInTheDocument();
+
+    const demoRow = screen.getByRole('row', { name: /demo/ });
+    expect(within(demoRow).getByText('10')).toBeInTheDocument();
+    expect(within(demoRow).getByText('7')).toBeInTheDocument();
+
+    const emptyRow = screen.getByRole('row', { name: /empty/ });
+    expect(within(emptyRow).getByText('—')).toBeInTheDocument();
+
+    // Row Review button navigates to the project workspace.
+    expect(within(demoRow).getByRole('link', { name: /Review demo/i })).toHaveAttribute(
+      'href',
+      '/projects/p1',
     );
-    await waitFor(() => expect(screen.getByText(/No projects yet/)).toBeInTheDocument());
+  });
+
+  it('navigates each feature card to an existing route', async () => {
+    installFetch(() => new Response(JSON.stringify(summaryBody()), { status: 200 }));
+    renderDashboard();
+
+    await waitFor(() => expect(screen.getByText('Dashboard')).toBeInTheDocument());
+
+    expect(screen.getByRole('link', { name: /Start generation/i })).toHaveAttribute(
+      'href',
+      '/generate',
+    );
+    expect(screen.getByRole('link', { name: /Open review/i })).toHaveAttribute('href', '/review');
+    expect(screen.getByRole('link', { name: /Fix findings/i })).toHaveAttribute('href', '/review');
+    expect(screen.getByRole('link', { name: /View verification/i })).toHaveAttribute(
+      'href',
+      '/projects',
+    );
+  });
+
+  it('surfaces errors with a working Retry button', async () => {
+    let failing = true;
+    installFetch(() =>
+      failing
+        ? new Response(JSON.stringify({ message: 'Boom' }), { status: 500 })
+        : new Response(
+            JSON.stringify(summaryBody({ totalFilesVerified: 5 })),
+            { status: 200 },
+          ),
+    );
+    renderDashboard();
+
+    await waitFor(() => expect(screen.getByText('Boom')).toBeInTheDocument());
+    const retry = screen.getByRole('button', { name: /Retry/i });
+
+    failing = false;
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(screen.getByText('5')).toBeInTheDocument());
+    expect(screen.queryByText('Boom')).not.toBeInTheDocument();
+  });
+
+  it('refreshes the summary every 30 seconds while the tab is visible', async () => {
+    vi.useFakeTimers();
+    const mock = installFetch(
+      () => new Response(JSON.stringify(summaryBody({ totalFilesVerified: 1 })), { status: 200 }),
+    );
+    renderDashboard();
+
+    await vi.waitFor(() => expect(mock).toHaveBeenCalledTimes(1));
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => expect(mock).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not open an SSE connection', async () => {
+    const eventSourceCtor = vi.fn();
+    vi.stubGlobal('EventSource', eventSourceCtor);
+    installFetch(() => new Response(JSON.stringify(summaryBody()), { status: 200 }));
+    renderDashboard();
+
+    await waitFor(() => expect(screen.getByText('Dashboard')).toBeInTheDocument());
+    expect(eventSourceCtor).not.toHaveBeenCalled();
   });
 });

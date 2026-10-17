@@ -2,15 +2,18 @@ package com.verireview.check;
 
 import com.verireview.audit.AuditService;
 import com.verireview.check.dto.DashboardSummaryResponse;
-import com.verireview.check.dto.FeatureSummary;
-import com.verireview.check.dto.RunSummary;
-import com.verireview.check.dto.SeveritySummary;
-import com.verireview.check.dto.TrendPoint;
+import com.verireview.check.dto.ProjectSummary;
+import com.verireview.fix.FixRequestRepository;
+import com.verireview.fix.FixRequestStatus;
 import com.verireview.generation.Generation;
 import com.verireview.generation.GenerationRepository;
 import com.verireview.generation.GenerationStatus;
 import com.verireview.project.Project;
+import com.verireview.project.ProjectFileRepository;
 import com.verireview.project.ProjectRepository;
+import com.verireview.review.Review;
+import com.verireview.review.ReviewRepository;
+import com.verireview.review.ReviewStatus;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -24,6 +27,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+
+import static java.util.stream.Collectors.toList;
 
 /**
  * Service for managing check runs across all four features.
@@ -39,6 +44,9 @@ public class CheckRunService {
   private final CheckRunGateRepository checkRunGates;
   private final ProjectHealthScoreRepository healthScores;
   private final ProjectRepository projects;
+  private final ProjectFileRepository files;
+  private final FixRequestRepository fixRequests;
+  private final ReviewRepository reviews;
   private final GenerationRepository generations;
   private final AuditService audits;
   private final CheckRunSseService sseService;
@@ -49,6 +57,9 @@ public class CheckRunService {
       CheckRunGateRepository checkRunGates,
       ProjectHealthScoreRepository healthScores,
       ProjectRepository projects,
+      ProjectFileRepository files,
+      FixRequestRepository fixRequests,
+      ReviewRepository reviews,
       GenerationRepository generations,
       AuditService audits,
       CheckRunSseService sseService) {
@@ -57,6 +68,9 @@ public class CheckRunService {
     this.checkRunGates = checkRunGates;
     this.healthScores = healthScores;
     this.projects = projects;
+    this.files = files;
+    this.fixRequests = fixRequests;
+    this.reviews = reviews;
     this.generations = generations;
     this.audits = audits;
     this.sseService = sseService;
@@ -259,7 +273,7 @@ public class CheckRunService {
   public Page<CheckRun> listCheckRuns(UUID ownerId, UUID projectId, Pageable pageable) {
     Project project = projects.findByIdAndOwnerIdAndDeletedAtIsNull(projectId, ownerId)
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found"));
-    return checkRuns.findByProjectId(project, pageable);
+    return checkRuns.findByProjectId(project.getId(), pageable);
   }
 
   @Transactional(readOnly = true)
@@ -267,10 +281,10 @@ public class CheckRunService {
     Project project = projects.findByIdAndOwnerIdAndDeletedAtIsNull(projectId, ownerId)
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found"));
     return List.of(
-        checkRuns.findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(project, CheckFeature.GENERATE).orElse(null),
-        checkRuns.findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(project, CheckFeature.REVIEW).orElse(null),
-        checkRuns.findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(project, CheckFeature.FIX).orElse(null),
-        checkRuns.findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(project, CheckFeature.VERIFY).orElse(null)
+        checkRuns.findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(project.getId(), CheckFeature.GENERATE).orElse(null),
+        checkRuns.findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(project.getId(), CheckFeature.REVIEW).orElse(null),
+        checkRuns.findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(project.getId(), CheckFeature.FIX).orElse(null),
+        checkRuns.findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(project.getId(), CheckFeature.VERIFY).orElse(null)
     ).stream().filter(java.util.Objects::nonNull).toList();
   }
 
@@ -290,14 +304,14 @@ public class CheckRunService {
   public Optional<ProjectHealthScore> getLatestHealthScore(UUID ownerId, UUID projectId) {
     Project project = projects.findByIdAndOwnerIdAndDeletedAtIsNull(projectId, ownerId)
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found"));
-    return healthScores.findFirstByProjectIdOrderByLastComputedAtDesc(project);
+    return healthScores.findFirstByProjectIdOrderByLastComputedAtDesc(project.getId());
   }
 
   @Transactional(readOnly = true)
   public List<ProjectHealthScore> getHealthScoreHistory(UUID ownerId, UUID projectId, int limit) {
     Project project = projects.findByIdAndOwnerIdAndDeletedAtIsNull(projectId, ownerId)
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found"));
-    List<ProjectHealthScore> scores = healthScores.findByProjectIdOrderByLastComputedAtDesc(project);
+    List<ProjectHealthScore> scores = healthScores.findByProjectIdOrderByLastComputedAtDesc(project.getId());
     return scores.stream().limit(limit).toList();
   }
 
@@ -369,156 +383,82 @@ public class CheckRunService {
   public DashboardSummaryResponse getDashboardSummary(UUID ownerId) {
     List<Project> userProjects = projects.findByOwnerIdAndDeletedAtIsNull(ownerId);
     
-    // Feature summaries
-    List<FeatureSummary> featureSummaries = List.of(
-        buildFeatureSummary(userProjects, CheckFeature.GENERATE),
-        buildFeatureSummary(userProjects, CheckFeature.REVIEW),
-        buildFeatureSummary(userProjects, CheckFeature.FIX),
-        buildFeatureSummary(userProjects, CheckFeature.VERIFY)
-    );
+    // Per-project rollup first, then derive the dashboard totals from it so
+    // every number stays owner-scoped (no cross-account leakage).
+    List<ProjectSummary> projectSummaries = userProjects.stream()
+        .map(this::buildProjectSummary)
+        .collect(toList());
 
-    // Open issues by severity across all projects
-    List<SeveritySummary> severitySummaries = buildSeveritySummaries(userProjects);
+    long totalFilesVerified = projectSummaries.stream()
+        .mapToLong(ProjectSummary::filesVerified)
+        .sum();
 
-    // Last 10 runs across all features
-    List<RunSummary> lastRuns = buildLastRuns(userProjects);
+    long totalIssuesFound = projectSummaries.stream()
+        .mapToLong(ProjectSummary::issuesFound)
+        .sum();
 
-    // Trend over last 10 health score snapshots
-    List<TrendPoint> trend = buildTrend(userProjects);
-
-    // Latest health score (aggregate across projects)
-    ProjectHealthScore latestHealthScore = buildAggregateHealthScore(userProjects);
+    long totalIssuesFixed = projectSummaries.stream()
+        .mapToLong(ProjectSummary::issuesFixed)
+        .sum();
 
     return new DashboardSummaryResponse(
-        featureSummaries,
-        severitySummaries,
-        lastRuns,
-        trend,
-        latestHealthScore);
+        totalFilesVerified,
+        totalIssuesFound,
+        totalIssuesFixed,
+        projectSummaries);
   }
 
-  private FeatureSummary buildFeatureSummary(
-      List<Project> projects, CheckFeature feature) {
-    int totalRuns = 0;
-    int running = 0;
-    int succeeded = 0;
-    int failed = 0;
-    int skipped = 0;
-    Instant lastRunAt = null;
+  private ProjectSummary buildProjectSummary(Project project) {
+    // "Verified" files are the ingested files of a project that has actually
+    // been through a completed REVIEW run (legacy reviews table) or a
+    // SUCCEEDED REVIEW/VERIFY check run (unified model). A project that has
+    // only been uploaded has nothing verified yet, so it reports 0 — never a
+    // made-up count (AGENTS.md rule 11).
+    boolean reviewed = reviews.existsByProjectIdAndStatusIn(
+        project.getId(), List.of(ReviewStatus.COMPLETED));
+    boolean verifiedRun = checkRuns.existsByProjectIdAndFeatureInAndStatus(
+        project.getId(), List.of(CheckFeature.REVIEW, CheckFeature.VERIFY), CheckStatus.SUCCEEDED);
+    long filesVerified =
+        (reviewed || verifiedRun) ? files.countByProjectId(project.getId()) : 0;
 
-    for (Project project : projects) {
-      List<CheckRun> runs = checkRuns.findByProjectIdAndFeatureOrderByCreatedAtDesc(project, feature);
-      totalRuns += runs.size();
-      for (CheckRun run : runs) {
-        switch (run.getStatus()) {
-          case RUNNING -> running++;
-          case SUCCEEDED -> succeeded++;
-          case FAILED -> failed++;
-          case SKIPPED -> skipped++;
-        }
-        if (lastRunAt == null || run.getCreatedAt().isAfter(lastRunAt)) {
-          lastRunAt = run.getCreatedAt();
-        }
-      }
+    // Count open findings for this project
+    long issuesFound = checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.CRITICAL)
+        + checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.HIGH)
+        + checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.MEDIUM)
+        + checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.LOW)
+        + checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.INFO);
+    
+    // Count fixed issues for this project (FixRequest COMPLETED via Finding -> Review -> Project)
+    long issuesFixed = fixRequests.countByFindingReviewProjectIdAndStatus(project.getId(), FixRequestStatus.COMPLETED);
+    
+    // Last activity is the newest of the latest review, latest check run and
+    // the project row itself so the column stays meaningful for projects that
+    // only have reviews or were just touched.
+    Instant lastReviewAt = reviews.findFirstByProjectIdOrderByCreatedAtDesc(project.getId())
+        .map(Review::getCreatedAt)
+        .orElse(null);
+    Instant lastRunAt = checkRuns.findFirstByProjectIdOrderByCreatedAtDesc(project.getId())
+        .map(CheckRun::getCreatedAt)
+        .orElse(null);
+    Instant lastActivityAt = latest(lastRunAt, latest(lastReviewAt, project.getUpdatedAt()));
+
+    return new ProjectSummary(
+        project.getId(),
+        project.getName(),
+        filesVerified,
+        issuesFound,
+        issuesFixed,
+        lastActivityAt);
+  }
+
+  private static Instant latest(Instant a, Instant b) {
+    if (a == null) {
+      return b;
     }
-    return new FeatureSummary(
-        feature.name(), totalRuns, running, succeeded, failed, skipped, lastRunAt);
-  }
-
-  private List<SeveritySummary> buildSeveritySummaries(List<Project> projects) {
-    long critical = 0, high = 0, medium = 0, low = 0, info = 0;
-    for (Project project : projects) {
-      critical += checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.CRITICAL);
-      high += checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.HIGH);
-      medium += checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.MEDIUM);
-      low += checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.LOW);
-      info += checkRuns.countByProjectIdAndSeverity(project.getId(), com.verireview.review.FindingSeverity.INFO);
+    if (b == null) {
+      return a;
     }
-    return List.of(
-        new SeveritySummary("CRITICAL", (int) critical),
-        new SeveritySummary("HIGH", (int) high),
-        new SeveritySummary("MEDIUM", (int) medium),
-        new SeveritySummary("LOW", (int) low),
-        new SeveritySummary("INFO", (int) info)
-    );
-  }
-
-  private List<RunSummary> buildLastRuns(List<Project> projects) {
-    List<CheckRun> allRuns = projects.stream()
-        .flatMap(p -> checkRuns.findByProjectIdOrderByCreatedAtDesc(p).stream())
-        .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
-        .limit(10)
-        .toList();
-
-    return allRuns.stream()
-        .map(run -> new RunSummary(
-            run.getId(),
-            run.getFeature().name(),
-            run.getStatus().name(),
-            run.getProgress(),
-            run.getStartedAt(),
-            run.getFinishedAt(),
-            run.getDurationMs(),
-            run.getTotalSeverityCount()
-        ))
-        .toList();
-  }
-
-  private List<TrendPoint> buildTrend(List<Project> projects) {
-    List<ProjectHealthScore> scores = projects.stream()
-        .flatMap(p -> healthScores.findByProjectIdOrderByLastComputedAtDesc(p).stream())
-        .sorted((a, b) -> a.getLastComputedAt().compareTo(b.getLastComputedAt()))
-        .limit(10)
-        .toList();
-
-    return scores.stream()
-        .map(s -> new TrendPoint(
-            s.getLastComputedAt(),
-            s.getGenerateScore(),
-            s.getReviewScore(),
-            s.getFixScore(),
-            s.getVerifyScore(),
-            s.getScore()
-        ))
-        .toList();
-  }
-
-  private ProjectHealthScore buildAggregateHealthScore(List<Project> projects) {
-    if (projects.isEmpty()) {
-      return null;
-    }
-    int totalGenerate = 0, totalReview = 0, totalFix = 0, totalVerify = 0;
-    int totalCriticalHigh = 0, totalOpen = 0;
-    Double totalRatio = 0.0;
-    int count = 0;
-
-    for (Project project : projects) {
-      Optional<ProjectHealthScore> score = healthScores.findFirstByProjectIdOrderByLastComputedAtDesc(project);
-      if (score.isPresent()) {
-        ProjectHealthScore hs = score.get();
-        totalGenerate += hs.getGenerateScore();
-        totalReview += hs.getReviewScore();
-        totalFix += hs.getFixScore();
-        totalVerify += hs.getVerifyScore();
-        totalCriticalHigh += hs.getOpenCriticalHigh();
-        totalOpen += hs.getOpenFindingsTotal();
-        if (hs.getFixedVerifiedRatio() != null) {
-          totalRatio += hs.getFixedVerifiedRatio();
-          count++;
-        }
-      }
-    }
-
-    ProjectHealthScore aggregate = new ProjectHealthScore(projects.get(0));
-    aggregate.setGenerateScore(totalGenerate / projects.size());
-    aggregate.setReviewScore(totalReview / projects.size());
-    aggregate.setFixScore(totalFix / projects.size());
-    aggregate.setVerifyScore(totalVerify / projects.size());
-    aggregate.setScore((totalGenerate + totalReview + totalFix + totalVerify) / (4 * projects.size()));
-    aggregate.setOpenCriticalHigh(totalCriticalHigh);
-    aggregate.setOpenFindingsTotal(totalOpen);
-    aggregate.setFixedVerifiedRatio(count > 0 ? totalRatio / count : null);
-    return aggregate;
+    return a.isAfter(b) ? a : b;
   }
 
   public record CheckStepDefinition(int stepOrder, String name) {

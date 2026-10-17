@@ -43,14 +43,14 @@ class DashboardSummaryEmptyUserTest extends AbstractPersistenceTest {
     TokenResponse tokenResponse = objectMapper.readValue(registerResponse, TokenResponse.class);
     String accessToken = tokenResponse.accessToken();
 
-    // Call dashboard summary with the token - should return 200 with empty state
+    // Call dashboard summary with the token - should return 200 with zeros
     mockMvc.perform(get("/api/v1/dashboard/summary")
             .header("Authorization", "Bearer " + accessToken))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.features").isArray())
-        .andExpect(jsonPath("$.openIssuesBySeverity").isArray())
-        .andExpect(jsonPath("$.lastRuns").isArray())
-        .andExpect(jsonPath("$.trend").isArray());
-        // latestHealthScore can be null for empty user
+        .andExpect(jsonPath("$.totalFilesVerified").value(0))
+        .andExpect(jsonPath("$.totalIssuesFound").value(0))
+        .andExpect(jsonPath("$.totalIssuesFixed").value(0))
+        .andExpect(jsonPath("$.projects").isArray())
+        .andExpect(jsonPath("$.projects").isEmpty());
   }
 }

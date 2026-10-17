@@ -1,8 +1,8 @@
 package com.verireview.check;
 
-import com.verireview.project.Project;
 import com.verireview.review.FindingSeverity;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -19,11 +19,13 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface CheckRunRepository extends JpaRepository<CheckRun, UUID> {
 
-  List<CheckRun> findByProjectIdAndFeatureOrderByCreatedAtDesc(Project project, CheckFeature feature);
+  List<CheckRun> findByProjectIdAndFeatureOrderByCreatedAtDesc(UUID projectId, CheckFeature feature);
 
-  Optional<CheckRun> findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(Project project, CheckFeature feature);
+  Optional<CheckRun> findFirstByProjectIdAndFeatureOrderByCreatedAtDesc(UUID projectId, CheckFeature feature);
 
-  List<CheckRun> findByProjectIdOrderByCreatedAtDesc(Project project);
+  List<CheckRun> findByProjectIdOrderByCreatedAtDesc(UUID projectId);
+
+  Optional<CheckRun> findFirstByProjectIdOrderByCreatedAtDesc(UUID projectId);
 
   List<CheckRun> findByGenerationIdOrderByCreatedAtDesc(UUID generationId);
 
@@ -34,7 +36,10 @@ public interface CheckRunRepository extends JpaRepository<CheckRun, UUID> {
 
   List<CheckRun> findByStatusIn(List<CheckStatus> statuses);
 
-  Page<CheckRun> findByProjectId(Project project, Pageable pageable);
+  boolean existsByProjectIdAndFeatureInAndStatus(
+      UUID projectId, Collection<CheckFeature> features, CheckStatus status);
+
+  Page<CheckRun> findByProjectId(UUID projectId, Pageable pageable);
 
   @Query("SELECT COUNT(f) FROM Finding f WHERE f.review.project.id = :projectId AND f.severity = :severity AND f.status = 'OPEN'")
   long countByProjectIdAndSeverity(@Param("projectId") UUID projectId, @Param("severity") FindingSeverity severity);
