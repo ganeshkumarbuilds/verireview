@@ -45,6 +45,19 @@ export function LoginPage() {
     }
   };
 
+  const handleReset = async () => {
+    setResetError(null);
+    setResetBusy(true);
+    try {
+      await requestPasswordReset(apiClient(), resetEmail);
+      setResetSent(true);
+    } catch (err) {
+      setResetError(err instanceof ApiError ? err.message : 'Request failed.');
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
   return (
     <AuthLayout>
       <div className="rounded-3xl border border-indigo-100 bg-white px-6 py-10 shadow-md shadow-indigo-100 sm:px-12">
@@ -83,29 +96,16 @@ export function LoginPage() {
                 setResetSent(false);
                 setResetError(null);
               }}
-              className="text-[15px] font-medium text-indigo-600 hover:text-indigo-700 hover:underline"
+              className="rounded text-[15px] font-medium text-indigo-600 hover:text-indigo-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
             >
               Forgot password?
             </button>
+            {/* This panel must not be a <form>: it sits inside the login form. */}
             {resetHint && (
-              <form
+              <div
+                role="group"
                 aria-label="Password reset form"
                 className="mt-2 space-y-2 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-3"
-                onSubmit={async (event) => {
-                  event.preventDefault();
-                  setResetError(null);
-                  setResetBusy(true);
-                  try {
-                    await requestPasswordReset(apiClient(), resetEmail);
-                    setResetSent(true);
-                  } catch (err) {
-                    setResetError(
-                      err instanceof ApiError ? err.message : 'Request failed.',
-                    );
-                  } finally {
-                    setResetBusy(false);
-                  }
-                }}
               >
                 {resetSent ? (
                   <p className="text-sm text-slate-600">
@@ -117,9 +117,14 @@ export function LoginPage() {
                     <PillField icon={<EnvelopeIcon />}>
                       <input
                         type="email"
-                        required
                         value={resetEmail}
                         onChange={(event) => setResetEmail(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            void handleReset();
+                          }
+                        }}
                         autoComplete="email"
                         placeholder="Email id"
                         aria-label="Reset email"
@@ -132,15 +137,16 @@ export function LoginPage() {
                       </p>
                     )}
                     <button
-                      type="submit"
+                      type="button"
+                      onClick={() => void handleReset()}
                       disabled={resetBusy}
-                      className="w-full rounded-full bg-indigo-600 py-2 text-[15px] font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 disabled:opacity-60"
+                      className="w-full rounded-full bg-indigo-600 py-2 text-[15px] font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-60"
                     >
                       {resetBusy ? 'Sending…' : 'Send reset link'}
                     </button>
                   </>
                 )}
-              </form>
+              </div>
             )}
           </div>
           {error && (
@@ -151,14 +157,14 @@ export function LoginPage() {
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded-full bg-indigo-600 py-3 text-lg font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 disabled:opacity-60"
+            className="w-full rounded-full bg-indigo-600 py-3 text-lg font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-60"
           >
             {busy ? 'Signing in…' : 'Login'}
           </button>
         </form>
         <p className="mt-6 text-center text-[15px] text-indigo-950/60">
           Don&apos;t have an account?{' '}
-          <Link to="/register" className="font-medium text-indigo-600 hover:text-indigo-700 hover:underline">
+          <Link to="/register" className="rounded font-medium text-indigo-600 hover:text-indigo-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2">
             Sign up
           </Link>
         </p>

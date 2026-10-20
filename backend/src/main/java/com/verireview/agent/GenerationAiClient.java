@@ -53,6 +53,8 @@ public class GenerationAiClient {
     root.put("backend", request.backend());
     root.put("frontend", request.frontend());
     root.put("database", request.database());
+    root.put("auth", request.auth());
+    root.put("integrations", request.integrations());
     root.put("db_host", request.dbHost());
     root.put("db_port", request.dbPort());
     root.put("db_name", request.dbName());
@@ -73,6 +75,8 @@ public class GenerationAiClient {
     root.put("backend", request.backend());
     root.put("frontend", request.frontend());
     root.put("database", request.database());
+    root.put("auth", request.auth());
+    root.put("integrations", request.integrations());
     root.put("db_host", request.dbHost());
     root.put("db_port", request.dbPort());
     root.put("db_name", request.dbName());
@@ -98,8 +102,6 @@ public class GenerationAiClient {
     final String body;
     try {
       body = objects.writeValueAsString(root);
-        System.err.println("POSTING BODY: " + body);   // ADD THIS LINE
-
     } catch (Exception e) {
       throw new IllegalStateException("Could not encode AI generation request", e);
     }

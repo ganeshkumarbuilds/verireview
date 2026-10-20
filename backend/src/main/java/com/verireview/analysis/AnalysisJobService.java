@@ -20,6 +20,8 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
@@ -63,8 +65,28 @@ public class AnalysisJobService {
     Review review = new Review(project);
     reviews.save(review);
     audits.record(project.getOwner(), "ANALYSIS_STARTED", "review", review.getId().toString());
-    runner.runAsync(review.getId());
+    dispatchAfterCommit(review.getId());
     return review;
+  }
+
+  /**
+   * Hands the job to the async runner only after this creation transaction
+   * commits. Dispatching inline would let the worker's {@link #snapshot(UUID)}
+   * read race the commit, miss the row, and return early -- stranding the
+   * review in QUEUED forever with no error anywhere. Same guard the
+   * generation runner already uses.
+   */
+  private void dispatchAfterCommit(UUID reviewId) {
+    if (TransactionSynchronizationManager.isSynchronizationActive()) {
+      TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        @Override
+        public void afterCommit() {
+          runner.runAsync(reviewId);
+        }
+      });
+    } else {
+      runner.runAsync(reviewId);
+    }
   }
 
   /** Detached snapshot for the worker (no lazy loading outside transactions). */

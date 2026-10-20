@@ -169,6 +169,19 @@ public class GenerationRunner {
       GenerationExecutionEvidence evidence = generations.executionEvidence()
           .findById(evidenceId).orElseThrow();
 
+      if (evidence.getBuildStatus() == GenerationExecutionEvidence.BuildStatus.SKIPPED) {
+        // The Docker sandbox is disabled: build/tests never ran. Record the
+        // fact honestly (SKIPPED, "Not verified"), still run code review, and
+        // keep the download gate locked because no verification is VERIFIED.
+        generations.markStatus(generationId, GenerationStatus.VERIFYING, null);
+        UUID skippedRunId = generations.createVerificationRun(
+            generationId, iteration, evidenceId);
+        runSkippedVerification(generationId, snapshot, iteration, evidence, skippedRunId);
+        generations.markStatus(generationId, GenerationStatus.REVIEWING, null);
+        runReviewing(generationId, snapshot, iteration);
+        return;
+      }
+
       if (evidence.getBuildStatus() != GenerationExecutionEvidence.BuildStatus.SUCCESS) {
         fail(generationId, snapshot.ownerId(),
             "Build failed: " + evidence.getFailureReason());
@@ -251,7 +264,8 @@ public class GenerationRunner {
     String promptVersion = template ? GenerationTemplates.TEMPLATE_VERSION : PROMPT_VERSION;
     String hash = GenerationService.inputHash(
         snapshot.requirement(), snapshot.backend().name(), snapshot.frontend().name(),
-        snapshot.database().name(), snapshot.aiModel(), promptVersion, String.valueOf(iteration));
+        snapshot.database().name(), snapshot.auth().name(), snapshot.integrations().toString(),
+        snapshot.aiModel(), promptVersion, String.valueOf(iteration));
     UUID executionId = generations.startAgentExecution(
         generationId, AgentType.PLANNING, snapshot.aiModel(), promptVersion, hash);
     long startedNanos = System.nanoTime();
@@ -287,7 +301,8 @@ public class GenerationRunner {
     String promptVersion = template ? GenerationTemplates.TEMPLATE_VERSION : PROMPT_VERSION;
     String hash = GenerationService.inputHash(
         snapshot.requirement(), snapshot.backend().name(), snapshot.frontend().name(),
-        snapshot.database().name(), snapshot.aiModel(), promptVersion,
+        snapshot.database().name(), snapshot.auth().name(), snapshot.integrations().toString(),
+        snapshot.aiModel(), promptVersion,
         String.valueOf(iteration), String.valueOf(plan.size()));
     UUID executionId = generations.startAgentExecution(
         generationId, AgentType.CODING, snapshot.aiModel(), promptVersion, hash);
@@ -350,6 +365,8 @@ public class GenerationRunner {
         snapshot.backend().name(),
         snapshot.frontend().name(),
         snapshot.database().name(),
+        snapshot.auth().name(),
+        snapshot.integrations().stream().map(Enum::name).toList(),
         snapshot.dbHost(),
         snapshot.dbPort(),
         snapshot.dbName(),
@@ -381,6 +398,8 @@ public class GenerationRunner {
         snapshot.backend().name(),
         snapshot.frontend().name(),
         snapshot.database().name(),
+        snapshot.auth().name(),
+        snapshot.integrations().stream().map(Enum::name).toList(),
         snapshot.dbHost(),
         snapshot.dbPort(),
         snapshot.dbName(),
@@ -557,7 +576,12 @@ public class GenerationRunner {
     GenerationExecutionEvidence.TestStatus testStatus;
     String failureReason = null;
 
-    if (result.timedOut()) {
+    if (result.skipped()) {
+      // Docker sandbox disabled: nothing was built or tested. Never SUCCESS.
+      buildStatus = GenerationExecutionEvidence.BuildStatus.SKIPPED;
+      testStatus = GenerationExecutionEvidence.TestStatus.SKIPPED;
+      failureReason = "Not verified: Docker sandbox is disabled";
+    } else if (result.timedOut()) {
       buildStatus = GenerationExecutionEvidence.BuildStatus.TIMEOUT;
       testStatus = GenerationExecutionEvidence.TestStatus.TIMEOUT;
       failureReason = "Build timed out after " + sandboxRunner.getExecutionTimeoutSeconds() + "s";
@@ -586,6 +610,31 @@ public class GenerationRunner {
     return generations.recordExecutionEvidence(generationId, iteration, command,
         result.exitCode(), result.durationMs(), stdout, stderr,
         buildStatus, testStatus, failureReason);
+  }
+
+  /**
+   * Honest verification for a skipped sandbox run. The verdict is REJECTED
+   * (never VERIFIED), the agent execution is SKIPPED, and the generation moves
+   * to NOT_VERIFIED so the UI can say "Not verified" without pretending a
+   * build or test happened.
+   */
+  private void runSkippedVerification(UUID generationId,
+      GenerationService.GenerationSnapshot snapshot, int iteration,
+      GenerationExecutionEvidence evidence, UUID verificationRunId) {
+    String hash = GenerationService.inputHash(
+        snapshot.id().toString(), String.valueOf(iteration), "sandbox-skipped",
+        evidence.getCommand());
+    UUID executionId = generations.startAgentExecution(
+        generationId, AgentType.VERIFIED, snapshot.aiModel(),
+        GenerationTemplates.TEMPLATE_VERSION, hash);
+    long startedNanos = System.nanoTime();
+    generations.updateVerificationRun(verificationRunId,
+        0, 0, 0, 0, VerificationVerdict.REJECTED, "sandbox-unavailable",
+        millisSince(startedNanos));
+    generations.finishAgentExecution(executionId, AgentExecutionStatus.SKIPPED,
+        "Not verified: Docker sandbox is disabled", millisSince(startedNanos),
+        "verification:" + verificationRunId);
+    generations.markStatus(generationId, GenerationStatus.NOT_VERIFIED, null);
   }
 
   /**
@@ -823,6 +872,16 @@ public class GenerationRunner {
     GenerationExecutionEvidence evidence = generations.executionEvidence()
         .findById(evidenceId).orElseThrow();
 
+    if (evidence.getBuildStatus() == GenerationExecutionEvidence.BuildStatus.SKIPPED) {
+      generations.markStatus(generationId, GenerationStatus.REVERIFYING, null);
+      UUID skippedRunId = generations.createVerificationRun(
+          generationId, iteration, evidenceId);
+      runSkippedVerification(generationId, snapshot, iteration, evidence, skippedRunId);
+      generations.markStatus(generationId, GenerationStatus.REVIEWING, null);
+      runReReview(generationId, snapshot, iteration);
+      return;
+    }
+
     if (evidence.getBuildStatus() != GenerationExecutionEvidence.BuildStatus.SUCCESS) {
       fail(generationId, snapshot.ownerId(),
           "Rebuild failed: " + evidence.getFailureReason());
@@ -903,11 +962,13 @@ public class GenerationRunner {
       return "npm test";
     }
     // Frontend commands (if no backend)
-    if (frontend == GenerationFrontend.REACT_TYPESCRIPT) {
+    if (frontend == GenerationFrontend.REACT_TYPESCRIPT
+        || frontend == GenerationFrontend.NEXTJS
+        || frontend == GenerationFrontend.VUE) {
       return "npm test";
     }
-    // Python-only projects
-    if (database != GenerationDatabase.NONE && backend == null) {
+    // Database-only projects keep the Python toolchain check.
+    if (database != GenerationDatabase.NONE && backend == GenerationBackend.NONE) {
       return "pytest -v";
     }
     return "echo 'no build command for stack' && exit 1";
@@ -928,6 +989,7 @@ public class GenerationRunner {
       case JAVA_SPRING_BOOT -> "java";
       case PYTHON_FASTAPI -> "python";
       case NODEJS -> "javascript";
+      case NONE -> null;
     };
   }
 

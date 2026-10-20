@@ -55,6 +55,25 @@ public class VerificationService {
     verification.setBuildStatus(mapBuildStatus(execution));
     verification.setDurationMs(execution.getDurationMs());
     verification.setLogRef(truncate(execution.getStdout(), 1000));
+
+    // Honest verification: when the Docker sandbox is disabled nothing actually
+    // ran, so a skip can never be reported as VERIFIED.
+    boolean sandboxSkipped = execution.getStatus() == ExecutionStatus.SKIPPED
+        || execution.getBuildStatus() == BuildStatus.SKIPPED;
+    if (sandboxSkipped) {
+      verification.setTestsTotal(0);
+      verification.setTestsPassed(0);
+      verification.setTestsFailed(0);
+      verification.setTestsSkipped(0);
+      verification.setVerdict(VerificationVerdict.PENDING);
+      verification.setStaticDelta(
+          "{\"sandboxUnavailable\":true,\"hasNewCriticalHigh\":false,\"buildPassed\":false,\"testsPassed\":false}");
+      verifications.save(verification);
+      audits.record(project.getOwner(), "VERIFICATION_SKIPPED", "verification_run",
+          verification.getId().toString());
+      return verification;
+    }
+
     // For now, assume tests total/passed based on exit code; real test parsing would be here
     if (execution.getExitCode() != null && execution.getExitCode() == 0) {
       verification.setTestsTotal(1);
@@ -82,7 +101,7 @@ public class VerificationService {
     verification.setVerdict(verified ? VerificationVerdict.VERIFIED : VerificationVerdict.REJECTED);
 
     // Persist evidence: static delta indicates if new critical/high was found
-    String staticDelta = "{\"hasNewCriticalHigh\":" + !noNewCriticalHigh + ",\"buildPassed\":" + buildPassed + ",\"testsPassed\":" + testsPassed + "}";
+    String staticDelta = "{\"sandboxUnavailable\":false,\"hasNewCriticalHigh\":" + !noNewCriticalHigh + ",\"buildPassed\":" + buildPassed + ",\"testsPassed\":" + testsPassed + "}";
     verification.setStaticDelta(staticDelta);
 
     verifications.save(verification);
@@ -106,6 +125,7 @@ public class VerificationService {
       case TIMEOUT -> BuildStatus.TIMEOUT;
       case PENDING -> BuildStatus.PENDING;
       case RUNNING -> BuildStatus.RUNNING;
+      case SKIPPED -> BuildStatus.SKIPPED;
     };
   }
 
@@ -127,6 +147,9 @@ public class VerificationService {
   public VerificationRun getVerification(UUID ownerId, UUID verificationId) {
     VerificationRun run = verifications.findById(verificationId)
         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Verification not found"));
+    if (run.getPatch() == null) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Verification not found");
+    }
     Project project = run.getPatch().getFixRequest().getFinding().getReview().getProject();
     if (project.getDeletedAt() != null || !project.getOwner().getId().equals(ownerId)) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Verification not found");
@@ -171,9 +194,10 @@ public class VerificationService {
   }
 
   public static com.verireview.verification.dto.VerificationRunResponse toResponse(VerificationRun run) {
+    boolean sandboxSkipped = run.getBuildStatus() == BuildStatus.SKIPPED;
     return new com.verireview.verification.dto.VerificationRunResponse(
         run.getId(),
-        run.getPatch().getId(),
+        run.getPatch() != null ? run.getPatch().getId() : null,
         run.getExecutionRun() != null ? run.getExecutionRun().getId() : null,
         run.getBuildStatus(),
         run.getTestsTotal(),
@@ -184,6 +208,7 @@ public class VerificationService {
         run.getLogRef(),
         run.getDurationMs(),
         run.getCreatedAt(),
-        run.getUpdatedAt());
+        run.getUpdatedAt(),
+        sandboxSkipped);
   }
 }

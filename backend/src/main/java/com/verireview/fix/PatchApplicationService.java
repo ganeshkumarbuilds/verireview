@@ -38,18 +38,21 @@ public class PatchApplicationService {
   private final ProjectStorage storage;
   private final AuditService audits;
   private final UserRepository users;
+  private final PatchSnapshotRepository snapshots;
 
   public PatchApplicationService(
       PatchRepository patches,
       PatchService patchService,
       ProjectStorage storage,
       AuditService audits,
-      UserRepository users) {
+      UserRepository users,
+      PatchSnapshotRepository snapshots) {
     this.patches = patches;
     this.patchService = patchService;
     this.storage = storage;
     this.audits = audits;
     this.users = users;
+    this.snapshots = snapshots;
   }
 
   @Transactional
@@ -108,6 +111,10 @@ public class PatchApplicationService {
       Path backupSnapshot = backupDir.resolve("snapshot");
       copyDirectory(targetDir, backupSnapshot);
 
+      // Capture the exact pre-apply content of every touched file so a Revert
+      // can deterministically restore it later.
+      List<PatchSnapshot> captured = captureSnapshots(patch, targetDir, filePatches);
+
       // Apply each file patch
       try {
         for (FilePatch fp : filePatches) {
@@ -123,7 +130,9 @@ public class PatchApplicationService {
         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Failed to apply patch: " + e.getMessage());
       }
 
-      // Success: update status to APPLIED
+      // Success: persist revert snapshots and update status to APPLIED
+      snapshots.deleteByPatchId(patch.getId());
+      snapshots.saveAll(captured);
       patch.setStatus(PatchStatus.APPLIED);
       patches.save(patch);
 
@@ -142,6 +151,93 @@ public class PatchApplicationService {
         storage.deleteQuietly(backupDir);
       }
     }
+  }
+
+  /**
+   * Rolls back an applied patch, restoring the exact previous content of every
+   * file it touched from the persisted snapshots (AGENTS.md rule 20).
+   */
+  @Transactional
+  public PatchResponse revertPatch(UUID ownerId, UUID patchId) {
+    Patch patch = ownedPatch(ownerId, patchId);
+    if (patch.getStatus() != PatchStatus.APPLIED) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Only an applied patch can be reverted");
+    }
+    List<PatchSnapshot> captured = snapshots.findByPatchIdOrderByFilePathAsc(patchId);
+    if (captured.isEmpty()) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "No snapshot is available to revert this patch");
+    }
+
+    Project project = patch.getProject();
+    Generation generation = patch.getGeneration();
+    Path targetDir;
+    UUID ownerIdForAudit;
+    String entityType;
+    String entityId;
+    if (generation != null) {
+      targetDir = storage.generationWorkspaceDir(generation.getId(), generation.getIteration());
+      ownerIdForAudit = generation.getOwner().getId();
+      entityType = "generation";
+      entityId = generation.getId().toString();
+    } else if (project != null) {
+      if (project.getDeletedAt() != null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found");
+      }
+      targetDir = storage.projectDir(project.getId());
+      ownerIdForAudit = project.getOwner().getId();
+      entityType = "project";
+      entityId = project.getId().toString();
+    } else {
+      throw new ResponseStatusException(
+          HttpStatus.NOT_FOUND, "Patch has no associated project or generation");
+    }
+
+    for (PatchSnapshot snapshot : captured) {
+      Path target = storage.resolveJailed(targetDir, snapshot.getFilePath());
+      try {
+        if (snapshot.isExisted()) {
+          Files.createDirectories(target.getParent());
+          Files.writeString(
+              target,
+              snapshot.getPreviousContent() == null ? "" : snapshot.getPreviousContent(),
+              StandardCharsets.UTF_8);
+        } else {
+          Files.deleteIfExists(target);
+        }
+      } catch (IOException e) {
+        throw new ResponseStatusException(
+            HttpStatus.INTERNAL_SERVER_ERROR, "Failed to revert " + snapshot.getFilePath());
+      }
+    }
+
+    patch.setStatus(PatchStatus.REVERTED);
+    patches.save(patch);
+
+    User actor = users.getReferenceById(ownerIdForAudit);
+    audits.record(actor, "PATCH_REVERTED", entityType, entityId);
+
+    return PatchService.toResponse(patch);
+  }
+
+  private List<PatchSnapshot> captureSnapshots(Patch patch, Path targetDir, List<FilePatch> filePatches) {
+    List<PatchSnapshot> captured = new ArrayList<>();
+    for (FilePatch fp : filePatches) {
+      Path target = storage.resolveJailed(targetDir, fp.relativePath);
+      if (Files.isRegularFile(target)) {
+        try {
+          String content = Files.readString(target, StandardCharsets.UTF_8);
+          captured.add(new PatchSnapshot(patch, fp.relativePath, true, content));
+        } catch (IOException e) {
+          throw new ResponseStatusException(
+              HttpStatus.INTERNAL_SERVER_ERROR, "Failed to snapshot " + fp.relativePath);
+        }
+      } else {
+        captured.add(new PatchSnapshot(patch, fp.relativePath, false, null));
+      }
+    }
+    return captured;
   }
 
   private Patch ownedPatch(UUID ownerId, UUID patchId) {

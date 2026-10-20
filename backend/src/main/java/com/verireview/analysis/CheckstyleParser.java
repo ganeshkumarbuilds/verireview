@@ -1,5 +1,6 @@
 package com.verireview.analysis;
 
+import com.verireview.execution.SandboxRunner;
 import com.verireview.review.FindingCategory;
 import com.verireview.review.FindingSeverity;
 import java.nio.file.Path;
@@ -86,6 +87,19 @@ final class CheckstyleParser {
     String prefix = root.endsWith("/") ? root : root + "/";
     if (unified.startsWith(prefix)) {
       return unified.substring(prefix.length());
+    }
+    // Reports are produced inside the analysis container, which mounts the
+    // snapshot at SandboxRunner.CONTAINER_SOURCE_DIR. Their paths therefore
+    // name the container mount ("/src/Sample.java"), never the host snapshot
+    // path -- strip it, or every finding keeps a bogus "src/" prefix that
+    // matches no project file.
+    String containerRoot = SandboxRunner.CONTAINER_SOURCE_DIR;
+    if (unified.equals(containerRoot)) {
+      return ".";
+    }
+    String containerPrefix = containerRoot + "/";
+    if (unified.startsWith(containerPrefix)) {
+      return unified.substring(containerPrefix.length());
     }
     if (unified.startsWith("/")) {
       // Absolute path from another root: keep the structure, drop the anchor.

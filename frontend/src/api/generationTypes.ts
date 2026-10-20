@@ -3,9 +3,19 @@
  * body only; they are never stored locally and never appear in responses.
  */
 
-export type GenerationBackend = 'JAVA_SPRING_BOOT' | 'PYTHON_FASTAPI' | 'NODEJS';
-export type GenerationFrontend = 'REACT_TYPESCRIPT' | 'NONE';
-export type GenerationDatabase = 'POSTGRESQL' | 'MYSQL' | 'MONGODB' | 'NONE';
+export type GenerationBackend = 'JAVA_SPRING_BOOT' | 'PYTHON_FASTAPI' | 'NODEJS' | 'NONE';
+export type GenerationFrontend = 'REACT_TYPESCRIPT' | 'NEXTJS' | 'VUE' | 'NONE';
+export type GenerationDatabase = 'POSTGRESQL' | 'MYSQL' | 'MONGODB' | 'SQLITE' | 'NONE';
+export type GenerationAuth = 'JWT' | 'OAUTH_GOOGLE' | 'NONE';
+export type GenerationIntegration =
+  | 'STRIPE'
+  | 'RAZORPAY'
+  | 'EMAIL'
+  | 'FILE_STORAGE_S3'
+  | 'AI_LLM'
+  | 'MAPS'
+  | 'ANALYTICS'
+  | 'DOCKER_CI';
 export type GenerationAiProvider = 'OPENROUTER' | 'CUSTOM' | 'NONE';
 export type GenerationStatus =
   | 'DRAFT'
@@ -17,6 +27,7 @@ export type GenerationStatus =
   | 'BUILDING'
   | 'TESTING'
   | 'VERIFYING'
+  | 'NOT_VERIFIED'
   | 'VERIFIED'
   | 'REVIEWING'
   | 'REVIEWED'
@@ -51,6 +62,8 @@ export interface CreateGenerationInput {
   backend: GenerationBackend;
   frontend: GenerationFrontend;
   database: GenerationDatabase;
+  auth?: GenerationAuth;
+  integrations?: GenerationIntegration[];
   databaseConfig?: GenerationDatabaseInput;
   aiConfig: GenerationAiInput;
   /** Draft mode persists configuration only: secrets optional, nothing dispatched. */
@@ -64,6 +77,8 @@ export interface UpdateGenerationInput {
   backend?: GenerationBackend;
   frontend?: GenerationFrontend;
   database?: GenerationDatabase;
+  auth?: GenerationAuth;
+  integrations?: GenerationIntegration[];
   databaseConfig?: {
     host?: string;
     port?: number;
@@ -108,6 +123,8 @@ export interface GenerationResponse {
   backend: GenerationBackend;
   frontend: GenerationFrontend;
   database: GenerationDatabase;
+  auth: GenerationAuth;
+  integrations: GenerationIntegration[];
   databaseConfig: GenerationDatabaseView | null;
   aiConfig: GenerationAiView;
   status: GenerationStatus;
@@ -122,6 +139,7 @@ export interface GenerationResponse {
   workflowStats: WorkflowStatsView | null;
   verification: VerificationView | null;
   review: ReviewView | null;
+  execution: ExecutionView | null;
   agentWorkflow: AgentStepView[];
   downloadReady: boolean;
   previewReady: boolean;
@@ -146,6 +164,60 @@ export interface PlanView {
   directories: string[];
   apis: string;
   steps: string[];
+  files: PlanFileView[];
+}
+
+export interface PlanFileView {
+  path: string;
+  purpose: string;
+}
+
+/** Step-4 scaffold preview (not persisted, no job created). */
+export interface PlanPreviewInput {
+  requirement: string;
+  backend: GenerationBackend;
+  frontend: GenerationFrontend;
+  database: GenerationDatabase;
+  auth?: GenerationAuth;
+  integrations?: GenerationIntegration[];
+}
+
+export interface PlanPreviewResponse {
+  architecture: string;
+  dependencies: string[];
+  directories: string[];
+  apis: string;
+  steps: string[];
+  files: PlanFileView[];
+  notes: string;
+}
+
+export interface GenerationFileView {
+  path: string;
+  sizeBytes: number;
+}
+
+export interface GenerationFileContentView {
+  path: string;
+  content: string | null;
+  truncated: boolean;
+  binary: boolean;
+}
+
+export type RestructurePreset = 'MVC' | 'LAYERED' | 'FEATURE_FOLDERS' | 'CUSTOM';
+
+export interface RestructureView {
+  id: string;
+  generationId: string;
+  iteration: number;
+  preset: string;
+  description: string | null;
+  status: 'PROPOSED' | 'APPLIED' | 'REVERTED' | 'REJECTED';
+  moves: { from: string; to: string }[];
+  directories: string[];
+  notes: string;
+  canRevert: boolean;
+  createdAt: string;
 }
 
 export interface WorkflowStatsView {
@@ -179,5 +251,20 @@ export interface AgentStepView {
   status: string;
   durationMs: number | null;
   error: string | null;
+  createdAt: string;
+}
+
+/**
+ * Latest sandbox evidence. `notVerified` is true when Docker was disabled and
+ * nothing was built or tested — the UI must never render that as success.
+ */
+export interface ExecutionView {
+  command: string;
+  exitCode: number;
+  buildStatus: string;
+  testStatus: string;
+  failureReason: string | null;
+  durationMs: number;
+  notVerified: boolean;
   createdAt: string;
 }

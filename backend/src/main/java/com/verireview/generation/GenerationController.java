@@ -3,8 +3,14 @@ package com.verireview.generation;
 import com.verireview.common.PagedResponse;
 import com.verireview.generation.dto.CreateGenerationRequest;
 import com.verireview.generation.dto.CreateGenerationRevisionRequest;
+import com.verireview.generation.dto.GenerationFileContentView;
+import com.verireview.generation.dto.GenerationFileView;
 import com.verireview.generation.dto.GenerationResponse;
 import com.verireview.generation.dto.GenerationRevisionResponse;
+import com.verireview.generation.dto.PlanPreviewRequest;
+import com.verireview.generation.dto.PlanPreviewResponse;
+import com.verireview.generation.dto.RestructureProposalRequest;
+import com.verireview.generation.dto.RestructureView;
 import com.verireview.generation.dto.StartGenerationRequest;
 import com.verireview.generation.dto.UpdateGenerationRequest;
 import com.verireview.security.VeriReviewUserDetails;
@@ -24,6 +30,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -42,9 +49,12 @@ import org.springframework.web.bind.annotation.RestController;
 public class GenerationController {
 
   private final GenerationService generations;
+  private final GenerationRestructureService restructures;
 
-  public GenerationController(GenerationService generations) {
+  public GenerationController(GenerationService generations,
+      GenerationRestructureService restructures) {
     this.generations = generations;
+    this.restructures = restructures;
   }
 
   @PostMapping
@@ -66,11 +76,73 @@ public class GenerationController {
     return ResponseEntity.ok(generations.list(principal.getId(), pageable));
   }
 
+  @PostMapping("/plan-preview")
+  public ResponseEntity<PlanPreviewResponse> previewPlan(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @Valid @RequestBody PlanPreviewRequest request) {
+    return ResponseEntity.ok(generations.previewPlan(principal.getId(), request));
+  }
+
   @GetMapping("/{id}")
   public ResponseEntity<GenerationResponse> get(
       @AuthenticationPrincipal VeriReviewUserDetails principal,
       @PathVariable("id") UUID id) {
     return ResponseEntity.ok(generations.get(principal.getId(), id));
+  }
+
+  /** Files actually present in the latest generated workspace (paths only). */
+  @GetMapping("/{id}/files")
+  public ResponseEntity<List<GenerationFileView>> files(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id) {
+    return ResponseEntity.ok(generations.listFiles(principal.getId(), id));
+  }
+
+  @GetMapping("/{id}/file")
+  public ResponseEntity<GenerationFileContentView> file(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id,
+      @RequestParam("path") String path) {
+    return ResponseEntity.ok(generations.readFile(principal.getId(), id, path));
+  }
+
+  /** Hands a reviewed generation to Review by materializing a Project. */
+  @PostMapping("/{id}/send-to-review")
+  public ResponseEntity<GenerationResponse> sendToReview(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id) {
+    return ResponseEntity.ok(generations.sendToReview(principal.getId(), id));
+  }
+
+  @PostMapping("/{id}/restructure/proposals")
+  public ResponseEntity<RestructureView> proposeRestructure(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id,
+      @Valid @RequestBody RestructureProposalRequest request) {
+    return ResponseEntity.status(HttpStatus.CREATED)
+        .body(restructures.propose(principal.getId(), id, request));
+  }
+
+  @GetMapping("/{id}/restructure/proposals")
+  public ResponseEntity<List<RestructureView>> listRestructures(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id) {
+    return ResponseEntity.ok(restructures.list(principal.getId(), id));
+  }
+
+  @PostMapping("/{id}/restructure/proposals/{proposalId}/apply")
+  public ResponseEntity<RestructureView> applyRestructure(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id,
+      @PathVariable("proposalId") UUID proposalId) {
+    return ResponseEntity.ok(restructures.apply(principal.getId(), id, proposalId));
+  }
+
+  @PostMapping("/{id}/restructure/revert")
+  public ResponseEntity<RestructureView> revertRestructure(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id) {
+    return ResponseEntity.ok(restructures.revert(principal.getId(), id));
   }
 
   @PatchMapping("/{id}")

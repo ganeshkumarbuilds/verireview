@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '../api/client';
 import { createFixRequest, listFixRequests } from '../api/fixRequests';
 import type { FindingResponse, FixRequestResponse } from '../api/types';
 import { apiClient, useAuth } from '../auth/AuthContext';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { FixWorkflow } from './FixWorkflow';
 import { Badge } from './ui';
 
@@ -109,7 +110,8 @@ function formatDate(value: string): string {
 interface FindingDetailProps {
   finding: FindingResponse;
   onClose: () => void;
-  onViewFile: (path: string) => void;
+  /** Optional: omit when the surrounding feature has no file browser. */
+  onViewFile?: (path: string) => void;
 }
 
 /** Slide-over detail panel with clean code-review UX. */
@@ -134,6 +136,21 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
+
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const scopeNoteRef = useRef<HTMLTextAreaElement | null>(null);
+  // The panel traps focus while open; the nested fix-request dialog takes over
+  // when it is shown so Escape only closes the top-most surface.
+  const panelRef = useFocusTrap<HTMLDivElement>(!dialogOpen, onClose, closeButtonRef);
+  const fixDialogRef = useFocusTrap<HTMLDivElement>(
+    dialogOpen,
+    () => {
+      if (!submitting) {
+        setDialogOpen(false);
+      }
+    },
+    scopeNoteRef,
+  );
 
   const loadFixRequests = useCallback(async () => {
     if (!token) return;
@@ -193,13 +210,17 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
   };
 
   return (
-    <div className="fixed inset-0 z-50" role="dialog" aria-label="Finding details">
+    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Finding details">
       <div
         aria-hidden="true"
         onClick={onClose}
         className="absolute inset-0 h-full w-full bg-indigo-950/40 backdrop-blur-[2px]"
       />
-      <div className="absolute inset-y-0 right-0 flex w-full max-w-lg flex-col border-l border-indigo-100 bg-white shadow-2xl">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="absolute inset-y-0 right-0 flex w-full max-w-lg flex-col border-l border-indigo-100 bg-white shadow-2xl"
+      >
         <div className="flex shrink-0 items-start gap-2 border-b border-indigo-100 bg-indigo-50/40 p-4">
           <div className="min-w-0 flex-1">
             <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
@@ -207,11 +228,12 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
               <Badge tone={sourceTone(finding.source)}>{finding.source}</Badge>
               <Badge tone="gray">{finding.status}</Badge>
             </div>
-            <h3 className="font-mono text-sm font-bold text-indigo-950">
+            <h3 className="break-all font-mono text-sm font-bold text-indigo-950">
               {finding.rule ?? finding.title}
             </h3>
           </div>
           <button
+            ref={closeButtonRef}
             type="button"
             onClick={onClose}
             aria-label="Close finding details"
@@ -233,8 +255,8 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
             <h4 className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
               Location
             </h4>
-            <p className="rounded-lg bg-indigo-50/60 px-3 py-2 font-mono text-xs text-indigo-950">{lineRef}</p>
-            {finding.filePath && (
+            <p className="break-all rounded-lg bg-indigo-50/60 px-3 py-2 font-mono text-xs text-indigo-950">{lineRef}</p>
+            {finding.filePath && onViewFile && (
               <button
                 type="button"
                 onClick={() => onViewFile(finding.filePath as string)}
@@ -362,15 +384,20 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
         <div
           className="absolute inset-0 z-10 flex items-center justify-center bg-indigo-950/40 p-4 backdrop-blur-[2px]"
           role="dialog"
+          aria-modal="true"
           aria-label="Fix request dialog"
         >
-          <div className="w-full max-w-md rounded-2xl border border-indigo-100 bg-white p-5 shadow-2xl sm:p-6">
+          <div
+            ref={fixDialogRef}
+            tabIndex={-1}
+            className="w-full max-w-md rounded-2xl border border-indigo-100 bg-white p-5 shadow-2xl sm:p-6"
+          >
             <h3 className="text-base font-bold tracking-tight text-indigo-950">Fix this issue</h3>
             <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
               <p className="font-mono text-sm font-semibold text-indigo-950">
                 {finding.rule ?? finding.title}
               </p>
-              <p className="mt-1 font-mono text-xs text-slate-500">
+              <p className="mt-1 break-all font-mono text-xs text-slate-500">
                 {finding.filePath ?? '—'}
                 {finding.lineStart != null ? `:${finding.lineStart}` : ''}
                 {' · '}
@@ -386,6 +413,7 @@ export function FindingDetail({ finding, onClose, onViewFile }: FindingDetailPro
                 Scope note <span className="font-normal text-slate-400">(optional)</span>
               </span>
               <textarea
+                ref={scopeNoteRef}
                 aria-label="Scope note"
                 value={scopeNote}
                 onChange={(e) => setScopeNote(e.target.value)}

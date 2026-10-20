@@ -32,7 +32,8 @@ public class IngestionExceptionHandler {
     // The exception message already contains the max upload size
     String message = ex.getMessage() != null ? ex.getMessage() : "Upload exceeds the maximum allowed size of 100 MB.";
     log.warn("MaxUploadSizeExceededException on {}: {}", request.getRequestURI(), message);
-    ApiError error = ApiError.of("payload_too_large", message);
+    ApiError error = ApiError.of(
+        HttpStatus.PAYLOAD_TOO_LARGE.value(), "payload_too_large", message);
     return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
         .body(ApiResponse.error(error, com.verireview.common.TraceIdFilter.currentTraceId()));
   }
@@ -43,7 +44,7 @@ public class IngestionExceptionHandler {
     Throwable cause = ex.getCause();
     String message = "Invalid multipart request: " + (cause != null ? cause.getMessage() : ex.getMessage());
     log.warn("MultipartException on {}: {}", request.getRequestURI(), message);
-    ApiError error = ApiError.of("invalid_multipart", message);
+    ApiError error = ApiError.of(HttpStatus.BAD_REQUEST.value(), "invalid_multipart", message);
     return ResponseEntity.badRequest()
         .body(ApiResponse.error(error, com.verireview.common.TraceIdFilter.currentTraceId()));
   }
@@ -53,7 +54,8 @@ public class IngestionExceptionHandler {
       ZipImportException ex, HttpServletRequest request) {
     log.warn("ZipImportException on {}: {} (file={}, size={}, fileCount={})",
         request.getRequestURI(), ex.getMessage(), ex.getFileName(), ex.getFileSize(), ex.getFileCount());
-    ApiError error = ApiError.of(ex.getCode(), ex.getMessage());
+    ApiError error = ApiError.of(
+        ex.getHttpStatus().value(), ex.getCode(), ex.getMessage());
     return ResponseEntity.status(ex.getHttpStatus())
         .body(ApiResponse.error(error, com.verireview.common.TraceIdFilter.currentTraceId()));
   }
@@ -63,7 +65,8 @@ public class IngestionExceptionHandler {
       GitHubImportException ex, HttpServletRequest request) {
     log.warn("GitHubImportException on {}: {} (url={})",
         request.getRequestURI(), ex.getMessage(), ex.getUrl());
-    ApiError error = ApiError.of(ex.getCode(), ex.getMessage());
+    ApiError error = ApiError.of(
+        ex.getHttpStatus().value(), ex.getCode(), ex.getMessage());
     return ResponseEntity.status(ex.getHttpStatus())
         .body(ApiResponse.error(error, com.verireview.common.TraceIdFilter.currentTraceId()));
   }

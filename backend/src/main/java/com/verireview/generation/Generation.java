@@ -55,6 +55,14 @@ public class Generation extends BaseEntity {
   @Column(name = "database_type", nullable = false, length = 30)
   private GenerationDatabase databaseType;
 
+  @Enumerated(EnumType.STRING)
+  @Column(name = "auth_type", nullable = false, length = 30)
+  private GenerationAuth authType = GenerationAuth.NONE;
+
+  /** Comma-separated {@link GenerationIntegration} names; empty when none. */
+  @Column(name = "integrations", nullable = false, columnDefinition = "TEXT")
+  private String integrations = "";
+
   @Column(name = "db_host", length = 500)
   private String dbHost;
 
@@ -160,6 +168,22 @@ public class Generation extends BaseEntity {
 
   public void setDatabaseType(GenerationDatabase databaseType) {
     this.databaseType = databaseType;
+  }
+
+  public GenerationAuth getAuthType() {
+    return authType;
+  }
+
+  public void setAuthType(GenerationAuth authType) {
+    this.authType = authType;
+  }
+
+  public String getIntegrations() {
+    return integrations;
+  }
+
+  public void setIntegrations(String integrations) {
+    this.integrations = integrations == null ? "" : integrations;
   }
 
   public String getDbHost() {

@@ -154,10 +154,10 @@ public class GenerationExecutionEvidence extends BaseEntity {
   }
 
   public enum BuildStatus {
-    PENDING, RUNNING, SUCCESS, FAILURE, TIMEOUT
+    PENDING, RUNNING, SUCCESS, FAILURE, TIMEOUT, SKIPPED
   }
 
   public enum TestStatus {
-    PENDING, RUNNING, SUCCESS, FAILURE, TIMEOUT, NOT_APPLICABLE
+    PENDING, RUNNING, SUCCESS, FAILURE, TIMEOUT, NOT_APPLICABLE, SKIPPED
   }
 }

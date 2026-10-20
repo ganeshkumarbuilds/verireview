@@ -53,4 +53,12 @@ public class PatchController {
       @PathVariable("patchId") UUID patchId) {
     return ResponseEntity.ok(patchApplication.applyPatch(principal.getId(), patchId));
   }
+
+  /** Rolls back an applied patch, restoring the exact previous file content. */
+  @PostMapping("/api/v1/patches/{patchId}/revert")
+  public ResponseEntity<PatchResponse> revert(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("patchId") UUID patchId) {
+    return ResponseEntity.ok(patchApplication.revertPatch(principal.getId(), patchId));
+  }
 }

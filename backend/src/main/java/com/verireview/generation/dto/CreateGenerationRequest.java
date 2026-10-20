@@ -1,15 +1,18 @@
 package com.verireview.generation.dto;
 
 import com.verireview.generation.GenerationAiProvider;
+import com.verireview.generation.GenerationAuth;
 import com.verireview.generation.GenerationBackend;
 import com.verireview.generation.GenerationDatabase;
 import com.verireview.generation.GenerationFrontend;
+import com.verireview.generation.GenerationIntegration;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import java.util.List;
 
 /**
  * Generation wizard input. Secrets ({@code password}, {@code apiKey}) are
@@ -30,6 +33,8 @@ public record CreateGenerationRequest(
     @NotNull GenerationBackend backend,
     @NotNull GenerationFrontend frontend,
     @NotNull GenerationDatabase database,
+    GenerationAuth auth,
+    @Size(max = 20) List<GenerationIntegration> integrations,
     @Valid DatabaseConfig databaseConfig,
     @Valid @NotNull AiConfig aiConfig,
     Boolean draft) {

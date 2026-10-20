@@ -22,10 +22,8 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Centralized exception handling mapping exceptions to the standard {@link ApiResponse} envelope.
- * Every response includes the request's trace ID from MDC.
- *
- * <p>Never leaks stack traces or internal details to clients. All errors are logged server-side at
- * WARN/ERROR level with full context.
+ * Every error body carries the HTTP status, a machine code, and a plain-language message. The
+ * message is always user-safe: stack traces and internal details are logged server-side only.
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -35,7 +33,8 @@ public class GlobalExceptionHandler {
       ResponseStatusException ex, HttpServletRequest request) {
     HttpStatus status = HttpStatus.valueOf(ex.getStatusCode().value());
     String code = status.name().replace("_", " ").toLowerCase();
-    ApiError error = ApiError.of(code, ex.getReason() != null ? ex.getReason() : status.getReasonPhrase());
+    ApiError error = ApiError.of(
+        status.value(), code, ex.getReason() != null ? ex.getReason() : status.getReasonPhrase());
     return ResponseEntity.status(status).body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 
@@ -48,7 +47,7 @@ public class GlobalExceptionHandler {
             e -> e.getDefaultMessage() != null ? e.getDefaultMessage() : "invalid",
             (a, b) -> a,
             LinkedHashMap::new));
-    ApiError error = ApiError.of("validation_failed", "Request validation failed", details);
+    ApiError error = ApiError.of(400, "validation_failed", "Request validation failed", details);
     return ResponseEntity.badRequest().body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 
@@ -61,14 +60,14 @@ public class GlobalExceptionHandler {
             v -> v.getMessage(),
             (a, b) -> a,
             LinkedHashMap::new));
-    ApiError error = ApiError.of("validation_failed", "Constraint validation failed", details);
+    ApiError error = ApiError.of(400, "validation_failed", "Constraint validation failed", details);
     return ResponseEntity.badRequest().body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 
   @ExceptionHandler(HttpMessageNotReadableException.class)
   public ResponseEntity<ApiResponse<Void>> handleMalformedJson(
       HttpMessageNotReadableException ex, HttpServletRequest request) {
-    ApiError error = ApiError.of("malformed_request", "Request body is not valid JSON");
+    ApiError error = ApiError.of(400, "malformed_request", "Request body is not valid JSON");
     return ResponseEntity.badRequest().body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 
@@ -76,6 +75,7 @@ public class GlobalExceptionHandler {
   public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(
       MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
     ApiError error = ApiError.of(
+        400,
         "type_mismatch",
         "Parameter '" + ex.getName() + "' has invalid type: expected " + ex.getRequiredType().getSimpleName());
     return ResponseEntity.badRequest().body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
@@ -84,21 +84,21 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(BadCredentialsException.class)
   public ResponseEntity<ApiResponse<Void>> handleBadCredentials(
       BadCredentialsException ex, HttpServletRequest request) {
-    ApiError error = ApiError.of("unauthorized", "Invalid credentials");
+    ApiError error = ApiError.of(401, "unauthorized", "Invalid credentials");
     return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 
   @ExceptionHandler(AccessDeniedException.class)
   public ResponseEntity<ApiResponse<Void>> handleAccessDenied(
       AccessDeniedException ex, HttpServletRequest request) {
-    ApiError error = ApiError.of("forbidden", "Insufficient permissions");
+    ApiError error = ApiError.of(403, "forbidden", "Insufficient permissions");
     return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 
   @ExceptionHandler(EntityNotFoundException.class)
   public ResponseEntity<ApiResponse<Void>> handleNotFound(
       EntityNotFoundException ex, HttpServletRequest request) {
-    ApiError error = ApiError.of("not_found", "Resource not found");
+    ApiError error = ApiError.of(404, "not_found", "Resource not found");
     return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 
@@ -109,14 +109,14 @@ public class GlobalExceptionHandler {
         ? ex.getMostSpecificCause().getMessage()
         : ex.getMessage();
     String detail = (message != null && message.contains("duplicate")) ? "Duplicate value" : "Data integrity violation";
-    ApiError error = ApiError.of("conflict", detail);
+    ApiError error = ApiError.of(409, "conflict", detail);
     return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 
   @ExceptionHandler(NoResourceFoundException.class)
   public ResponseEntity<ApiResponse<Void>> handleNoResource(
       NoResourceFoundException ex, HttpServletRequest request) {
-    ApiError error = ApiError.of("not_found", "Endpoint not found");
+    ApiError error = ApiError.of(404, "not_found", "Endpoint not found");
     return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 
@@ -126,7 +126,7 @@ public class GlobalExceptionHandler {
     // Log full stack trace server-side; never expose to client
     org.slf4j.LoggerFactory.getLogger(GlobalExceptionHandler.class)
         .error("Unhandled exception on {} {}", request.getMethod(), request.getRequestURI(), ex);
-    ApiError error = ApiError.of("internal_error", "An unexpected error occurred");
+    ApiError error = ApiError.of(500, "internal_error", "An unexpected error occurred");
     return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ApiResponse.error(error, TraceIdFilter.currentTraceId()));
   }
 }

@@ -115,7 +115,12 @@ public class ExecutionService {
     run.setStdout(truncate(result.stdout(), 1048576));
     run.setStderr(truncate(result.stderr(), 1048576));
     run.setDurationMs(result.durationMs());
-    if (result.timedOut()) {
+    if (result.skipped()) {
+      // Docker sandbox disabled: nothing actually ran. Never report this as a
+      // pass -- the result does not verify that the project builds or tests pass.
+      run.setStatus(ExecutionStatus.SKIPPED);
+      run.setBuildStatus(BuildStatus.SKIPPED);
+    } else if (result.timedOut()) {
       run.setStatus(ExecutionStatus.TIMEOUT);
       run.setBuildStatus(BuildStatus.TIMEOUT);
     } else if (result.exitCode() == 0) {
@@ -126,9 +131,15 @@ public class ExecutionService {
       run.setBuildStatus(BuildStatus.FAILURE);
     }
     executions.save(run);
-    audits.record(project.getOwner(),
-        result.timedOut() ? "EXECUTION_TIMEOUT" : (result.exitCode() == 0 ? "EXECUTION_COMPLETED" : "EXECUTION_FAILED"),
-        "execution_run", run.getId().toString());
+    String auditAction;
+    if (result.skipped()) {
+      auditAction = "EXECUTION_SKIPPED";
+    } else if (result.timedOut()) {
+      auditAction = "EXECUTION_TIMEOUT";
+    } else {
+      auditAction = result.exitCode() == 0 ? "EXECUTION_COMPLETED" : "EXECUTION_FAILED";
+    }
+    audits.record(project.getOwner(), auditAction, "execution_run", run.getId().toString());
 
     return toResponse(run);
   }

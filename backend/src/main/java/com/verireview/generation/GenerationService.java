@@ -12,8 +12,11 @@ import com.verireview.analysis.Fingerprint;
 import com.verireview.common.PagedResponse;
 import com.verireview.generation.dto.CreateGenerationRequest;
 import com.verireview.generation.dto.CreateGenerationRevisionRequest;
+import com.verireview.generation.dto.GenerationFileView;
 import com.verireview.generation.dto.GenerationResponse;
 import com.verireview.generation.dto.GenerationRevisionResponse;
+import com.verireview.generation.dto.PlanPreviewRequest;
+import com.verireview.generation.dto.PlanPreviewResponse;
 import com.verireview.generation.dto.StartGenerationRequest;
 import com.verireview.generation.dto.UpdateGenerationRequest;
 import com.verireview.fix.FixRequest;
@@ -33,7 +36,10 @@ import com.verireview.review.Review;
 import com.verireview.review.ReviewRepository;
 import com.verireview.review.ReviewStatus;
 import com.verireview.project.Project;
+import com.verireview.project.ProjectFile;
+import com.verireview.project.ProjectFileRepository;
 import com.verireview.project.ProjectRepository;
+import com.verireview.project.ProjectSourceType;
 import com.verireview.user.UserRepository;
 import com.verireview.verification.VerificationRun;
 import com.verireview.verification.VerificationRunRepository;
@@ -104,6 +110,7 @@ public class GenerationService {
   private final FixRequestRepository fixRequests;
   private final UserRepository users;
   private final ProjectRepository projects;
+  private final ProjectFileRepository projectFiles;
   private final GenerationRunner runner;
   private final AuditService audits;
   private final ObjectMapper objects;
@@ -133,6 +140,7 @@ public class GenerationService {
       PatchRepository patches,
       UserRepository users,
       ProjectRepository projects,
+      ProjectFileRepository projectFiles,
       @Lazy GenerationRunner runner,
       AuditService audits,
       ObjectMapper objects,
@@ -150,6 +158,7 @@ public class GenerationService {
     this.patches = patches;
     this.users = users;
     this.projects = projects;
+    this.projectFiles = projectFiles;
     this.runner = runner;
     this.audits = audits;
     this.objects = objects;
@@ -180,7 +189,11 @@ public class GenerationService {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "Generation name is already used");
     }
     boolean draft = Boolean.TRUE.equals(request.draft());
-    checkStackCoherence(request.backend(), request.database(), request.databaseConfig() != null,
+    GenerationAuth auth = request.auth() == null ? GenerationAuth.NONE : request.auth();
+    List<GenerationIntegration> integrations = normalizeIntegrations(request.integrations());
+    checkSelection(request.backend(), request.frontend(), request.database(), auth, integrations);
+    checkStackCoherence(request.backend(), request.frontend(), request.database(),
+        request.databaseConfig() != null,
         request.aiConfig().provider(), request.aiConfig().baseUrl(), request.aiConfig().apiKey(),
         request.aiConfig().model(), draft);
     if (!draft) {
@@ -195,6 +208,8 @@ public class GenerationService {
     generation.setBackendStack(request.backend());
     generation.setFrontendStack(request.frontend());
     generation.setDatabaseType(request.database());
+    generation.setAuthType(auth);
+    generation.setIntegrations(joinIntegrations(integrations));
     if (request.database() != GenerationDatabase.NONE) {
       CreateGenerationRequest.DatabaseConfig db = request.databaseConfig();
       generation.setDbHost(db.host().trim());
@@ -318,6 +333,18 @@ public class GenerationService {
       database = request.database();
       generation.setDatabaseType(database);
     }
+    GenerationAuth auth = generation.getAuthType() == null
+        ? GenerationAuth.NONE : generation.getAuthType();
+    if (request.auth() != null) {
+      auth = request.auth();
+      generation.setAuthType(auth);
+    }
+    List<GenerationIntegration> integrations = request.integrations() == null
+        ? parseIntegrations(generation.getIntegrations())
+        : normalizeIntegrations(request.integrations());
+    generation.setIntegrations(joinIntegrations(integrations));
+    checkSelection(generation.getBackendStack(), generation.getFrontendStack(), database,
+        auth, integrations);
     UpdateGenerationRequest.DatabaseConfig db = request.databaseConfig();
     if (database == GenerationDatabase.NONE) {
       if (db != null) {
@@ -409,8 +436,32 @@ public class GenerationService {
             HttpStatus.NOT_FOUND, "No generation found for project"));
   }
 
+  /**
+   * Cross-field selection rules. These are user-facing choices, so incoherent
+   * combinations are rejected with a 400 before anything is persisted.
+   */
+  private void checkSelection(GenerationBackend backend, GenerationFrontend frontend,
+      GenerationDatabase database, GenerationAuth auth,
+      List<GenerationIntegration> integrations) {
+    if (backend == GenerationBackend.NONE && frontend == GenerationFrontend.NONE) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Choose at least a backend or a frontend");
+    }
+    if (backend == GenerationBackend.NONE
+        && (auth == GenerationAuth.JWT || auth == GenerationAuth.OAUTH_GOOGLE)) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Authentication requires a backend");
+    }
+    if (integrations.contains(GenerationIntegration.STRIPE)
+        && integrations.contains(GenerationIntegration.RAZORPAY)) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Choose either Stripe or Razorpay, not both");
+    }
+  }
+
   private void checkStackCoherence(
-      GenerationBackend backend, GenerationDatabase database, boolean hasDatabaseConfig,
+      GenerationBackend backend, GenerationFrontend frontend, GenerationDatabase database,
+      boolean hasDatabaseConfig,
       GenerationAiProvider provider, String baseUrl, String apiKey, String model, boolean draft) {
     boolean wantsDb = database != GenerationDatabase.NONE;
     if (wantsDb && !hasDatabaseConfig) {
@@ -430,9 +481,12 @@ public class GenerationService {
         throw new ResponseStatusException(
             HttpStatus.BAD_REQUEST, "Base URL must be omitted when provider is NONE");
       }
-      if (backend != GenerationBackend.JAVA_SPRING_BOOT) {
+      if (backend != GenerationBackend.JAVA_SPRING_BOOT
+          || (frontend != GenerationFrontend.REACT_TYPESCRIPT
+              && frontend != GenerationFrontend.NONE)) {
         throw new ResponseStatusException(
-            HttpStatus.BAD_REQUEST, "Provider NONE currently supports Java Spring Boot templates only");
+            HttpStatus.BAD_REQUEST,
+            "Provider NONE currently supports Java Spring Boot templates with React or no frontend");
       }
       return;
     }
@@ -449,6 +503,37 @@ public class GenerationService {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "AI API key is required");
     }
+  }
+
+  private static List<GenerationIntegration> normalizeIntegrations(
+      List<GenerationIntegration> values) {
+    if (values == null || values.isEmpty()) {
+      return List.of();
+    }
+    return List.copyOf(new LinkedHashSet<>(values));
+  }
+
+  private static String joinIntegrations(List<GenerationIntegration> values) {
+    return values.stream().map(Enum::name)
+        .collect(java.util.stream.Collectors.joining(","));
+  }
+
+  static List<GenerationIntegration> parseIntegrations(String value) {
+    if (value == null || value.isBlank()) {
+      return List.of();
+    }
+    List<GenerationIntegration> result = new ArrayList<>();
+    for (String part : value.split(",")) {
+      if (part.isBlank()) {
+        continue;
+      }
+      try {
+        result.add(GenerationIntegration.valueOf(part.trim()));
+      } catch (IllegalArgumentException ignored) {
+        // Unknown legacy value: ignore instead of breaking status reads.
+      }
+    }
+    return List.copyOf(result);
   }
 
   private void requireSecrets(CreateGenerationRequest request) {
@@ -494,6 +579,180 @@ public class GenerationService {
     return PagedResponse.of(page.map(this::toResponse));
   }
 
+  /**
+   * Step 4 plan preview. Derives the stack-aware scaffold only; no row is
+   * created and no AI call is made, so the user can review and re-plan freely.
+   */
+  @Transactional(readOnly = true)
+  public PlanPreviewResponse previewPlan(UUID ownerId, PlanPreviewRequest request) {
+    GenerationAuth auth = request.auth() == null ? GenerationAuth.NONE : request.auth();
+    List<GenerationIntegration> integrations = normalizeIntegrations(request.integrations());
+    checkSelection(request.backend(), request.frontend(), request.database(), auth, integrations);
+    return GenerationScaffoldPreview.build(request.backend(), request.frontend(),
+        request.database(), auth, integrations);
+  }
+
+  /**
+   * Generated workspace files for the browse view. Owner-scoped and read from
+   * the latest artifact's workspace; server paths never leave the backend.
+   */
+  @Transactional(readOnly = true)
+  public List<GenerationFileView> listFiles(UUID ownerId, UUID generationId) {
+    owned(ownerId, generationId);
+    GenerationArtifact artifact = artifacts
+        .findFirstByGenerationIdOrderByCreatedAtDesc(generationId)
+        .orElse(null);
+    if (artifact == null) {
+      return List.of();
+    }
+    Path workspace = storage.generationWorkspaceDir(generationId, artifact.getIteration());
+    if (!Files.isDirectory(workspace)) {
+      return List.of();
+    }
+    List<GenerationFileView> result = new ArrayList<>();
+    try (var stream = Files.walk(workspace)) {
+      stream.filter(Files::isRegularFile)
+          .filter(path -> !Files.isSymbolicLink(path))
+          .forEach(path -> {
+            try {
+              result.add(new GenerationFileView(
+                  workspace.relativize(path).toString().replace('\\', '/'),
+                  Files.size(path)));
+            } catch (IOException ignored) {
+              // A file that disappeared mid-scan is simply not listed.
+            }
+          });
+    } catch (IOException e) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Could not read the generated workspace");
+    }
+    result.sort(java.util.Comparator.comparing(GenerationFileView::path));
+    return List.copyOf(result);
+  }
+
+  /**
+   * Reads one generated text file for the browse view. Owner-scoped, jailed
+   * to the iteration workspace, capped, and never interprets content as HTML.
+   */
+  @Transactional(readOnly = true)
+  public com.verireview.generation.dto.GenerationFileContentView readFile(
+      UUID ownerId, UUID generationId, String path) {
+    owned(ownerId, generationId);
+    if (path == null || path.isBlank()) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File path is required");
+    }
+    GenerationArtifact artifact = artifacts
+        .findFirstByGenerationIdOrderByCreatedAtDesc(generationId)
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.CONFLICT, "There is no generated workspace yet"));
+    Path workspace = storage.generationWorkspaceDir(generationId, artifact.getIteration());
+    Path file = storage.resolveJailed(workspace, path);
+    if (!Files.isRegularFile(file) || Files.isSymbolicLink(file)) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found");
+    }
+    final byte[] bytes;
+    try (var in = Files.newInputStream(file)) {
+      bytes = in.readNBytes((int) ProjectStorage.FILE_VIEW_BYTES + 1);
+    } catch (IOException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "Could not read the file");
+    }
+    boolean truncated = bytes.length > ProjectStorage.FILE_VIEW_BYTES;
+    int length = Math.min(bytes.length, (int) ProjectStorage.FILE_VIEW_BYTES);
+    for (int i = 0; i < length; i++) {
+      if (bytes[i] == 0) {
+        return new com.verireview.generation.dto.GenerationFileContentView(
+            path, null, false, true);
+      }
+    }
+    String content = new String(bytes, 0, length, StandardCharsets.UTF_8);
+    return new com.verireview.generation.dto.GenerationFileContentView(
+        path, content, truncated, false);
+  }
+
+  /**
+   * Materializes the reviewed workspace as a normal {@link Project} so the
+   * Review workflow can analyze it. The generated files are copied into the
+   * project directory (never moved), and the generation is linked to the new
+   * project. Idempotent: calling again returns the already-linked generation.
+   */
+  @Transactional
+  public GenerationResponse sendToReview(UUID ownerId, UUID generationId) {
+    Generation generation = owned(ownerId, generationId);
+    if (generation.getProject() != null) {
+      return toResponse(generation);
+    }
+    if (generation.getStatus() != GenerationStatus.REVIEWED
+        && generation.getStatus() != GenerationStatus.COMPLETED) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Wait for the generation to finish reviewing first");
+    }
+    GenerationArtifact artifact = artifacts
+        .findFirstByGenerationIdOrderByCreatedAtDesc(generationId)
+        .orElseThrow(() -> new ResponseStatusException(
+            HttpStatus.CONFLICT, "There is no generated workspace to send"));
+    Path workspace = storage.generationWorkspaceDir(generationId, artifact.getIteration());
+    if (!Files.isDirectory(workspace)) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "The generated workspace is no longer available");
+    }
+
+    Project project = new Project(users.getReferenceById(ownerId),
+        uniqueProjectName(ownerId, generation.getName()), ProjectSourceType.GENERATED);
+    project.setDescription(generation.getDescription());
+    project.setLanguage(GenerationRunner.primaryLanguage(generation.getBackendStack()));
+    projects.saveAndFlush(project);
+    Path projectDir = storage.projectDir(project.getId());
+    try {
+      Files.createDirectories(projectDir);
+      List<ProjectFile> rows = new ArrayList<>();
+      try (var stream = Files.walk(workspace)) {
+        for (Path path : (Iterable<Path>) stream::iterator) {
+          if (Files.isSymbolicLink(path) || !Files.isRegularFile(path)) {
+            continue;
+          }
+          String relative = workspace.relativize(path).toString().replace('\\', '/');
+          Path target = storage.resolveJailed(projectDir, relative);
+          Files.createDirectories(target.getParent());
+          byte[] bytes = Files.readAllBytes(path);
+          Files.write(target, bytes);
+          ProjectFile row = new ProjectFile(project, relative, bytes.length, sha256(bytes));
+          row.setLanguage(languageOf(relative));
+          row.setContentRef(relative);
+          rows.add(row);
+        }
+      }
+      projectFiles.saveAll(rows);
+      project.setStorageRef(projectDir.toAbsolutePath().normalize().toString());
+      projects.save(project);
+    } catch (Exception e) {
+      storage.deleteQuietly(projectDir);
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Could not prepare the generated project for review", e);
+    }
+
+    generation.setProject(project);
+    generations.save(generation);
+    audits.record(generation.getOwner(), "GENERATION_SENT_TO_REVIEW", "generation",
+        generationId.toString());
+    return toResponse(generation);
+  }
+
+  private String uniqueProjectName(UUID ownerId, String base) {
+    String root = base == null || base.isBlank() ? "generated-project" : base.strip();
+    if (root.length() > 190) {
+      root = root.substring(0, 190);
+    }
+    String candidate = root;
+    int suffix = 2;
+    while (projects.existsByOwnerIdAndNameAndDeletedAtIsNull(ownerId, candidate)) {
+      String tail = " (" + suffix++ + ")";
+      candidate = (root.length() + tail.length() > 200
+          ? root.substring(0, 200 - tail.length())
+          : root) + tail;
+    }
+    return candidate;
+  }
+
   /** Detached snapshot for the worker (no lazy loading outside transactions). */
   @Transactional(readOnly = true)
   public GenerationSnapshot snapshot(UUID generationId) {
@@ -510,6 +769,8 @@ public class GenerationService {
         generation.getBackendStack(),
         generation.getFrontendStack(),
         generation.getDatabaseType(),
+        generation.getAuthType(),
+        parseIntegrations(generation.getIntegrations()),
         generation.getDbHost(),
         generation.getDbPort(),
         generation.getDbName(),
@@ -529,6 +790,8 @@ public class GenerationService {
       GenerationBackend backend,
       GenerationFrontend frontend,
       GenerationDatabase database,
+      GenerationAuth auth,
+      List<GenerationIntegration> integrations,
       String dbHost,
       Integer dbPort,
       String dbName,
@@ -769,6 +1032,26 @@ public class GenerationService {
     if (durationMs != null) {
       run.setDurationMs(durationMs);
     }
+  }
+
+  private static String sha256(byte[] bytes) {
+    try {
+      return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+    } catch (Exception e) {
+      throw new IllegalStateException("SHA-256 unavailable", e);
+    }
+  }
+
+  private static String languageOf(String path) {
+    String lower = path.toLowerCase(java.util.Locale.ROOT);
+    if (lower.endsWith(".java")) return "java";
+    if (lower.endsWith(".py")) return "python";
+    if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "typescript";
+    if (lower.endsWith(".js") || lower.endsWith(".jsx")) return "javascript";
+    if (lower.endsWith(".vue")) return "vue";
+    if (lower.endsWith(".sql")) return "sql";
+    if (lower.endsWith(".md")) return "markdown";
+    return null;
   }
 
   /** Stable, secret-free fingerprint of an agent invocation's inputs. */
@@ -1196,6 +1479,15 @@ public class GenerationService {
   private GenerationResponse.PlanView toPlanView(GenerationPlan plan) {
     try {
       JsonNode root = objects.readTree(plan.getPlanJson());
+      List<GenerationResponse.PlanFileView> files = new ArrayList<>();
+      JsonNode items = root.get("files");
+      if (items != null && items.isArray()) {
+        for (JsonNode item : items) {
+          files.add(new GenerationResponse.PlanFileView(
+              textOrEmpty(item.get("path")),
+              textOrEmpty(item.get("purpose"))));
+        }
+      }
       return new GenerationResponse.PlanView(
           plan.getIteration(),
           plan.getFileCount(),
@@ -1203,7 +1495,8 @@ public class GenerationService {
           strings(root.get("dependencies")),
           strings(root.get("directories")),
           textOrEmpty(root.get("apis")),
-          strings(root.get("steps")));
+          strings(root.get("steps")),
+          List.copyOf(files));
     } catch (Exception e) {
       // Our own write path produced this JSON; never break status polling
       // over a read-back problem.
@@ -1268,6 +1561,9 @@ public class GenerationService {
     // Latest review for current iteration
     GenerationResponse.ReviewView review = findLatestReview(generation);
 
+    // Latest sandbox evidence (build/test actually ran or was skipped)
+    GenerationResponse.ExecutionView execution = findLatestExecution(generation);
+
     // Agent workflow timeline
     List<GenerationResponse.AgentStepView> agentWorkflow = findAgentWorkflow(generation);
 
@@ -1286,6 +1582,8 @@ public class GenerationService {
         generation.getBackendStack(),
         generation.getFrontendStack(),
         generation.getDatabaseType(),
+        generation.getAuthType() == null ? GenerationAuth.NONE : generation.getAuthType(),
+        parseIntegrations(generation.getIntegrations()),
         db,
         ai,
         generation.getStatus(),
@@ -1300,6 +1598,7 @@ public class GenerationService {
         workflowStats,
         verification,
         review,
+        execution,
         agentWorkflow,
         downloadReady,
         previewReady,
@@ -1372,6 +1671,21 @@ public class GenerationService {
         latestReview.getStatus() != null ? latestReview.getStatus().name() : "QUEUED",
         latestReview.getFindingCount(),
         latestReview.getError());
+  }
+
+  private GenerationResponse.ExecutionView findLatestExecution(Generation generation) {
+    return executionEvidence.findByGenerationIdOrderByCreatedAtDesc(generation.getId()).stream()
+        .findFirst()
+        .map(evidence -> new GenerationResponse.ExecutionView(
+            evidence.getCommand(),
+            evidence.getExitCode(),
+            evidence.getBuildStatus() != null ? evidence.getBuildStatus().name() : "PENDING",
+            evidence.getTestStatus() != null ? evidence.getTestStatus().name() : "PENDING",
+            evidence.getFailureReason(),
+            evidence.getDurationMs(),
+            evidence.getBuildStatus() == GenerationExecutionEvidence.BuildStatus.SKIPPED,
+            evidence.getCreatedAt()))
+        .orElse(null);
   }
 
   private List<GenerationResponse.AgentStepView> findAgentWorkflow(Generation generation) {

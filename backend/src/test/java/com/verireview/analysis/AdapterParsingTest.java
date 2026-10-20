@@ -165,6 +165,33 @@ class AdapterParsingTest {
     assertThat(otherTool).isNotEqualTo(a);
   }
 
+  /**
+   * Real reports come from inside the analysis container, which mounts the
+   * snapshot at /src -- so their paths name the container mount, never the
+   * host snapshot root (the golden fixtures above simulate the latter). They
+   * must still come out repo-relative, with no leaked "src/" prefix that
+   * would match no project file.
+   */
+  @Test
+  void containerMountPathsRelativizeToRepoRelativePaths() throws Exception {
+    Path hostRoot = temp.resolve("host-snapshot");
+
+    List<NormalizedFinding> checkstyle =
+        CheckstyleParser.parse(write("cs-container.xml", CHECKSTYLE_XML), hostRoot);
+    assertThat(checkstyle).isNotEmpty();
+    assertThat(checkstyle.get(0).filePath()).isEqualTo("Main.java");
+
+    List<NormalizedFinding> pmd =
+        PmdParser.parse(write("pmd-container.xml", PMD_XML), hostRoot);
+    assertThat(pmd).isNotEmpty();
+    assertThat(pmd.get(0).filePath()).isEqualTo("Main.java");
+
+    List<NormalizedFinding> depCheck = DependencyCheckParser.parse(
+        write("depcheck-container.json", DEPCHECK_JSON), hostRoot);
+    assertThat(depCheck).isNotEmpty();
+    assertThat(depCheck.get(0).filePath()).isEqualTo("libs/spring-core-5.3.0.jar");
+  }
+
   private Path write(String name, String content) throws Exception {
     Path file = temp.resolve(name);
     Files.writeString(file, content);

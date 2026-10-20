@@ -97,11 +97,12 @@ export async function deleteProject(
   });
 }
 
-export async function uploadZip(
-  client: ApiClient,
-  token: string,
-  input: { file: File; name: string; description?: string; language?: string },
-): Promise<ProjectResponse> {
+function zipForm(input: {
+  file: File;
+  name: string;
+  description?: string;
+  language?: string;
+}): FormData {
   const form = new FormData();
   form.append('file', input.file);
   form.append('name', input.name);
@@ -111,10 +112,33 @@ export async function uploadZip(
   if (input.language) {
     form.append('language', input.language);
   }
+  return form;
+}
+
+/** Async ZIP import (202 + job id). The Review source intake uses the sync
+ *  variant below so the user lands on the analysis step immediately. */
+export async function uploadZip(
+  client: ApiClient,
+  token: string,
+  input: { file: File; name: string; description?: string; language?: string },
+): Promise<ProjectResponse> {
   return client.request<ProjectResponse>('/projects/import/zip', {
     method: 'POST',
     headers: bearer(token),
-    body: form,
+    body: zipForm(input),
+  });
+}
+
+/** Synchronous ZIP import: returns the created project. */
+export async function uploadZipSync(
+  client: ApiClient,
+  token: string,
+  input: { file: File; name: string; description?: string; language?: string },
+): Promise<ProjectResponse> {
+  return client.request<ProjectResponse>('/projects/import/zip/sync', {
+    method: 'POST',
+    headers: bearer(token),
+    body: zipForm(input),
   });
 }
 
@@ -124,6 +148,19 @@ export async function importGitHub(
   input: GitHubImportInput,
 ): Promise<ProjectResponse> {
   return client.request<ProjectResponse>('/projects/import/github', {
+    method: 'POST',
+    headers: bearer(token),
+    body: JSON.stringify(input),
+  });
+}
+
+/** Synchronous GitHub import: returns the created project. */
+export async function importGitHubSync(
+  client: ApiClient,
+  token: string,
+  input: GitHubImportInput,
+): Promise<ProjectResponse> {
+  return client.request<ProjectResponse>('/projects/import/github/sync', {
     method: 'POST',
     headers: bearer(token),
     body: JSON.stringify(input),

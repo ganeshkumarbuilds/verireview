@@ -13,6 +13,8 @@ public record AiGenerationPlanRequest(
     String backend,
     String frontend,
     String database,
+    String auth,
+    java.util.List<String> integrations,
     String dbHost,
     Integer dbPort,
     String dbName,

@@ -92,7 +92,7 @@ export interface FindingResponse {
 }
 
 /** Check run status shared by all 4 features */
-export type CheckStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED';
+export type CheckStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'SKIPPED' | 'PENDING';
 
 export interface CheckStepResponse {
   id: string;
@@ -173,7 +173,7 @@ export interface FixRequestResponse {
   updatedAt: string;
 }
 
-export type PatchStatus = 'PROPOSED' | 'APPLIED' | 'REJECTED';
+export type PatchStatus = 'PROPOSED' | 'APPLIED' | 'REJECTED' | 'REVERTED';
 
 export interface PatchResponse {
   id: string;
@@ -189,8 +189,8 @@ export interface PatchResponse {
   updatedAt: string;
 }
 
-export type ExecutionStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'TIMEOUT';
-export type BuildStatus = 'SUCCESS' | 'FAILURE' | 'TIMEOUT' | 'PENDING' | 'RUNNING';
+export type ExecutionStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'FAILURE' | 'TIMEOUT' | 'SKIPPED';
+export type BuildStatus = 'SUCCESS' | 'FAILURE' | 'TIMEOUT' | 'PENDING' | 'RUNNING' | 'SKIPPED';
 
 export interface ExecutionRunResponse {
   id: string;
@@ -222,11 +222,68 @@ export interface VerificationRunResponse {
   durationMs: number | null;
   createdAt: string;
   updatedAt: string;
+  sandboxSkipped: boolean;
+}
+
+/** Agent pipeline (Import -> Analyze -> Review -> Fix -> Verify). */
+export type PipelineStageState = 'WAITING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'SKIPPED';
+
+export interface PipelineStageResponse {
+  key: string;
+  label: string;
+  state: PipelineStageState;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  detail: string | null;
+  error: string | null;
+  checkRunId: string | null;
+}
+
+export interface PipelineResponse {
+  projectId: string;
+  stages: PipelineStageResponse[];
+}
+
+/** Bulk consent result (create approved fix requests for selected findings). */
+export interface BulkFixRequestCreated {
+  projectId: string;
+  fixRequestIds: string[];
+  created: number;
+  skipped: number;
+}
+
+export interface FixRunSummaryResponse {
+  fixed: number;
+  stillOpen: number;
+  newlyIntroduced: number;
+}
+
+export interface FixRunChangedFileResponse {
+  path: string;
+  patchId: string;
+  status: string;
+  diff: string | null;
+}
+
+export interface FixRunDetailResponse {
+  checkRunId: string;
+  projectId: string;
+  status: CheckStatus;
+  error: string | null;
+  steps: CheckStepResponse[];
+  summary: FixRunSummaryResponse;
+  changedFiles: FixRunChangedFileResponse[];
+  verificationVerdict: VerificationVerdict | null;
+  sandboxSkipped: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
 }
 
 /** Legacy envelope shape (kept for forward-compat parsing only). */
 export interface ApiEnvelope<T> {
   data: T | null;
-  error: { code: string; message: string; details?: unknown } | null;
+  error: { status?: number; code: string; message: string; details?: unknown } | null;
   meta?: { traceId?: string };
+  traceId?: string;
 }

@@ -62,6 +62,8 @@ describe('LoginPage', () => {
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Forgot password?' }));
+    // The reset panel sits inside the login form, so it must never be a form.
+    expect(document.querySelectorAll('form form')).toHaveLength(0);
     fireEvent.change(screen.getByLabelText('Reset email'), {
       target: { value: 'dev@example.com' },
     });

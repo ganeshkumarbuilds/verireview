@@ -10,4 +10,6 @@ public interface AgentExecutionRepository extends JpaRepository<AgentExecution, 
 
   List<AgentExecution> findByGenerationIdAndAgentTypeOrderByCreatedAtAsc(
       UUID generationId, AgentType agentType);
+
+  List<AgentExecution> findByReviewIdOrderByCreatedAtAsc(UUID reviewId);
 }

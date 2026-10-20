@@ -49,6 +49,13 @@ public class SandboxRunner {
   private final long maxOutputBytes;
   private final boolean dockerEnabled;
 
+  /**
+   * Path the snapshot is mounted at inside the analysis container. Analyzer
+   * reports name files under this root (e.g. {@code /src/Sample.java}), not
+   * under the host snapshot path, so path normalization must strip it too.
+   */
+  public static final String CONTAINER_SOURCE_DIR = "/src";
+
   public long getExecutionTimeoutSeconds() {
     return executionTimeoutSeconds;
   }
@@ -324,9 +331,9 @@ public class SandboxRunner {
         "--memory", memory,
         "--cpus", cpus,
         "--pids-limit", pidsLimit,
-        "-v", snapshot.toAbsolutePath() + ":/src",
+        "-v", snapshot.toAbsolutePath() + ":" + CONTAINER_SOURCE_DIR,
         "-v", output.toAbsolutePath() + ":/out",
-        image, "/src", "/out"));
+        image, CONTAINER_SOURCE_DIR, "/out"));
     Process process;
     try {
       process = new ProcessBuilder(command).redirectErrorStream(true).start();

@@ -1,30 +1,64 @@
-import { Route, Routes } from 'react-router-dom';
-import { RequireAuth } from './auth/AuthContext';
+import { Navigate, Route, Routes, useParams } from 'react-router-dom';
+import { RedirectIfAuthenticated, RequireAuth } from './auth/AuthContext';
 import { Layout } from './components/Layout';
 import { DashboardPage } from './pages/DashboardPage';
-import { FindingDetailPage } from './pages/FindingDetailPage';
-import { GeneratePage } from './pages/GeneratePage';
 import { HistoryPage } from './pages/HistoryPage';
 import { HomePage } from './pages/HomePage';
 import { LoginPage } from './pages/LoginPage';
 import { NotFoundPage } from './pages/NotFoundPage';
-import { ProjectDetailPage } from './pages/ProjectDetailPage';
-import { ProjectsPage } from './pages/ProjectsPage';
 import { RegisterPage } from './pages/RegisterPage';
-import { ReviewPage } from './pages/ReviewPage';
+import { GeneratePage } from './features/generate/GeneratePage';
+import { ReviewPage } from './features/review/ReviewPage';
+import { FindingDetailPage } from './features/review/FindingDetailPage';
+import { FixPage } from './features/fix/FixPage';
+import { VerifyPage } from './features/verify/VerifyPage';
+import { ProjectsPage } from './features/projects/ProjectsPage';
 
-/** Route table. `/`, `/login`, and `/register` render standalone;
- *  the workspace (dashboard, projects, review, history) lives under Layout.
- *  Review is project-scoped in the API; the workspace reads `?project=`.
- *  Finding detail is addressable per review so fixes stay linkable. */
+/** Old /projects/:id workspace bookmarks now open Review for that project. */
+function LegacyProjectRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return (
+    <Navigate
+      to={id ? `/review?project=${encodeURIComponent(id)}` : '/projects'}
+      replace
+    />
+  );
+}
+
+/**
+ * One route per feature. Dashboard cards, the navbar and the project list all
+ * point at these pages, and every page owns exactly one workflow. The finding
+ * detail route stays under /projects so existing deep links keep working.
+ */
 export function AppRoutes() {
   return (
     <Routes>
       <Route index element={<HomePage />} />
-      <Route path="login" element={<LoginPage />} />
-      <Route path="register" element={<RegisterPage />} />
+      <Route
+        path="login"
+        element={
+          <RedirectIfAuthenticated>
+            <LoginPage />
+          </RedirectIfAuthenticated>
+        }
+      />
+      <Route
+        path="register"
+        element={
+          <RedirectIfAuthenticated>
+            <RegisterPage />
+          </RedirectIfAuthenticated>
+        }
+      />
       <Route element={<Layout />}>
-        <Route path="dashboard" element={<DashboardPage />} />
+        <Route
+          path="dashboard"
+          element={
+            <RequireAuth>
+              <DashboardPage />
+            </RequireAuth>
+          }
+        />
         <Route
           path="projects"
           element={
@@ -33,11 +67,12 @@ export function AppRoutes() {
             </RequireAuth>
           }
         />
+        {/* Bookmark compatibility: the combined project workspace is gone. */}
         <Route
           path="projects/:id"
           element={
             <RequireAuth>
-              <ProjectDetailPage />
+              <LegacyProjectRedirect />
             </RequireAuth>
           }
         />
@@ -50,6 +85,14 @@ export function AppRoutes() {
           }
         />
         <Route
+          path="generate"
+          element={
+            <RequireAuth>
+              <GeneratePage />
+            </RequireAuth>
+          }
+        />
+        <Route
           path="review"
           element={
             <RequireAuth>
@@ -58,14 +101,29 @@ export function AppRoutes() {
           }
         />
         <Route
-          path="generate"
+          path="fix"
           element={
             <RequireAuth>
-              <GeneratePage />
+              <FixPage />
             </RequireAuth>
           }
         />
-        <Route path="history" element={<HistoryPage />} />
+        <Route
+          path="verify"
+          element={
+            <RequireAuth>
+              <VerifyPage />
+            </RequireAuth>
+          }
+        />
+        <Route
+          path="history"
+          element={
+            <RequireAuth>
+              <HistoryPage />
+            </RequireAuth>
+          }
+        />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

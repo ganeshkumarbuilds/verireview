@@ -1,11 +1,10 @@
-import { useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 
 const NAV_LINKS = [
   { to: '/dashboard', label: 'Dashboard', end: true },
   { to: '/projects', label: 'Projects', end: false },
-  { to: '/review', label: 'Review', end: false },
   { to: '/history', label: 'History', end: false },
 ];
 
@@ -28,8 +27,27 @@ const mobileLinkClass = ({ isActive }: { isActive: boolean }): string =>
 export function Navbar() {
   const { token, user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+
+  // Menus are transient: close them on navigation and on Escape.
+  useEffect(() => {
+    setMenuOpen(false);
+    setProfileOpen(false);
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    if (!menuOpen && !profileOpen) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+        setProfileOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [menuOpen, profileOpen]);
 
   const displayName = user?.displayName ?? user?.email ?? 'Account';
   const initials = displayName.slice(0, 2).toUpperCase();
@@ -49,7 +67,7 @@ export function Navbar() {
           onClick={() => setMenuOpen((open) => !open)}
           aria-label="Toggle navigation"
           aria-expanded={menuOpen}
-          className="rounded-lg p-2 text-indigo-700 transition-colors hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 md:hidden"
+          className="rounded-lg p-2 text-indigo-700 transition-colors hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 lg:hidden"
         >
           ☰
         </button>
@@ -62,17 +80,19 @@ export function Navbar() {
             Generate. Review. Fix. Verify.
           </p>
         </div>
-        <nav
-          aria-label="Primary"
-          className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-1 md:flex"
-        >
-          {NAV_LINKS.map((link) => (
-            <NavLink key={link.to} to={link.to} end={link.end} className={desktopLinkClass}>
-              {link.label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="ml-auto hidden items-center gap-2 md:flex">
+        {token && (
+          <nav
+            aria-label="Primary"
+            className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-1 lg:flex"
+          >
+            {NAV_LINKS.map((link) => (
+              <NavLink key={link.to} to={link.to} end={link.end} className={desktopLinkClass}>
+                {link.label}
+              </NavLink>
+            ))}
+          </nav>
+        )}
+        <div className="ml-auto hidden items-center gap-2 lg:flex">
           {token ? (
             <>
               <div
@@ -87,8 +107,8 @@ export function Navbar() {
                   type="button"
                   onClick={() => setProfileOpen((open) => !open)}
                   aria-label="Profile"
-                  aria-haspopup="menu"
                   aria-expanded={profileOpen}
+                  aria-controls="profile-panel"
                   className="flex max-w-44 items-center gap-2 rounded-full border border-indigo-100 bg-indigo-50/60 py-1 pl-1 pr-3 transition-colors hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
                 >
                   <span
@@ -101,7 +121,7 @@ export function Navbar() {
                 </button>
                 {profileOpen && (
                   <div
-                    role="menu"
+                    id="profile-panel"
                     aria-label="Profile"
                     className="absolute right-0 mt-2 w-60 rounded-xl border border-indigo-100 bg-white p-2 shadow-lg shadow-indigo-100"
                   >
@@ -148,19 +168,20 @@ export function Navbar() {
       {menuOpen && (
         <nav
           aria-label="Mobile"
-          className="border-t border-indigo-100 bg-white px-4 py-2 md:hidden"
+          className="border-t border-indigo-100 bg-white px-4 py-2 lg:hidden"
         >
-          {NAV_LINKS.map((link) => (
-            <NavLink
-              key={link.to}
-              to={link.to}
-              end={link.end}
-              onClick={() => setMenuOpen(false)}
-              className={mobileLinkClass}
-            >
-              {link.label}
-            </NavLink>
-          ))}
+          {token &&
+            NAV_LINKS.map((link) => (
+              <NavLink
+                key={link.to}
+                to={link.to}
+                end={link.end}
+                onClick={() => setMenuOpen(false)}
+                className={mobileLinkClass}
+              >
+                {link.label}
+              </NavLink>
+            ))}
           <div className="mt-1 border-t border-indigo-100 py-2">
             {token ? (
               <div className="space-y-2">

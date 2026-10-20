@@ -24,7 +24,12 @@
 | `reviews` | One review execution per project (status QUEUED/RUNNING/COMPLETED/FAILED, timestamps, duration). Groups findings + agent executions. |
 | `findings` | Structured issue (category, severity, source, status, file/line, evidence). Heart of product; filterable/sortable. |
 | `fix_requests` | Explicit user approval to fix ONE finding (status, scope note, requested_by). The approval gate — no patch without this row. |
-| `patches` | Controlled diff for a fix request (unified diff, stats, status PROPOSED/APPLIED/REJECTED). Stored, never auto-applied to canonical tree. |
+| `patches` | Controlled diff for a fix request (unified diff, stats, status PROPOSED/APPLIED/REJECTED/REVERTED). Stored, never auto-applied to canonical tree. |
+| `patch_snapshots` | Exact pre-apply content of each file a patch touches (V20), captured when the patch is applied. Lets `Revert` restore the previous content deterministically instead of reverse-applying the diff. `existed=false` means the patch created the file, so revert deletes it. |
+| `check_runs` / `check_steps` / `check_run_gates` | Live per-feature run records (GENERATE/REVIEW/FIX/VERIFY) with ordered steps, progress, and gates. Drive the visible pipeline and its SSE/poll updates. |
+| `generations` | Generate wizard job: requirement, explicit stack/auth, selected integrations (names only, never credentials), AI metadata, lifecycle status, iteration and optional linked project. |
+| `generation_execution_evidence` | Build/test evidence per generation iteration. `build_status/test_status` include `SKIPPED` when the Docker sandbox is disabled; `SKIPPED` is never success. |
+| `generation_restructure_proposals` | Approval-gated file-move plans (preset/custom), status `PROPOSED|APPLIED|REVERTED|REJECTED`, and the backup reference used by Revert (V22). |
 | `verification_runs` | One sandbox execution (build status, test totals, analysis deltas, log refs, duration). Evidence backing every verdict. |
 | `test_results` | Per-test rows (or per-suite if volume demands) linked to a verification run. Enables "which test proved it" UI. |
 | `agent_executions` | Trace of every agent call (agent type, model, prompt version, input hash, status, duration, error). Auditability + metrics + evals. |
@@ -75,7 +80,9 @@ Key constraints:
 - `patches`: `fix_request_id FK`, `diff TEXT`, `files_changed INT`, `additions/deletions INT`, `status`, `validation_error NULL`.
 - `verification_runs`: `patch_id FK NOT NULL`, `build_status`, `tests_total/passed/failed/skipped INT`, `static_delta JSONB`, `security_delta JSONB`, `verdict (PENDING|VERIFIED|REJECTED)`, `log_ref`, `duration_ms`.
 - `test_results`: `verification_run_id FK`, `suite`, `test_name`, `status`, `duration_ms`, `message NULL`.
-- `agent_executions`: `project_id FK`, `agent_type`, `model`, `prompt_version`, `status`, `input_hash`, `output_ref`, `duration_ms`, `error NULL`, links (`review_id/fix_request_id/verification_run_id` nullable).
+- `generations`: `owner_id FK`, `name`, `requirement`, `backend/frontend/database`, `auth_type (JWT|OAUTH_GOOGLE|NONE)`, `integrations` (comma-separated enum names), `ai_provider/model/base_url`, `status`, `iteration`, `project_id NULL`.
+- `generation_restructure_proposals`: `generation_id FK`, `iteration`, `preset`, `description NULL`, `proposal_json`, `status`, `backup_ref NULL`, timestamps.
+- `agent_executions`: `project_id FK`, `agent_type`, `model`, `prompt_version`, `status` (`PENDING|RUNNING|COMPLETED|FAILED|SKIPPED`), `input_hash`, `output_ref`, `duration_ms`, `error NULL`, links (`review_id/fix_request_id/verification_run_id` nullable).
 - `audit_logs`: `actor_id FK NULL`, `action`, `entity_type`, `entity_id`, `metadata JSONB`, `ip NULL`, `created_at` (no updated_at — immutable).
 
 ## 5. Indexes
@@ -94,4 +101,5 @@ Key constraints:
 
 - One migration tool (Flyway recommended default; Liquibase acceptable — ADR in Phase 2).
 - `V1__init.sql` creates all tables above; later phases add columns via additive migrations only (no destructive alters without ADR + backup note).
+- `V20` adds `SKIPPED` to `execution_runs.status`/`build_status`, `REVERTED` to `patches.status`, and the `patch_snapshots` table. `V21` widens `verification_runs.build_status` to allow `SKIPPED` so a sandbox-disabled run records "not verified" rather than a misleading `SUCCESS`. `V22` adds `generations.auth_type/integrations`, `SKIPPED` to evidence/agent statuses, `NOT_VERIFIED` to the generation lifecycle, and `generation_restructure_proposals` (additive only).
 - Seed migration inserts `USER`/`ADMIN` roles only — no demo users.

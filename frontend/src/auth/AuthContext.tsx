@@ -212,6 +212,15 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/** Keeps signed-in users out of guest-only routes (login/register). */
+export function RedirectIfAuthenticated({ children }: { children: ReactNode }) {
+  const { token } = useAuth();
+  if (token) {
+    return <Navigate to="/dashboard" replace />;
+  }
+  return <>{children}</>;
+}
+
 /**
  * Returns the single ApiClient instance wired to this app's AuthProvider,
  * so any 401 from an authenticated call (e.g. GeneratePage's

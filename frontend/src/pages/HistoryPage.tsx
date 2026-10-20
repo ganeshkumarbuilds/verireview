@@ -13,6 +13,7 @@ import {
   LoadingState,
   PageHeader,
   SkeletonList,
+  primaryButtonClass,
   selectClass,
 } from '../components/ui';
 import { ProjectAvatar, WorkspaceCrumb, formatDate } from '../components/workflow';
@@ -46,6 +47,15 @@ function describeEntry(entry: HistoryEntry): string {
 }
 
 /**
+ * History is built from review runs, so every entry currently belongs to the
+ * Review feature. Kept as a helper so the feature filter keeps working if
+ * other run types are ever surfaced on this timeline.
+ */
+function featureOf(): string {
+  return 'REVIEW';
+}
+
+/**
  * Activity/audit timeline built from real review runs (existing list
  * endpoints only). There is no global history endpoint for fix
  * requests, patches, executions, or verifications, so those stay
@@ -59,6 +69,10 @@ export function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState('ALL');
+  const [projectFilter, setProjectFilter] = useState('ALL');
+  const [featureFilter, setFeatureFilter] = useState('ALL');
+  const [sort, setSort] = useState<'newest' | 'oldest'>('newest');
+  const [projects, setProjects] = useState<ProjectResponse[]>([]);
 
   const reload = useCallback(async () => {
     if (!token) {
@@ -70,6 +84,7 @@ export function HistoryPage() {
     try {
       const page = await listProjects(apiClient(), token, { size: 20 });
       setProjectCount(page.totalElements);
+      setProjects(page.content);
       const settled = await Promise.allSettled(
         page.content.map(async (project) => {
           const history = await listReviews(apiClient(), token, project.id);
@@ -99,18 +114,28 @@ export function HistoryPage() {
     void reload();
   }, [reload]);
 
-  const visible = entries.filter((entry) => {
-    if (statusFilter === 'ALL') return true;
-    if (statusFilter === 'ACTIVE') return !isTerminal(entry.review.status);
-    return entry.review.status === statusFilter;
-  });
+  const visible = entries
+    .filter((entry) => {
+      if (projectFilter !== 'ALL' && entry.project.id !== projectFilter) return false;
+      if (featureFilter !== 'ALL' && featureOf() !== featureFilter) return false;
+      if (statusFilter === 'ALL') return true;
+      if (statusFilter === 'ACTIVE') return !isTerminal(entry.review.status);
+      return entry.review.status === statusFilter;
+    })
+    .sort((a, b) =>
+      sort === 'newest'
+        ? b.review.createdAt.localeCompare(a.review.createdAt)
+        : a.review.createdAt.localeCompare(b.review.createdAt),
+    );
+
+  const features = Array.from(new Set(entries.map(() => featureOf())));
 
   return (
     <div className="space-y-6">
       <WorkspaceCrumb items={[{ label: 'History' }]} />
       <PageHeader
         title="History"
-        description={`Activity across ${projectCount} projects — newest first. Fix, patch, execution, and verification records are tracked per finding in the Review workspace.`}
+        description={`Activity across ${projectCount} projects. Fix, patch, execution, and verification records are tracked per finding in the Review workspace.`}
       />
       {error && <ErrorAlert message={error} onRetry={() => void reload()} />}
 
@@ -118,46 +143,99 @@ export function HistoryPage() {
         title={`Activity (${visible.length})`}
         subtitle="Analysis runs from existing review endpoints. Nothing here is synthesized."
         actions={
-          <label className="flex items-center gap-2 text-sm">
-            <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Status
-            </span>
-            <select
-              aria-label="Filter history by status"
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-              className={selectClass}
-            >
-              <option value="ALL">All</option>
-              <option value="ACTIVE">Active</option>
-              <option value="COMPLETED">Completed</option>
-              <option value="FAILED">Failed</option>
-            </select>
-          </label>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <label className="flex min-w-0 items-center gap-2 text-sm">
+              <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Project
+              </span>
+              <select
+                aria-label="Filter history by project"
+                value={projectFilter}
+                onChange={(event) => setProjectFilter(event.target.value)}
+                className={`${selectClass} min-w-0 max-w-full`}
+              >
+                <option value="ALL">All</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex min-w-0 items-center gap-2 text-sm">
+              <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Feature
+              </span>
+              <select
+                aria-label="Filter history by feature"
+                value={featureFilter}
+                onChange={(event) => setFeatureFilter(event.target.value)}
+                className={`${selectClass} min-w-0 max-w-full`}
+              >
+                <option value="ALL">All</option>
+                {features.map((feature) => (
+                  <option key={feature} value={feature}>
+                    {feature}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex min-w-0 items-center gap-2 text-sm">
+              <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Status
+              </span>
+              <select
+                aria-label="Filter history by status"
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value)}
+                className={`${selectClass} min-w-0 max-w-full`}
+              >
+                <option value="ALL">All</option>
+                <option value="ACTIVE">Active</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="FAILED">Failed</option>
+              </select>
+            </label>
+            <label className="flex min-w-0 items-center gap-2 text-sm">
+              <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Time
+              </span>
+              <select
+                aria-label="Sort history by time"
+                value={sort}
+                onChange={(event) => setSort(event.target.value as 'newest' | 'oldest')}
+                className={`${selectClass} min-w-0 max-w-full`}
+              >
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+              </select>
+            </label>
+          </div>
         }
       >
-        {loading ? (
+        {loading && entries.length === 0 ? (
           <>
             <LoadingState label="Loading history…" />
             <SkeletonList rows={5} />
           </>
+        ) : error && entries.length === 0 ? (
+          <p className="py-4 text-sm text-slate-600">
+            History could not be loaded. Fix the error above and retry.
+          </p>
         ) : entries.length === 0 ? (
           <EmptyState
             title="History will appear here."
-            body="No analysis runs recorded yet. Open a project and start your first analysis — every run lands on this timeline with its evidence."
+            body="No analysis runs recorded yet. Open Review and start your first analysis — every run lands on this timeline with its evidence."
             action={
-              <Link
-                to="/projects"
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
-              >
-                Go to Projects
+              <Link to="/review" className={primaryButtonClass}>
+                Go to Review
               </Link>
             }
           />
         ) : visible.length === 0 ? (
           <EmptyState
             title="No matching activity."
-            body="No runs match the selected status filter."
+            body="No runs match the selected project, feature, or status filters."
           />
         ) : (
           <ol className="relative space-y-4 border-l-2 border-indigo-100 pl-5">
@@ -176,9 +254,12 @@ export function HistoryPage() {
                 <div className="rounded-xl border border-indigo-100 bg-white px-4 py-3 shadow-sm shadow-indigo-100/50">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge tone={entryTone(entry.review.status)}>{entry.review.status}</Badge>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                      Review
+                    </span>
                     <Link
-                      to={`/projects/${entry.project.id}`}
-                      className="text-sm font-bold text-indigo-950 hover:underline"
+                      to={`/review?project=${entry.project.id}`}
+                      className="min-w-0 break-words text-sm font-bold text-indigo-950 hover:underline"
                     >
                       {entry.project.name}
                     </Link>
@@ -192,16 +273,10 @@ export function HistoryPage() {
                   </p>
                   <div className="mt-2 flex flex-wrap gap-2">
                     <Link
-                      to={`/projects/${entry.project.id}`}
-                      className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 hover:underline"
-                    >
-                      Open project
-                    </Link>
-                    <Link
                       to={`/review?project=${entry.project.id}`}
-                      className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 hover:underline"
+                      className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
                     >
-                      Inspect in Review
+                      Open in Review
                     </Link>
                   </div>
                 </div>

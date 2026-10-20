@@ -66,6 +66,8 @@ def _stack_lines(stack: dict) -> list[str]:
         f"backend: {stack.get('backend', 'unknown')}",
         f"frontend: {stack.get('frontend', 'unknown')}",
         f"database: {stack.get('database', 'unknown')}",
+        f"auth: {stack.get('auth') or 'NONE'}",
+        "integrations: " + (", ".join(stack.get("integrations") or []) or "none"),
     ]
     for key in ("db_host", "db_port", "db_name", "db_username", "db_ssl_mode"):
         value = stack.get(key)

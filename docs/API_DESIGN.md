@@ -11,8 +11,9 @@
 - Envelope:
   ```json
   { "data": {}, "error": null, "meta": { "traceId": "..." } }
-  // error case: { "data": null, "error": { "code": "FINDING_NOT_FOUND", "message": "...", "details": {} } }
+  // error case: { "data": null, "error": { "status": 404, "code": "FINDING_NOT_FOUND", "message": "...", "details": {} } }
   ```
+  `error.status` mirrors the HTTP status so clients read the status, code, and plain-language message from one place. Messages are safe for direct display — never stack traces or internal paths.
 - Error codes are stable strings (`PROJECT_NOT_FOUND`, `VALIDATION_FAILED`, `FORBIDDEN`, `RATE_LIMITED`, `JOB_FAILED`, ...); HTTP status + code + human message.
 - Validation errors → `400` with field-level `details`. Bean Validation on every `@RequestBody`; path traversal / URL allowlists enforced in service layer, not just annotations.
 - Idempotency for job-triggering POSTs: client may send `Idempotency-Key` header; server dedupes review/fix triggers per scope.
@@ -74,6 +75,19 @@
 | GET | `/fix-requests/{fixId}` | Detail + patch ref + status. |
 | GET | `/fix-requests/{fixId}/patch` | Patch diff + stats (read-only). |
 | POST | `/fix-requests/{fixId}/cancel` | Cancel pending/in-progress request. |
+| POST | `/patches/{patchId}/apply` | Apply a `PROPOSED` patch to its project/generation workspace. Snapshots the previous content of every touched file (revert evidence). 409 unless `PROPOSED`. |
+| POST | `/patches/{patchId}/revert` | Restore the previous file content from the snapshots taken at apply time; patch becomes `REVERTED`. 409 unless `APPLIED` and a snapshot exists. |
+
+### Project fix runs (`/projects/{id}`) — find → ask permission → fix → re-check
+
+Two explicit steps so consent is enforced on the backend (never by the UI alone):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/projects/{id}/pipeline` | The 5-stage agent pipeline (`import`, `analyze`, `review`, `fix`, `verify`) derived from real records (`project_files`, `reviews`, `agent_executions`, `check_runs`/`check_steps`, `execution_runs`). Each stage: `state` (`WAITING`/`RUNNING`/`COMPLETED`/`FAILED`/`SKIPPED`), `startedAt`/`finishedAt`/`durationMs`, `detail`, and a display-safe `error`. A skipped sandbox reports `SKIPPED` + "Not verified: sandbox unavailable" — never `COMPLETED`. Owner only; empty projects return five `WAITING` stages (never 500). |
+| POST | `/projects/{id}/fix-requests` | **Consent step.** Body `{ findingIds[], scopeNote? }` → 201 `{ projectId, fixRequestIds[], created, skipped }`. Creates one approved `FixRequest` per selected finding. Changes no code. |
+| POST | `/projects/{id}/fix-runs` | **Fix + automatic re-check.** Body `{ findingIds[], scopeNote? }` → 200 fix-run detail. Rejected with **409** unless an approved `FixRequest` exists for the user and every selected finding; foreign/absent findings → 404. Per approved request it invokes the coding agent, applies the resulting patch, then runs the sandbox build/tests and verification. |
+| GET | `/projects/{id}/fix-runs/{checkRunId}` | Fix-run detail: `status`, `steps[]`, before/after `summary` (`fixed`, `stillOpen`, `newlyIntroduced`), `changedFiles[]` (`path`, `patchId`, `status`, `diff`), `verificationVerdict`, and `sandboxSkipped`. Owner only (else 404). |
 
 ### Verification
 
@@ -85,23 +99,32 @@
 
 ### Generation (`/generations`)
 
-Implemented contract (Generate workflow): the wizard collects requirement,
-explicit stack, optional database config, and per-run AI credentials; the
-backend queues the job and the frontend polls real state
-`QUEUED → PLANNING → GENERATING → REVIEWING → COMPLETED / FAILED`.
+Implemented contract (Generate workflow): the five-step wizard collects the
+requirement, explicit stack/auth, optional integrations and database config,
+reviews a scaffold preview, then queues the job. The backend polls real state
+`QUEUED → PLANNING → CODING → BUILDING → VERIFYING → REVIEWING → REVIEWED /
+FAILED`; a disabled sandbox inserts `NOT_VERIFIED` before `REVIEWING`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/generations` | `{ name, requirement, description?, backend, frontend, database, databaseConfig?, aiConfig, draft? }` → 201 + generation (`DRAFT` when `draft: true`, else `QUEUED`). Secrets (`databaseConfig.password`, `aiConfig.apiKey`) travel once, are held in memory only, and never appear in any response. |
+| POST | `/generations` | `{ name, requirement, description?, backend, frontend, database, auth?, integrations?, databaseConfig?, aiConfig, draft? }` → 201 + generation (`DRAFT` when `draft: true`). Secrets (`databaseConfig.password`, `aiConfig.apiKey`) travel once, are held in memory only, and never appear in any response. |
+| POST | `/generations/plan-preview` | Step-4 stack-aware scaffold (`requirement`, stack, `auth`, `integrations`) → folders/files/architecture. Creates no job and makes no AI call, so re-planning is free. |
 | GET | `/generations` | List own generations (paged). Secrets masked (`passwordConfigured`, `keyConfigured` flags only). |
-| GET | `/generations/{id}` | Generation state + masked config + `projectId` once `COMPLETED`. Owner only (else 404). Also carries `iteration`, `maxIterations`, `revisionNumber`, `revisionCount`, and nullable `artifact` facts (never storage paths). |
+| GET | `/generations/{id}` | Generation state + masked config + `projectId` after handoff. Owner only (else 404). Carries `auth`, `integrations`, `execution` (with `notVerified`), `plan.files`, `agentWorkflow`, and nullable `artifact` facts (never storage paths). |
+| GET | `/generations/{id}/files` | Files in the latest generated workspace: `{ path, sizeBytes }[]`. Owner only. |
+| GET | `/generations/{id}/file?path=` | One generated text file for the browse view. Jailed to the workspace, 256 KB cap, binary files return `binary: true` with no content. |
+| POST | `/generations/{id}/send-to-review` | Materializes a reviewed generation as a `GENERATED` `Project` (copy, never move), links `projectId`, and is idempotent. 409 until `REVIEWED`/`COMPLETED`. |
 | POST | `/generations/{id}/revisions` | Append a task modification as a new numbered revision (drafts only, else 409). Body `{ requirement }`; response is the revision, never secrets. |
 | GET | `/generations/{id}/revisions` | Ordered revision history for a generation. Owner only (else 404). |
 | POST | `/generations/{id}/fix-requests` | Approval gate for the fix loop: creates one FixRequest per OPEN finding of the latest review (REVIEWED only, else 409). Body `{ scopeNote? }` → 202 `{ reviewId, created[], skippedOpen }`. Never mutates code. |
 | POST | `/generations/{id}/rebuild` | Rebuild + reverify after an applied generation patch. Body `{ patchId }` (must be `APPLIED`) → 202. Backend owns the lifecycle state. |
+| POST | `/generations/{id}/restructure/proposals` | Propose file moves for a preset (`MVC`, `LAYERED`, `FEATURE_FOLDERS`, `CUSTOM`) or custom description. Persists the proposal only; no file moves. |
+| GET | `/generations/{id}/restructure/proposals` | Proposal history with moves, status, notes and `canRevert`. Owner only. |
+| POST | `/generations/{id}/restructure/proposals/{proposalId}/apply` | Explicit approval gate. Backs up the workspace, then moves files; failure restores the backup. |
+| POST | `/generations/{id}/restructure/revert` | Restores the applied proposal's backup exactly (moved copies removed), then marks it `REVERTED`. |
 | GET | `/generations/{id}/download` | Verified project ZIP. Served only when the backend quality gate passes (artifact + REVIEWED + VERIFIED verdict + SUCCESS build + completed review + zero blocking findings); else 409 with `X-Download-Blocked-Reason`. ZIP carries an `.env.example` with placeholders — never real secrets. |
 
-Rules: explicit stack enums only (`JAVA_SPRING_BOOT`/`PYTHON_FASTAPI`/`NODEJS`, `REACT_TYPESCRIPT`/`NONE`, `POSTGRESQL`/`MYSQL`/`MONGODB`/`NONE`, `OPENROUTER`/`CUSTOM`/`NONE`); `databaseConfig` required iff database ≠ `NONE`; `baseUrl` required iff provider is `CUSTOM`. Provider `NONE` needs no key and takes no `apiKey`/`baseUrl` (model defaults to `template`): the backend builds a deterministic Java starter through the same build/verify/review/download gates (Java only in this phase). Generated code must use env-var placeholders — embedded secrets fail the run. Output becomes a normal `GENERATED` project consumable by the existing Project/Review flow. No sandbox execution in this phase.
+Rules: explicit enums only. Frontend `REACT_TYPESCRIPT`/`NEXTJS`/`VUE`/`NONE`, backend `JAVA_SPRING_BOOT`/`PYTHON_FASTAPI`/`NODEJS`/`NONE`, database `POSTGRESQL`/`MYSQL`/`MONGODB`/`SQLITE`/`NONE`, auth `JWT`/`OAUTH_GOOGLE`/`NONE`, integrations `STRIPE`/`RAZORPAY`/`EMAIL`/`FILE_STORAGE_S3`/`AI_LLM`/`MAPS`/`ANALYTICS`/`DOCKER_CI`, AI `OPENROUTER`/`CUSTOM`/`NONE`. Reject backend+frontend both `NONE`, auth other than `NONE` without a backend, and Stripe+Razorpay together. `databaseConfig` is required iff database ≠ `NONE`; `baseUrl` required iff provider is `CUSTOM`. Provider `NONE` needs no key and takes no `apiKey`/`baseUrl` (model defaults to `template`): the backend builds a deterministic Java starter through the same gates (Java + React/none only). Generated code must use env-var placeholders — embedded secrets fail the run. If the Docker sandbox is disabled, build/test evidence is `SKIPPED`, Verify is `REJECTED`, the pipeline says **Not verified**, and the download gate stays locked. Output becomes a normal `GENERATED` project only through the explicit handoff endpoint.
 
 ### Agent executions & Audit (observability of the workflow)
 

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ApiError } from '../api/client';
-import { getReview, listFindings } from '../api/analysis';
-import { getProject } from '../api/projects';
-import type { FindingResponse, ProjectResponse, ReviewResponse } from '../api/types';
-import { apiClient, useAuth } from '../auth/AuthContext';
-import { FindingDetail } from '../components/FindingDetail';
+import { ApiError } from '../../api/client';
+import { getReview, listFindings } from '../../api/analysis';
+import { getProject } from '../../api/projects';
+import type { FindingResponse, ProjectResponse, ReviewResponse } from '../../api/types';
+import { apiClient, useAuth } from '../../auth/AuthContext';
+import { FindingDetail } from '../../components/FindingDetail';
 import {
   Badge,
   Card,
@@ -14,12 +14,13 @@ import {
   LoadingState,
   PageHeader,
   SkeletonList,
-} from '../components/ui';
+  primaryButtonClass,
+} from '../../components/ui';
 import {
   WorkspaceCrumb,
   severityTone,
   sourceTone,
-} from '../components/workflow';
+} from '../../components/workflow';
 
 /**
  * Focused investigation page for one finding. The fix pipeline
@@ -114,7 +115,7 @@ export function FindingDetailPage() {
             action={
               <Link
                 to={projectId ? `/review?project=${projectId}` : '/review'}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+                className={primaryButtonClass}
               >
                 Back to Review
               </Link>
@@ -134,7 +135,7 @@ export function FindingDetailPage() {
       <WorkspaceCrumb
         items={[
           { label: 'Review', to: projectId ? `/review?project=${projectId}` : '/review' },
-          ...(project ? [{ label: project.name, to: `/projects/${project.id}` }] : []),
+          ...(project ? [{ label: project.name, to: `/review?project=${project.id}` }] : []),
           { label: finding.rule ?? finding.title },
         ]}
       />
@@ -185,15 +186,7 @@ export function FindingDetailPage() {
         </dl>
       </Card>
 
-      <FindingDetail
-        finding={finding}
-        onClose={backToReview}
-        onViewFile={() => {
-          if (projectId) {
-            navigate(`/projects/${projectId}`);
-          }
-        }}
-      />
+      <FindingDetail finding={finding} onClose={backToReview} />
     </div>
   );
 }

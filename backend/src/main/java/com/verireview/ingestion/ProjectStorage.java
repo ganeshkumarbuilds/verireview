@@ -24,7 +24,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Component
 public class ProjectStorage {
 
-  static final long FILE_VIEW_BYTES = 256L * 1024L;
+  public static final long FILE_VIEW_BYTES = 256L * 1024L;
   static final int BINARY_PROBE_BYTES = 8192;
 
   private static final Pattern DRIVE_LETTER = Pattern.compile("^[A-Za-z]:.*");

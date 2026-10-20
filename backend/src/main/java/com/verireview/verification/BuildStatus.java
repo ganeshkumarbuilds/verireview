@@ -5,5 +5,7 @@ public enum BuildStatus {
   RUNNING,
   SUCCESS,
   FAILURE,
-  TIMEOUT
+  TIMEOUT,
+  /** Docker sandbox disabled: no build/test actually ran. */
+  SKIPPED
 }

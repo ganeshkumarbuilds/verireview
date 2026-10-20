@@ -18,4 +18,6 @@ public record VerificationRunResponse(
     String logRef,
     Long durationMs,
     Instant createdAt,
-    Instant updatedAt) {}
+    Instant updatedAt,
+    /** True when the Docker sandbox was unavailable, so nothing was actually executed. */
+    boolean sandboxSkipped) {}

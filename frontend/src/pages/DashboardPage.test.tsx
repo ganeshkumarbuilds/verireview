@@ -53,7 +53,7 @@ describe('DashboardPage', () => {
     // Header primary action points at the review/upload page.
     expect(screen.getByRole('link', { name: /Review existing code/i })).toHaveAttribute(
       'href',
-      '/projects',
+      '/review',
     );
 
     // Four feature cards, each with a working destination.
@@ -61,17 +61,19 @@ describe('DashboardPage', () => {
       expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
     }
 
-    // Overall tiles render 0 cleanly for missing data.
-    expect(screen.getByText('Files verified')).toBeInTheDocument();
+    // Overall tiles render 0 cleanly for missing data. The summary request
+    // resolves asynchronously, so wait for the loaded state instead of racing
+    // it -- the empty-projects assertions below flaked under full-suite load.
+    await waitFor(() => expect(screen.getByText('Files verified')).toBeInTheDocument());
     expect(screen.getByText('Issues found')).toBeInTheDocument();
     expect(screen.getByText('Issues fixed')).toBeInTheDocument();
     expect(screen.getAllByText('0')).toHaveLength(3);
 
     // Empty projects state with a create/upload action.
-    expect(screen.getByText('No projects yet')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Create or upload project/i })).toHaveAttribute(
+    await waitFor(() => expect(screen.getByText('No projects yet')).toBeInTheDocument());
+    expect(screen.getByRole('link', { name: /Add code to review/i })).toHaveAttribute(
       'href',
-      '/projects',
+      '/review',
     );
   });
 
@@ -120,10 +122,10 @@ describe('DashboardPage', () => {
     const emptyRow = screen.getByRole('row', { name: /empty/ });
     expect(within(emptyRow).getByText('—')).toBeInTheDocument();
 
-    // Row Review button navigates to the project workspace.
+    // Row Review button opens Review with the project preselected.
     expect(within(demoRow).getByRole('link', { name: /Review demo/i })).toHaveAttribute(
       'href',
-      '/projects/p1',
+      '/review?project=p1',
     );
   });
 
@@ -138,10 +140,10 @@ describe('DashboardPage', () => {
       '/generate',
     );
     expect(screen.getByRole('link', { name: /Open review/i })).toHaveAttribute('href', '/review');
-    expect(screen.getByRole('link', { name: /Fix findings/i })).toHaveAttribute('href', '/review');
-    expect(screen.getByRole('link', { name: /View verification/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /Fix findings/i })).toHaveAttribute('href', '/fix');
+    expect(screen.getByRole('link', { name: /Run verification/i })).toHaveAttribute(
       'href',
-      '/projects',
+      '/verify',
     );
   });
 

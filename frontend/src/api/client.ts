@@ -108,12 +108,18 @@ export async function parseBody<T>(response: Response): Promise<T> {
     );
   }
   if (!response.ok) {
-    const err = body as { message?: string; code?: string };
-    throw new ApiError(
-      response.status,
-      err.code ?? `HTTP_${response.status}`,
-      err.message ?? `Request failed with status ${response.status}.`,
-    );
+    // Errors from the backend use the { data, error: {status, code, message} } envelope.
+    // Read the nested error first so the user sees the plain-language message,
+    // never a raw HTTP status or a stack trace.
+    const errBody = body as {
+      error?: { code?: string; message?: string; status?: number };
+      code?: string;
+      message?: string;
+    };
+    const code = errBody.error?.code ?? errBody.code ?? `HTTP_${response.status}`;
+    const message =
+      errBody.error?.message ?? errBody.message ?? `Request failed with status ${response.status}.`;
+    throw new ApiError(response.status, code, message);
   }
   return body as T;
 }

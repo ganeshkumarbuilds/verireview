@@ -66,7 +66,7 @@ class GenerationAiClientTest {
     return new AiGenerationPlanRequest(
         "33333333-3333-3333-3333-333333333333",
         "A minimal todo API with tests",
-        "PYTHON_FASTAPI", "NONE", "NONE",
+        "PYTHON_FASTAPI", "NONE", "NONE", "NONE", java.util.List.of(),
         null, null, null, null, null,
         "OPENROUTER", "sk-test-key", null, "test/model");
   }

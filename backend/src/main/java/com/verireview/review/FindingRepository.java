@@ -29,6 +29,9 @@ public interface FindingRepository extends JpaRepository<Finding, UUID> {
   List<Finding> findByReviewProjectIdAndSeverityInAndCreatedAtAfter(
       UUID projectId, List<FindingSeverity> severities, Instant after);
 
+  /** All findings created for a project after a point in time (used by re-check deltas). */
+  List<Finding> findByReviewProjectIdAndCreatedAtAfter(UUID projectId, Instant after);
+
   boolean existsByReviewIdAndCategoryInAndStatus(UUID reviewId, List<FindingCategory> categories,
       FindingStatus status);
 

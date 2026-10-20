@@ -106,6 +106,7 @@ public class GenerationCodingAgent implements CodingAgent {
       case JAVA_SPRING_BOOT -> "java";
       case PYTHON_FASTAPI -> "python";
       case NODEJS -> "javascript";
+      case NONE -> "text";
     };
   }
 

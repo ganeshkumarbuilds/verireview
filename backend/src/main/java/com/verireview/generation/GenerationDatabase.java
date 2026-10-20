@@ -5,5 +5,6 @@ public enum GenerationDatabase {
   POSTGRESQL,
   MYSQL,
   MONGODB,
+  SQLITE,
   NONE
 }

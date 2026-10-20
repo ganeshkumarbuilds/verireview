@@ -187,21 +187,24 @@ public class CheckRunSseService {
   }
 
   private Object toCheckEvent(CheckRun run) {
-    return new java.util.LinkedHashMap<>(Map.ofEntries(
-        Map.entry("id", run.getId()),
-        Map.entry("feature", run.getFeature().name()),
-        Map.entry("status", run.getStatus().name()),
-        Map.entry("progress", run.getProgress()),
-        Map.entry("currentStep", run.getCurrentStep()),
-        Map.entry("errorMessage", run.getErrorMessage()),
-        Map.entry("startedAt", run.getStartedAt()),
-        Map.entry("finishedAt", run.getFinishedAt()),
-        Map.entry("durationMs", run.getDurationMs()),
-        Map.entry("severityCritical", run.getSeverityCritical()),
-        Map.entry("severityHigh", run.getSeverityHigh()),
-        Map.entry("severityMedium", run.getSeverityMedium()),
-        Map.entry("severityLow", run.getSeverityLow()),
-        Map.entry("severityInfo", run.getSeverityInfo())
-    ));
+    // NOTE: a plain HashMap is used (not Map.ofEntries) because several fields
+    // are legitimately null on a queued/just-created run -- Map.ofEntries would
+    // throw NPE and break the live SSE stream.
+    java.util.Map<String, Object> event = new java.util.LinkedHashMap<>();
+    event.put("id", run.getId());
+    event.put("feature", run.getFeature().name());
+    event.put("status", run.getStatus().name());
+    event.put("progress", run.getProgress());
+    event.put("currentStep", run.getCurrentStep());
+    event.put("errorMessage", run.getErrorMessage());
+    event.put("startedAt", run.getStartedAt());
+    event.put("finishedAt", run.getFinishedAt());
+    event.put("durationMs", run.getDurationMs());
+    event.put("severityCritical", run.getSeverityCritical());
+    event.put("severityHigh", run.getSeverityHigh());
+    event.put("severityMedium", run.getSeverityMedium());
+    event.put("severityLow", run.getSeverityLow());
+    event.put("severityInfo", run.getSeverityInfo());
+    return event;
   }
 }

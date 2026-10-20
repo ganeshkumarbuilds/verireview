@@ -16,4 +16,7 @@ public interface FixRequestRepository extends JpaRepository<FixRequest, UUID> {
 
   @Query("SELECT COUNT(fr) FROM FixRequest fr JOIN fr.finding f JOIN f.review r WHERE r.project.id = :projectId AND fr.status = :status")
   long countByFindingReviewProjectIdAndStatus(UUID projectId, FixRequestStatus status);
+
+  @Query("SELECT fr FROM FixRequest fr JOIN fr.finding f JOIN f.review r WHERE r.project.id = :projectId ORDER BY fr.createdAt DESC")
+  List<FixRequest> findByFindingReviewProjectId(UUID projectId);
 }

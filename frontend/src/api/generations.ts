@@ -2,7 +2,13 @@ import type { ApiClient } from './client';
 import { ApiError, bearer } from './client';
 import type {
   CreateGenerationInput,
+  GenerationFileContentView,
+  GenerationFileView,
   GenerationResponse,
+  PlanPreviewInput,
+  PlanPreviewResponse,
+  RestructurePreset,
+  RestructureView,
   StartGenerationInput,
   UpdateGenerationInput,
 } from './generationTypes';
@@ -155,5 +161,106 @@ export async function createGenerationFixRequests(
       headers: bearer(token),
       body: JSON.stringify(scopeNote ? { scopeNote } : {}),
     },
+  );
+}
+
+/** Step 4: stack-aware scaffold preview. Creates no generation job. */
+export async function previewGenerationPlan(
+  client: ApiClient,
+  token: string,
+  input: PlanPreviewInput,
+): Promise<PlanPreviewResponse> {
+  return client.request<PlanPreviewResponse>('/generations/plan-preview', {
+    method: 'POST',
+    headers: bearer(token),
+    body: JSON.stringify(input),
+  });
+}
+
+/** Files actually present in the generated workspace (paths + sizes). */
+export async function listGenerationFiles(
+  client: ApiClient,
+  token: string,
+  id: string,
+): Promise<GenerationFileView[]> {
+  return client.request<GenerationFileView[]>(
+    `/generations/${encodeURIComponent(id)}/files`,
+    { headers: bearer(token) },
+  );
+}
+
+/** Materializes the reviewed generation as a Project for the Review flow. */
+export async function sendGenerationToReview(
+  client: ApiClient,
+  token: string,
+  id: string,
+): Promise<GenerationResponse> {
+  return client.request<GenerationResponse>(
+    `/generations/${encodeURIComponent(id)}/send-to-review`,
+    { method: 'POST', headers: bearer(token) },
+  );
+}
+
+/** Reads one generated text file (backend caps size and jails the path). */
+export async function getGenerationFile(
+  client: ApiClient,
+  token: string,
+  id: string,
+  path: string,
+): Promise<GenerationFileContentView> {
+  return client.request<GenerationFileContentView>(
+    `/generations/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+    { headers: bearer(token) },
+  );
+}
+
+export async function proposeRestructure(
+  client: ApiClient,
+  token: string,
+  id: string,
+  preset: RestructurePreset,
+  description?: string,
+): Promise<RestructureView> {
+  return client.request<RestructureView>(
+    `/generations/${encodeURIComponent(id)}/restructure/proposals`,
+    {
+      method: 'POST',
+      headers: bearer(token),
+      body: JSON.stringify({ preset, description: description || undefined }),
+    },
+  );
+}
+
+export async function listRestructures(
+  client: ApiClient,
+  token: string,
+  id: string,
+): Promise<RestructureView[]> {
+  return client.request<RestructureView[]>(
+    `/generations/${encodeURIComponent(id)}/restructure/proposals`,
+    { headers: bearer(token) },
+  );
+}
+
+export async function applyRestructure(
+  client: ApiClient,
+  token: string,
+  id: string,
+  proposalId: string,
+): Promise<RestructureView> {
+  return client.request<RestructureView>(
+    `/generations/${encodeURIComponent(id)}/restructure/proposals/${encodeURIComponent(proposalId)}/apply`,
+    { method: 'POST', headers: bearer(token) },
+  );
+}
+
+export async function revertRestructure(
+  client: ApiClient,
+  token: string,
+  id: string,
+): Promise<RestructureView> {
+  return client.request<RestructureView>(
+    `/generations/${encodeURIComponent(id)}/restructure/revert`,
+    { method: 'POST', headers: bearer(token) },
   );
 }

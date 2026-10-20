@@ -89,7 +89,7 @@ export function HomePage() {
             </span>
             <span className="text-base font-bold tracking-wide text-indigo-950">VeriReview</span>
           </Link>
-          <nav aria-label="Homepage sections" className="ml-8 hidden items-center gap-1 md:flex">
+          <nav aria-label="Homepage sections" className="ml-8 hidden items-center gap-1 lg:flex">
             {NAV_LINKS.map((link) => (
               <a
                 key={link.href}
@@ -100,7 +100,7 @@ export function HomePage() {
               </a>
             ))}
           </nav>
-          <div className="ml-auto hidden items-center gap-2 md:flex">
+          <div className="ml-auto hidden items-center gap-2 lg:flex">
             <Link
               to="/login"
               className="rounded-lg px-4 py-2 text-base font-bold text-indigo-950/70 transition-colors hover:bg-indigo-50 hover:text-indigo-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
@@ -119,7 +119,7 @@ export function HomePage() {
             aria-label="Toggle menu"
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((open) => !open)}
-            className="ml-auto rounded-lg p-2 text-indigo-600 transition-colors hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 md:hidden"
+            className="ml-auto rounded-lg p-2 text-indigo-600 transition-colors hover:bg-indigo-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 lg:hidden"
           >
             ☰
           </button>
@@ -127,7 +127,7 @@ export function HomePage() {
         {menuOpen && (
           <nav
             aria-label="Mobile sections"
-            className="border-t border-indigo-100 bg-white px-4 py-2 md:hidden"
+            className="border-t border-indigo-100 bg-white px-4 py-2 lg:hidden"
           >
             {NAV_LINKS.map((link) => (
               <a
@@ -223,7 +223,7 @@ export function HomePage() {
         <section
           id="how-it-works"
           aria-label="How it works"
-          className="border-y border-indigo-100 bg-indigo-50/60"
+          className="scroll-mt-20 border-y border-indigo-100 bg-indigo-50/60"
         >
           <div className="mx-auto w-full max-w-6xl px-4 py-16">
             <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600">
@@ -319,7 +319,7 @@ export function HomePage() {
         <section
           id="architecture"
           aria-label="Architecture"
-          className="border-t border-indigo-100 bg-white"
+          className="scroll-mt-20 border-t border-indigo-100 bg-white"
         >
           <div className="mx-auto w-full max-w-6xl px-4 py-16">
             <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600">

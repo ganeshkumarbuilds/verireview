@@ -70,11 +70,11 @@ export function RegisterPage() {
               type="password"
               name="password"
               required
-            minLength={8}
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            autoComplete="new-password"
-            placeholder="Password (min 8 characters)"
+              minLength={8}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="new-password"
+              placeholder="Password (min 8 characters)"
               aria-label="Password"
               className={pillInput}
             />
@@ -87,14 +87,14 @@ export function RegisterPage() {
           <button
             type="submit"
             disabled={busy}
-            className="w-full rounded-full bg-indigo-600 py-3 text-lg font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 disabled:opacity-60"
+            className="w-full rounded-full bg-indigo-600 py-3 text-lg font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-60"
           >
             {busy ? 'Creating account…' : 'Register'}
           </button>
         </form>
         <p className="mt-6 text-center text-[15px] text-indigo-950/60">
           Have an account?{' '}
-          <Link to="/login" className="font-medium text-indigo-600 hover:text-indigo-700 hover:underline">
+          <Link to="/login" className="rounded font-medium text-indigo-600 hover:text-indigo-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2">
             Log in
           </Link>
         </p>

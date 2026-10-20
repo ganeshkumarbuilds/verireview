@@ -1,9 +1,11 @@
 package com.verireview.generation.dto;
 
 import com.verireview.generation.GenerationAiProvider;
+import com.verireview.generation.GenerationAuth;
 import com.verireview.generation.GenerationBackend;
 import com.verireview.generation.GenerationDatabase;
 import com.verireview.generation.GenerationFrontend;
+import com.verireview.generation.GenerationIntegration;
 import com.verireview.generation.GenerationStatus;
 import java.time.Instant;
 import java.util.List;
@@ -26,6 +28,8 @@ public record GenerationResponse(
     GenerationBackend backend,
     GenerationFrontend frontend,
     GenerationDatabase database,
+    GenerationAuth auth,
+    List<GenerationIntegration> integrations,
     DatabaseView databaseConfig,
     AiView aiConfig,
     GenerationStatus status,
@@ -40,6 +44,7 @@ public record GenerationResponse(
     WorkflowStatsView workflowStats,
     VerificationView verification,
     ReviewView review,
+    ExecutionView execution,
     List<AgentStepView> agentWorkflow,
     boolean downloadReady,
     boolean previewReady,
@@ -57,7 +62,12 @@ public record GenerationResponse(
       List<String> dependencies,
       List<String> directories,
       String apis,
-      List<String> steps) {
+      List<String> steps,
+      List<PlanFileView> files) {
+  }
+
+  /** One planned file: project-relative path plus its intended purpose. */
+  public record PlanFileView(String path, String purpose) {
   }
 
   /**
@@ -109,6 +119,23 @@ public record GenerationResponse(
       String status,
       int findingCount,
       String error) {
+  }
+
+  /**
+   * Latest sandbox build/test evidence for the current iteration.
+   *
+   * <p>{@code notVerified} is true when the sandbox was disabled: the step
+   * did not run and must never be rendered as success.
+   */
+  public record ExecutionView(
+      String command,
+      int exitCode,
+      String buildStatus,
+      String testStatus,
+      String failureReason,
+      long durationMs,
+      boolean notVerified,
+      Instant createdAt) {
   }
 
   /**

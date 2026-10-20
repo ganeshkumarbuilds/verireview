@@ -1,5 +1,6 @@
 package com.verireview.analysis;
 
+import com.verireview.execution.SandboxRunner;
 import com.verireview.review.FindingCategory;
 import com.verireview.review.FindingSeverity;
 import java.nio.file.Files;
@@ -99,6 +100,16 @@ final class DependencyCheckParser {
       if (unified.startsWith(prefix)) {
         return unified.substring(prefix.length());
       }
+    }
+    // Container-side reports name files under the mount root, not the host
+    // snapshot path (see CheckstyleParser.relativize).
+    String containerRoot = SandboxRunner.CONTAINER_SOURCE_DIR;
+    if (unified.equals(containerRoot)) {
+      return null;
+    }
+    String containerPrefix = containerRoot + "/";
+    if (unified.startsWith(containerPrefix)) {
+      return unified.substring(containerPrefix.length());
     }
     if (unified.startsWith("/")) {
       String stripped = unified.replaceAll("^/+", "");

@@ -31,10 +31,8 @@ interface Feature {
 }
 
 /**
- * The four pipeline features. Only actions with a real destination are
- * offered: Generate and Review have dedicated pages; Fix is requested from a
- * finding in the Review workspace, and Verify evidence lives in the project
- * workspace.
+ * The four pipeline features. Every card opens its own page; no card mixes
+ * another feature's inputs.
  */
 const FEATURES: Feature[] = [
   {
@@ -46,7 +44,7 @@ const FEATURES: Feature[] = [
   },
   {
     title: 'Review',
-    description: 'Investigate findings across your codebases.',
+    description: 'Bring in code and investigate findings.',
     href: '/review',
     label: 'Open review',
     icon: SearchCode,
@@ -54,15 +52,15 @@ const FEATURES: Feature[] = [
   {
     title: 'Fix',
     description: 'Request and apply fixes for open findings.',
-    href: '/review',
+    href: '/fix',
     label: 'Fix findings',
     icon: Wrench,
   },
   {
     title: 'Verify',
     description: 'Build, test, and verify fixes in isolated sandboxes.',
-    href: '/projects',
-    label: 'View verification',
+    href: '/verify',
+    label: 'Run verification',
     icon: ShieldCheck,
   },
 ];
@@ -152,7 +150,7 @@ export function DashboardPage() {
             Generate, review, fix, and verify your code in one place.
           </p>
         </div>
-        <Link to="/projects" className={`${primaryButtonClass} shrink-0`}>
+        <Link to="/review" className={`${primaryButtonClass} shrink-0`}>
           Review existing code
         </Link>
       </div>
@@ -185,21 +183,28 @@ export function DashboardPage() {
             <div className="px-5 py-4">
               <LoadingState label="Loading projects…" />
             </div>
+          ) : error && !summary ? (
+            <div className="px-5 py-6">
+              <p className="text-sm text-slate-600">
+                Projects could not be loaded. Fix the error above and retry.
+              </p>
+            </div>
           ) : projects.length === 0 ? (
             <div className="p-5">
               <EmptyState
                 title="No projects yet"
-                body="Create a project shell or upload a ZIP to start your first analysis."
+                body="Bring in a ZIP, a GitHub repository or pasted code — or generate a new project."
                 action={
-                  <Link to="/projects" className={primaryButtonClass}>
-                    Create or upload project
+                  <Link to="/review" className={primaryButtonClass}>
+                    Add code to review
                   </Link>
                 }
               />
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+            <>
+              <div className="hidden overflow-x-auto lg:block">
+                <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-xs font-semibold uppercase tracking-wider text-slate-500">
                     <th scope="col" className="px-5 py-3">Project</th>
@@ -213,7 +218,7 @@ export function DashboardPage() {
                     <tr key={project.id} className="hover:bg-slate-50">
                       <td className="max-w-[16rem] truncate px-5 py-3">
                         <Link
-                          to={`/projects/${project.id}`}
+                          to={`/review?project=${project.id}`}
                           className="font-medium text-slate-900 hover:text-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
                         >
                           {project.name}
@@ -229,7 +234,7 @@ export function DashboardPage() {
                       </td>
                       <td className="whitespace-nowrap px-5 py-3 text-right">
                         <Link
-                          to={`/projects/${project.id}`}
+                          to={`/review?project=${project.id}`}
                           className={quietButtonClass}
                           aria-label={`Review ${project.name}`}
                         >
@@ -241,6 +246,40 @@ export function DashboardPage() {
                 </tbody>
               </table>
             </div>
+            <ul className="divide-y divide-slate-100 lg:hidden">
+              {projects.map((project) => (
+                <li
+                  key={project.id}
+                  className="flex flex-wrap items-start justify-between gap-3 px-4 py-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <Link
+                      to={`/review?project=${project.id}`}
+                      className="break-words font-medium text-slate-900 hover:text-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2"
+                    >
+                      {project.name}
+                    </Link>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      {project.lastActivityAt
+                        ? `Last activity ${formatRelativeTime(project.lastActivityAt)}`
+                        : 'No activity yet'}
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      {project.issuesFound.toLocaleString()} issues found ·{' '}
+                      {project.issuesFixed.toLocaleString()} fixed
+                    </p>
+                  </div>
+                  <Link
+                    to={`/review?project=${project.id}`}
+                    className={quietButtonClass}
+                    aria-label={`Review ${project.name}`}
+                  >
+                    Review
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            </>
           )}
         </div>
       </section>

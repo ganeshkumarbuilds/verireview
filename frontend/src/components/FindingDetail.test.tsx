@@ -254,6 +254,7 @@ const VERIF_VERIFIED: VerificationRunResponse = {
   durationMs: 1300,
   createdAt: '2026-01-05T00:00:00Z',
   updatedAt: '2026-01-05T00:00:00Z',
+  sandboxSkipped: false,
 };
 
 const notFound = () => new Response(JSON.stringify({ message: 'Not found' }), { status: 404 });
