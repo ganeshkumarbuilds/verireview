@@ -13,7 +13,6 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.util.List;
-
 /**
  * Generation wizard input. Secrets ({@code password}, {@code apiKey}) are
  * accepted here but never persisted, logged, or returned — the service holds
@@ -28,15 +27,21 @@ import java.util.List;
  */
 public record CreateGenerationRequest(
     @NotBlank @Size(max = 200) String name,
-    @NotBlank @Size(max = 20000) String requirement,
+    @NotBlank @Size(min = 20, max = 20000) String requirement,
     @Size(max = 5000) String description,
     @NotNull GenerationBackend backend,
     @NotNull GenerationFrontend frontend,
     @NotNull GenerationDatabase database,
     GenerationAuth auth,
     @Size(max = 20) List<GenerationIntegration> integrations,
+    @Size(max = 200) String languageRuntime,
+    @Size(max = 200) String backendCustom,
+    @Size(max = 200) String frontendCustom,
+    @Size(max = 50) List<@NotNull @Valid GenerationAnswerRequest> answers,
+    Boolean databaseConfigureLater,
     @Valid DatabaseConfig databaseConfig,
     @Valid @NotNull AiConfig aiConfig,
+    @Valid PlanPreviewResponse approvedPlan,
     Boolean draft) {
 
   public record DatabaseConfig(

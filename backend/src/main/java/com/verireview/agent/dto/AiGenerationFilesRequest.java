@@ -1,6 +1,7 @@
 package com.verireview.agent.dto;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Backend → AI file-generation invocation (mirrors Python {@code FilesRequest}).
@@ -25,8 +26,22 @@ public record AiGenerationFilesRequest(
     String apiKey,
     String baseUrl,
     String model,
-    List<PlannedFileRef> plan) {
+    String languageRuntime,
+    String backendCustom,
+    String frontendCustom,
+    Map<String, String> answers,
+    List<PlannedFileRef> plan,
+    Integer fixRound,
+    List<FixFindingInstruction> fixFindings,
+    List<ExistingFileSnapshot> existingFiles) {
 
   public record PlannedFileRef(String path, String purpose) {
+  }
+
+  public record FixFindingInstruction(
+      String file, Integer line, String category, String severity, String title, String explanation) {
+  }
+
+  public record ExistingFileSnapshot(String path, String content) {
   }
 }

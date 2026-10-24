@@ -99,18 +99,23 @@ Two explicit steps so consent is enforced on the backend (never by the UI alone)
 
 ### Generation (`/generations`)
 
-Implemented contract (Generate workflow): the five-step wizard collects the
-requirement, explicit stack/auth, optional integrations and database config,
-reviews a scaffold preview, then queues the job. The backend polls real state
-`QUEUED → PLANNING → CODING → BUILDING → VERIFYING → REVIEWING → REVIEWED /
-FAILED`; a disabled sandbox inserts `NOT_VERIFIED` before `REVIEWING`.
+Implemented contract (Generate workflow): the four-step wizard collects the
+project and requirement, an explicit stack (including language/runtime and
+“Other” free text), backend-generated clarifying questions, then a reviewed
+plan. Nothing is generated until the user approves. The backend state is recorded in `AgentExecution`, execution evidence, and
+verification rows. The frontend receives SSE change notifications and falls
+back to visible-tab polling every three seconds. After verification and review,
+a deterministic Rating Agent records a score and category breakdown.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/generations` | `{ name, requirement, description?, backend, frontend, database, auth?, integrations?, databaseConfig?, aiConfig, draft? }` → 201 + generation (`DRAFT` when `draft: true`). Secrets (`databaseConfig.password`, `aiConfig.apiKey`) travel once, are held in memory only, and never appear in any response. |
-| POST | `/generations/plan-preview` | Step-4 stack-aware scaffold (`requirement`, stack, `auth`, `integrations`) → folders/files/architecture. Creates no job and makes no AI call, so re-planning is free. |
+| POST | `/generate/questions` | Step 3: `{ name, requirement (≥20 chars), description?, backend, frontend, languageRuntime, backendCustom?, frontendCustom? }` → backend-derived clarifying questions (`choice`/`text`/`yes-no`), each with `required`, `allowSkip` and `secret`. Creates no job and calls no LLM. |
+| POST | `/generate/plan` | Step 4: `{ project, answers[] }` → stack-aware architecture, folder tree and file list built only from the explicit answers. Missing required answers → 400 naming each question id; no row is persisted. |
+| POST | `/generations` | `{ name, requirement, description?, backend, frontend, languageRuntime?, backendCustom?, frontendCustom?, database, auth?, integrations?, databaseConfig?, aiConfig, answers?, databaseConfigureLater?, draft? }` → 201 + generation (`DRAFT` when `draft: true`). Secrets (`databaseConfig.password`, `aiConfig.apiKey`, and the database connection answer) travel only for the run, are held in memory only, and never appear in any response or persisted `answers`. |
+| POST | `/generations/plan-preview` | Legacy stack-aware scaffold preview (`requirement`, stack, `auth`, `integrations`) → folders/files/architecture. Creates no job and makes no AI call. The wizard uses `/generate/plan`. |
 | GET | `/generations` | List own generations (paged). Secrets masked (`passwordConfigured`, `keyConfigured` flags only). |
-| GET | `/generations/{id}` | Generation state + masked config + `projectId` after handoff. Owner only (else 404). Carries `auth`, `integrations`, `execution` (with `notVerified`), `plan.files`, `agentWorkflow`, and nullable `artifact` facts (never storage paths). |
+| GET | `/generations/{id}` | Generation state + masked config + `projectId` after handoff. Owner only (else 404). Carries `auth`, `integrations`, `execution` (with `notVerified`), `plan.files`, `agentWorkflow` timing/activity, the completed rating, finding summaries, and nullable `artifact` facts (never storage paths). |
+| GET | `/generations/{id}/events` | Authenticated SSE stream of generation change notifications. The event contains no secrets or file contents; the client reloads the authoritative DTO. |
 | GET | `/generations/{id}/files` | Files in the latest generated workspace: `{ path, sizeBytes }[]`. Owner only. |
 | GET | `/generations/{id}/file?path=` | One generated text file for the browse view. Jailed to the workspace, 256 KB cap, binary files return `binary: true` with no content. |
 | POST | `/generations/{id}/send-to-review` | Materializes a reviewed generation as a `GENERATED` `Project` (copy, never move), links `projectId`, and is idempotent. 409 until `REVIEWED`/`COMPLETED`. |
@@ -122,9 +127,9 @@ FAILED`; a disabled sandbox inserts `NOT_VERIFIED` before `REVIEWING`.
 | GET | `/generations/{id}/restructure/proposals` | Proposal history with moves, status, notes and `canRevert`. Owner only. |
 | POST | `/generations/{id}/restructure/proposals/{proposalId}/apply` | Explicit approval gate. Backs up the workspace, then moves files; failure restores the backup. |
 | POST | `/generations/{id}/restructure/revert` | Restores the applied proposal's backup exactly (moved copies removed), then marks it `REVERTED`. |
-| GET | `/generations/{id}/download` | Verified project ZIP. Served only when the backend quality gate passes (artifact + REVIEWED + VERIFIED verdict + SUCCESS build + completed review + zero blocking findings); else 409 with `X-Download-Blocked-Reason`. ZIP carries an `.env.example` with placeholders — never real secrets. |
+| GET | `/generations/{id}/download` | Generated project ZIP. Served when the artifact exists, generation review is complete, and the latest round has zero unresolved findings of any category; a sandbox build is not required. Verification level is reported separately as static checks, build-and-test checks, or sandbox unavailable. Otherwise 409 with `X-Download-Blocked-Reason`. ZIP carries an `.env.example` with placeholders — never real secrets. |
 
-Rules: explicit enums only. Frontend `REACT_TYPESCRIPT`/`NEXTJS`/`VUE`/`NONE`, backend `JAVA_SPRING_BOOT`/`PYTHON_FASTAPI`/`NODEJS`/`NONE`, database `POSTGRESQL`/`MYSQL`/`MONGODB`/`SQLITE`/`NONE`, auth `JWT`/`OAUTH_GOOGLE`/`NONE`, integrations `STRIPE`/`RAZORPAY`/`EMAIL`/`FILE_STORAGE_S3`/`AI_LLM`/`MAPS`/`ANALYTICS`/`DOCKER_CI`, AI `OPENROUTER`/`CUSTOM`/`NONE`. Reject backend+frontend both `NONE`, auth other than `NONE` without a backend, and Stripe+Razorpay together. `databaseConfig` is required iff database ≠ `NONE`; `baseUrl` required iff provider is `CUSTOM`. Provider `NONE` needs no key and takes no `apiKey`/`baseUrl` (model defaults to `template`): the backend builds a deterministic Java starter through the same gates (Java + React/none only). Generated code must use env-var placeholders — embedded secrets fail the run. If the Docker sandbox is disabled, build/test evidence is `SKIPPED`, Verify is `REJECTED`, the pipeline says **Not verified**, and the download gate stays locked. Output becomes a normal `GENERATED` project only through the explicit handoff endpoint.
+Rules: explicit enums only, no hidden defaults. Frontend `REACT_TYPESCRIPT`/`NEXTJS`/`VUE`/`OTHER`/`NONE`, backend `JAVA_SPRING_BOOT`/`PYTHON_FASTAPI`/`NODEJS`/`OTHER`/`NONE`, database `POSTGRESQL`/`MYSQL`/`MONGODB`/`SQLITE`/`NONE`, auth `JWT`/`OAUTH_GOOGLE`/`NONE`, integrations `STRIPE`/`RAZORPAY`/`EMAIL`/`FILE_STORAGE_S3`/`AI_LLM`/`MAPS`/`ANALYTICS`/`DOCKER_CI`, AI `OPENROUTER`/`CUSTOM`/`NONE`. `OTHER` requires `backendCustom`/`frontendCustom`. Reject backend+frontend both `NONE`, auth other than `NONE` without a backend, and Stripe+Razorpay together. `databaseConfig` is required iff database ≠ `NONE`; an explicit “configure later” answer resolves to database `NONE` with `databaseConfigureLater: true` and no fabricated config. `baseUrl` is required iff provider is `CUSTOM`. Provider `NONE` needs no key and takes no `apiKey`/`baseUrl` (model defaults to `template`): the backend builds a deterministic Java starter through the same gates (Java + React/none only). Non-secret answers persist in `answers`; a secret answer is stored only as `configured: true` with `value: null`. Generated code must use env-var placeholders — embedded secrets fail the run. If the Docker sandbox is disabled, build/test evidence is `SKIPPED`, Verify is `REJECTED`, the pipeline says **Not verified**, and the download gate stays locked. Output becomes a normal `GENERATED` project only through the explicit handoff endpoint.
 
 ### Agent executions & Audit (observability of the workflow)
 

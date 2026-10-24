@@ -44,12 +44,34 @@ public record GenerationResponse(
     WorkflowStatsView workflowStats,
     VerificationView verification,
     ReviewView review,
+    RatingView rating,
+    List<FindingView> findings,
     ExecutionView execution,
     List<AgentStepView> agentWorkflow,
+    List<FixRoundView> fixRounds,
+    List<FileVersionView> fileVersions,
+    String verificationLevel,
     boolean downloadReady,
     boolean previewReady,
+    String languageRuntime,
+    String backendCustom,
+    String frontendCustom,
+    boolean databaseConfigureLater,
+    List<AnswerView> answers,
     Instant createdAt,
     Instant updatedAt) {
+
+  /** One persisted wizard answer. Secret values are never present. */
+  public record AnswerView(
+      String questionId,
+      String prompt,
+      String type,
+      String value,
+      boolean skipped,
+      boolean required,
+      boolean secret,
+      boolean configured) {
+  }
 
   /**
    * Latest validated project plan for inspection. Structured sections only —
@@ -121,6 +143,27 @@ public record GenerationResponse(
       String error) {
   }
 
+  /** Deterministic score derived from findings in the latest persisted review. */
+  public record RatingView(
+      int overall,
+      int syntax,
+      int logic,
+      int security,
+      int style) {
+  }
+
+  /** Plain-language finding summary for the generated project result view. */
+  public record FindingView(
+      UUID id,
+      String file,
+      Integer line,
+      String category,
+      String severity,
+      String title,
+      String explanation,
+      String status) {
+  }
+
   /**
    * Latest sandbox build/test evidence for the current iteration.
    *
@@ -149,6 +192,30 @@ public record GenerationResponse(
       String status,
       Long durationMs,
       String error,
+      Instant createdAt,
+      Instant finishedAt,
+      String activityLog,
+      int roundNumber) {
+  }
+
+  public record FixRoundView(
+      UUID approvalId,
+      int roundNumber,
+      List<UUID> findingIds,
+      int beforeFindingCount,
+      Integer afterFindingCount,
+      String status,
+      Instant approvedAt,
+      Instant completedAt) {
+  }
+
+  public record FileVersionView(
+      UUID id,
+      int roundNumber,
+      String path,
+      String beforeContent,
+      String afterContent,
+      boolean reverted,
       Instant createdAt) {
   }
 

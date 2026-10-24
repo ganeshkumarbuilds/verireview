@@ -5,5 +5,7 @@ public enum GenerationFrontend {
   REACT_TYPESCRIPT,
   NEXTJS,
   VUE,
+  /** User typed a frontend the catalog does not know; see {@code frontendCustom}. */
+  OTHER,
   NONE
 }

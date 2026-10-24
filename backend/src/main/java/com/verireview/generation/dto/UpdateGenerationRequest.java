@@ -25,6 +25,9 @@ public record UpdateGenerationRequest(
     GenerationFrontend frontend,
     GenerationDatabase database,
     GenerationAuth auth,
+    @Size(max = 200) String languageRuntime,
+    @Size(max = 200) String backendCustom,
+    @Size(max = 200) String frontendCustom,
     @Size(max = 20) List<GenerationIntegration> integrations,
     @Valid DatabaseConfig databaseConfig,
     @Valid AiConfig aiConfig) {

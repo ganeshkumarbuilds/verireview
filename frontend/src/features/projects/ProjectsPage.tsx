@@ -116,20 +116,6 @@ export function ProjectsPage() {
                         >
                           Review
                         </Link>
-                        <Link
-                          to={`/fix?project=${project.id}`}
-                          className={quietButtonClass}
-                          aria-label={`Fix ${project.name}`}
-                        >
-                          Fix
-                        </Link>
-                        <Link
-                          to={`/verify?project=${project.id}`}
-                          className={quietButtonClass}
-                          aria-label={`Verify ${project.name}`}
-                        >
-                          Verify
-                        </Link>
                       </div>
                     </td>
                   </tr>
@@ -165,20 +151,6 @@ export function ProjectsPage() {
                     aria-label={`Review ${project.name}`}
                   >
                     Review
-                  </Link>
-                  <Link
-                    to={`/fix?project=${project.id}`}
-                    className={quietButtonClass}
-                    aria-label={`Fix ${project.name}`}
-                  >
-                    Fix
-                  </Link>
-                  <Link
-                    to={`/verify?project=${project.id}`}
-                    className={quietButtonClass}
-                    aria-label={`Verify ${project.name}`}
-                  >
-                    Verify
                   </Link>
                 </div>
               </li>

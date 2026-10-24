@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { FeaturePage } from '../../components/FeaturePage';
 import {
   Badge,
@@ -20,8 +20,8 @@ const STEPS = ['Choose source', 'Run analysis', 'Findings'] as const;
 
 /**
  * Review only: choose existing code (ZIP/GitHub/paste or an existing
- * project), run an analysis, and read its findings. Generation and fixing
- * happen on their own pages.
+ * project), run an analysis, and read its findings. Fix requests and
+ * re-verification open from a finding, inside this page.
  */
 export function ReviewPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -73,7 +73,7 @@ export function ReviewPage() {
   return (
     <FeaturePage
       title="Review"
-      description="Bring in existing code, run an analysis, and investigate the findings. Fixes and verification live on their own pages."
+      description="Bring in existing code, run an analysis, and investigate findings. Open a finding to request a fix, apply the patch, and re-verify it inline."
       steps={STEPS}
       current={step}
       actions={
@@ -246,21 +246,8 @@ export function ReviewPage() {
 
       {selectedProjectId && selectedReview && (
         <p className="text-sm text-slate-500">
-          Want to change the code?{' '}
-          <Link
-            to={`/fix?project=${selectedProjectId}`}
-            className="font-semibold text-indigo-700 hover:underline"
-          >
-            Open Fix
-          </Link>{' '}
-          or{' '}
-          <Link
-            to={`/verify?project=${selectedProjectId}`}
-            className="font-semibold text-indigo-700 hover:underline"
-          >
-            Verify a sandbox run
-          </Link>
-          .
+          Select a finding below to request a fix, apply the patch, and re-verify it
+          inside this review. Verification evidence stays linked to the finding.
         </p>
       )}
     </FeaturePage>

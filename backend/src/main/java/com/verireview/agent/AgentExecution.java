@@ -45,6 +45,9 @@ public class AgentExecution extends BaseEntity {
   @Column(name = "input_hash", nullable = false, length = 64)
   private String inputHash;
 
+  @Column(name = "round_number", nullable = false)
+  private int roundNumber = 1;
+
   @Column(name = "output_ref", length = 1000)
   private String outputRef;
 
@@ -128,6 +131,14 @@ public class AgentExecution extends BaseEntity {
 
   public void setInputHash(String inputHash) {
     this.inputHash = inputHash;
+  }
+
+  public int getRoundNumber() {
+    return roundNumber;
+  }
+
+  public void setRoundNumber(int roundNumber) {
+    this.roundNumber = roundNumber;
   }
 
   public String getOutputRef() {

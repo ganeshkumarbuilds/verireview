@@ -90,6 +90,50 @@ public final class GenerationTemplates {
     return List.copyOf(files);
   }
 
+  public static List<AiGenerationFilesResult.GeneratedFile> files(
+      GenerationBackend backend,
+      GenerationFrontend frontend,
+      GenerationDatabase database,
+      List<AiGenerationPlanResult.PlannedFile> approvedPlan) {
+    List<AiGenerationFilesResult.GeneratedFile> templates = files(backend, frontend, database);
+    java.util.Map<String, AiGenerationFilesResult.GeneratedFile> byPath = new java.util.HashMap<>();
+    templates.forEach(file -> byPath.put(file.path(), file));
+    List<AiGenerationFilesResult.GeneratedFile> selected = new ArrayList<>();
+    for (AiGenerationPlanResult.PlannedFile planned : approvedPlan) {
+      AiGenerationFilesResult.GeneratedFile known = byPath.get(planned.path());
+      selected.add(known != null
+          ? known
+          : customTemplate(planned.path(), planned.purpose()));
+    }
+    return List.copyOf(selected);
+  }
+
+  private static AiGenerationFilesResult.GeneratedFile customTemplate(String path, String purpose) {
+    int dot = path.lastIndexOf('.');
+    String extension = dot < 0 ? "" : path.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+    String safePurpose = purpose == null ? "User-approved project file" : purpose.replace("\n", " ");
+    return switch (extension) {
+      case "java" -> new AiGenerationFilesResult.GeneratedFile(
+          path, "/** " + safePurpose.replace("*/", "* /") + " */\n"
+              + "public final class GeneratedArtifact {\n"
+              + "  private GeneratedArtifact() {}\n"
+              + "}\n", "java");
+      case "ts", "tsx", "js", "jsx" -> new AiGenerationFilesResult.GeneratedFile(
+          path, "// " + safePurpose + "\nexport {};\n", "typescript");
+      case "py" -> new AiGenerationFilesResult.GeneratedFile(
+          path, "\"\"\"" + safePurpose.replace("\"\"\"", "") + "\"\"\"\n", "python");
+      case "json" -> new AiGenerationFilesResult.GeneratedFile(
+          path, "{\"purpose\":\"" + safePurpose.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}\n",
+          "json");
+      case "yml", "yaml" -> new AiGenerationFilesResult.GeneratedFile(
+          path, "# " + safePurpose + "\n", "yaml");
+      case "md" -> new AiGenerationFilesResult.GeneratedFile(
+          path, "# " + path.substring(path.lastIndexOf('/') + 1) + "\n\n" + safePurpose + "\n",
+          "markdown");
+      default -> new AiGenerationFilesResult.GeneratedFile(path, safePurpose + "\n", null);
+    };
+  }
+
   private static String appJava(GenerationDatabase database) {
     String dbNote = database == GenerationDatabase.NONE
         ? ""

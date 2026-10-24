@@ -1,31 +1,42 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../../api/client';
 import {
   applyRestructure,
+  approveGenerationFix,
   createGeneration,
   downloadGeneration,
   getGeneration,
   getGenerationFile,
+  getGenerationQuestions,
   isTerminalGeneration,
   listGenerationFiles,
   listRestructures,
-  previewGenerationPlan,
+  previewWizardPlan,
+  previewGenerationFix,
   proposeRestructure,
   revertRestructure,
+  revertGenerationFixRound,
+  retryGenerationStage,
   sendGenerationToReview,
+  streamGenerationUpdates,
 } from '../../api/generations';
 import type {
   CreateGenerationInput,
   ExecutionView,
+  GenerationAnswer,
   GenerationAuth,
   GenerationBackend,
   GenerationDatabase,
   GenerationFileContentView,
   GenerationFileView,
+  GenerationFixPreviewResponse,
+  GenerationFindingView,
   GenerationFrontend,
   GenerationIntegration,
+  GenerationQuestion,
+  GenerationQuestionsInput,
   GenerationResponse,
   PlanPreviewResponse,
   RestructurePreset,
@@ -45,14 +56,14 @@ import {
 import { FeaturePage } from '../../components/FeaturePage';
 
 const POLL_MS = 3000;
-const DEFAULT_MODEL = 'openai/gpt-4o-mini';
 const MIN_IDEA = 20;
-const STEPS = ['Describe', 'Stack', 'Integrations', 'Review plan', 'Generate'] as const;
+const STEPS = ['Project', 'Stack', 'Questions', 'Review plan'] as const;
 
 const BACKEND_LABELS: Record<GenerationBackend, string> = {
   JAVA_SPRING_BOOT: 'Spring Boot',
   NODEJS: 'Node / Express',
   PYTHON_FASTAPI: 'FastAPI',
+  OTHER: 'Other (type your own)',
   NONE: 'None',
 };
 
@@ -60,32 +71,13 @@ const FRONTEND_LABELS: Record<GenerationFrontend, string> = {
   REACT_TYPESCRIPT: 'React',
   NEXTJS: 'Next.js',
   VUE: 'Vue',
+  OTHER: 'Other (type your own)',
   NONE: 'None',
 };
 
-const DATABASE_LABELS: Record<GenerationDatabase, string> = {
-  POSTGRESQL: 'PostgreSQL',
-  MYSQL: 'MySQL',
-  MONGODB: 'MongoDB',
-  SQLITE: 'SQLite',
-  NONE: 'None',
-};
-
-const AUTH_LABELS: Record<GenerationAuth, string> = {
-  JWT: 'JWT',
-  OAUTH_GOOGLE: 'OAuth / Google',
-  NONE: 'None',
-};
-
-const INTEGRATIONS: { value: GenerationIntegration; label: string; note: string }[] = [
-  { value: 'STRIPE', label: 'Stripe payments', note: 'Checkout + webhook adapter, keys via env.' },
-  { value: 'RAZORPAY', label: 'Razorpay payments', note: 'Orders + webhook adapter, keys via env.' },
-  { value: 'EMAIL', label: 'Email', note: 'Transactional sender abstraction, key via env.' },
-  { value: 'FILE_STORAGE_S3', label: 'File storage (S3)', note: 'S3-compatible upload adapter.' },
-  { value: 'AI_LLM', label: 'AI / LLM', note: 'LLM call adapter, key read from env.' },
-  { value: 'MAPS', label: 'Maps', note: 'Geocoding/map adapter, key via env.' },
-  { value: 'ANALYTICS', label: 'Analytics', note: 'Event hooks with a write key from env.' },
-  { value: 'DOCKER_CI', label: 'Docker / CI', note: 'Dockerfile + GitHub Actions build/test.' },
+const INTEGRATION_VALUES: GenerationIntegration[] = [
+  'STRIPE', 'RAZORPAY', 'EMAIL', 'FILE_STORAGE_S3',
+  'AI_LLM', 'MAPS', 'ANALYTICS', 'DOCKER_CI',
 ];
 
 const PRESETS: { value: RestructurePreset; label: string; note: string }[] = [
@@ -95,25 +87,7 @@ const PRESETS: { value: RestructurePreset; label: string; note: string }[] = [
   { value: 'CUSTOM', label: 'Describe my own', note: 'e.g. services/: UserService.java' },
 ];
 
-const DB_DEFAULTS: Record<GenerationDatabase, { port: string; user: string }> = {
-  POSTGRESQL: { port: '5432', user: 'postgres' },
-  MYSQL: { port: '3306', user: 'root' },
-  MONGODB: { port: '27017', user: 'admin' },
-  SQLITE: { port: '', user: '' },
-  NONE: { port: '', user: '' },
-};
-
 type StageState = 'waiting' | 'running' | 'done' | 'failed' | 'not_verified';
-
-function slugify(value: string): string {
-  return (
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40) || 'generated-project'
-  );
-}
 
 function stepStateFromAgent(step: string | undefined): StageState {
   switch (step) {
@@ -122,8 +96,9 @@ function stepStateFromAgent(step: string | undefined): StageState {
     case 'FAILED':
       return 'failed';
     case 'RUNNING':
-    case 'PENDING':
       return 'running';
+    case 'PENDING':
+      return 'waiting';
     case 'SKIPPED':
       return 'not_verified';
     default:
@@ -157,7 +132,7 @@ function buildState(state: StageState) {
 
 function latestAgent(generation: GenerationResponse | null, type: string) {
   if (!generation) return undefined;
-  return [...generation.agentWorkflow]
+  return [...(generation.agentWorkflow ?? [])]
     .filter((step) => step.agentType === type)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 }
@@ -165,82 +140,134 @@ function latestAgent(generation: GenerationResponse | null, type: string) {
 function pipelineStages(generation: GenerationResponse | null): {
   key: string;
   label: string;
+  role: string;
   state: StageState;
   detail: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  activityLog: string | null;
+  executionId: string | null;
+  roundNumber: number;
 }[] {
   const execution: ExecutionView | null = generation?.execution ?? null;
-  const buildState: StageState = execution
-    ? execution.notVerified ||
-      execution.buildStatus === 'SKIPPED' ||
-      execution.testStatus === 'SKIPPED'
-      ? 'not_verified'
-      : execution.buildStatus === 'SUCCESS' && execution.testStatus === 'SUCCESS'
-        ? 'done'
-        : execution.buildStatus === 'FAILURE' || execution.buildStatus === 'TIMEOUT'
-          ? 'failed'
-          : 'running'
-    : generation?.status === 'BUILDING' || generation?.status === 'TESTING'
-      ? 'running'
-      : 'waiting';
-
   const verified = latestAgent(generation, 'VERIFIED');
-  const verifyState = verified
-    ? stepStateFromAgent(verified.status)
-    : generation?.status === 'VERIFYING' || generation?.status === 'REVERIFYING'
-      ? 'running'
-      : 'waiting';
+  const verifyState: StageState = execution?.notVerified ||
+    execution?.buildStatus === 'SKIPPED' ||
+    execution?.testStatus === 'SKIPPED'
+    ? 'not_verified'
+    : execution?.buildStatus === 'FAILURE' ||
+        execution?.buildStatus === 'TIMEOUT' ||
+        execution?.testStatus === 'FAILURE'
+      ? 'failed'
+      : verified
+        ? stepStateFromAgent(verified.status)
+        : generation?.status === 'BUILDING' ||
+            generation?.status === 'TESTING' ||
+            generation?.status === 'VERIFYING' ||
+            generation?.status === 'REVERIFYING'
+          ? 'running'
+          : 'waiting';
 
   const planning = latestAgent(generation, 'PLANNING');
   const coding = latestAgent(generation, 'CODING');
   const review = latestAgent(generation, 'REVIEW');
+  const rating = latestAgent(generation, 'RATING');
 
   return [
     {
       key: 'plan',
-      label: 'Plan',
+      label: 'Planning',
+      role: 'Turns your answers into a project plan.',
       state: planning ? stepStateFromAgent(planning.status) : generation?.status === 'PLANNING' ? 'running' : 'waiting',
       detail: planning?.error ?? 'Planner Agent turns the idea into a file plan.',
+      startedAt: planning?.createdAt ?? null,
+      finishedAt: planning?.finishedAt ?? null,
+      activityLog: planning?.activityLog ?? null,
+      executionId: planning?.id ?? null,
+      roundNumber: planning?.roundNumber ?? generation?.iteration ?? 1,
     },
     {
-      key: 'generate',
-      label: 'Generate',
+      key: 'coding',
+      label: 'Coding',
+      role: 'Writes the approved project files.',
       state: coding ? stepStateFromAgent(coding.status) : generation?.status === 'CODING' ? 'running' : 'waiting',
       detail: coding?.error ?? 'Coding Agent writes the planned files.',
-    },
-    {
-      key: 'build',
-      label: 'Build & Test',
-      state: buildState,
-      detail:
-        buildState === 'not_verified'
-          ? 'Not verified: the Docker sandbox is disabled, so nothing was built or tested.'
-          : execution?.failureReason ??
-            (execution ? `Sandbox command: ${execution.command}` : 'Runs in the isolated Docker sandbox.'),
+      startedAt: coding?.createdAt ?? null,
+      finishedAt: coding?.finishedAt ?? null,
+      activityLog: coding?.activityLog ?? null,
+      executionId: coding?.id ?? null,
+      roundNumber: coding?.roundNumber ?? generation?.iteration ?? 1,
     },
     {
       key: 'verify',
-      label: 'Verify',
+      label: 'Verifying',
+      role: 'Runs available syntax, build, and test checks.',
       state: verifyState,
       detail:
         verifyState === 'not_verified'
-          ? 'Not verified: no build/test evidence exists to verify.'
+          ? 'Build and tests not run: sandbox unavailable.'
           : verified?.error ??
+            execution?.failureReason ??
             (generation?.verification
               ? `${generation.verification.verdict} · ${generation.verification.buildStatus}`
-              : 'Verdict comes from build + test evidence only.'),
+              : 'Waiting for syntax, build, and test evidence.'),
+      startedAt: verified?.createdAt ?? execution?.createdAt ?? null,
+      finishedAt: verified?.finishedAt ?? null,
+      activityLog: verified?.activityLog ?? execution?.command ?? null,
+      executionId: verified?.id ?? null,
+      roundNumber: verified?.roundNumber ?? generation?.iteration ?? 1,
     },
     {
       key: 'review',
-      label: 'Review',
+      label: 'Reviewing',
+      role: 'Finds logic, security, and quality issues.',
       state: review ? stepStateFromAgent(review.status) : generation?.status === 'REVIEWING' ? 'running' : 'waiting',
       detail: review?.error ?? 'Review Agent reports deterministic and AI findings.',
+      startedAt: review?.createdAt ?? null,
+      finishedAt: review?.finishedAt ?? null,
+      activityLog: review?.activityLog ?? null,
+      executionId: review?.id ?? null,
+      roundNumber: review?.roundNumber ?? generation?.iteration ?? 1,
+    },
+    {
+      key: 'rating',
+      label: 'Rating',
+      role: 'Scores the latest persisted findings.',
+      state: rating ? stepStateFromAgent(rating.status) : 'waiting',
+      detail: rating?.error ?? (generation?.rating ? `Overall score: ${generation.rating.overall}/100.` : 'Waiting for review findings.'),
+      startedAt: rating?.createdAt ?? null,
+      finishedAt: rating?.finishedAt ?? null,
+      activityLog: rating?.activityLog ?? null,
+      executionId: rating?.id ?? null,
+      roundNumber: rating?.roundNumber ?? generation?.iteration ?? 1,
     },
   ];
 }
 
 function settled(generation: GenerationResponse | null): boolean {
   if (!generation) return true;
-  return isTerminalGeneration(generation.status) || generation.status === 'REVIEWED';
+  const rating = latestAgent(generation, 'RATING');
+  return isTerminalGeneration(generation.status) ||
+    (generation.status === 'REVIEWED' &&
+      (rating?.status === 'COMPLETED' || rating?.status === 'FAILED'));
+}
+
+function findingsByFile(
+  findings: GenerationFindingView[],
+): [string, GenerationFindingView[]][] {
+  const grouped = new Map<string, GenerationFindingView[]>();
+  for (const finding of findings) {
+    const file = finding.file || 'Project-wide';
+    grouped.set(file, [...(grouped.get(file) ?? []), finding]);
+  }
+  const severityRank: Record<string, number> = {
+    CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, INFO: 4,
+  };
+  return [...grouped.entries()].map(([file, items]) => [
+    file,
+    [...items].sort((a, b) =>
+      (severityRank[a.severity] ?? 5) - (severityRank[b.severity] ?? 5)),
+  ]);
 }
 
 /** Honest status colour: NOT_VERIFIED is amber, never green. */
@@ -253,6 +280,8 @@ function generationTone(
       return 'green';
     case 'FAILED':
       return 'red';
+    case 'AWAITING_FIX_APPROVAL':
+      return 'amber';
     case 'NOT_VERIFIED':
       return 'amber';
     case 'RUNNING':
@@ -271,24 +300,26 @@ export function GeneratePage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [step, setStep] = useState(1);
-  const [idea, setIdea] = useState('');
   const [name, setName] = useState('');
-  const [backend, setBackend] = useState<GenerationBackend>('JAVA_SPRING_BOOT');
-  const [frontend, setFrontend] = useState<GenerationFrontend>('REACT_TYPESCRIPT');
-  const [database, setDatabase] = useState<GenerationDatabase>('POSTGRESQL');
-  const [auth, setAuth] = useState<GenerationAuth>('NONE');
-  const [integrations, setIntegrations] = useState<GenerationIntegration[]>([]);
+  const [idea, setIdea] = useState('');
+  const [extraInfo, setExtraInfo] = useState('');
+  const [backend, setBackend] = useState<GenerationBackend | ''>('');
+  const [frontend, setFrontend] = useState<GenerationFrontend | ''>('');
+  const [languageRuntime, setLanguageRuntime] = useState('');
+  const [backendCustom, setBackendCustom] = useState('');
+  const [frontendCustom, setFrontendCustom] = useState('');
+  const [stackSuggestionsOpen, setStackSuggestionsOpen] = useState(false);
 
-  const [dbHost, setDbHost] = useState('localhost');
-  const [dbPort, setDbPort] = useState('5432');
-  const [dbName, setDbName] = useState('app');
-  const [dbUser, setDbUser] = useState('postgres');
+  const [questions, setQuestions] = useState<GenerationQuestion[]>([]);
+  const [answers, setAnswers] = useState<Record<string, { value: string; skipped: boolean }>>({});
+  const [questionsLoading, setQuestionsLoading] = useState(false);
+  const [questionsError, setQuestionsError] = useState<string | null>(null);
+
+  const [dbHost, setDbHost] = useState('');
+  const [dbPort, setDbPort] = useState('');
+  const [dbName, setDbName] = useState('');
+  const [dbUser, setDbUser] = useState('');
   const [dbPassword, setDbPassword] = useState('');
-
-  const [aiProvider, setAiProvider] = useState<'OPENROUTER' | 'CUSTOM' | 'NONE'>('OPENROUTER');
-  const [aiModel, setAiModel] = useState(DEFAULT_MODEL);
-  const [aiBaseUrl, setAiBaseUrl] = useState('');
-  const [aiKey, setAiKey] = useState('');
 
   const [planPreview, setPlanPreview] = useState<PlanPreviewResponse | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -296,6 +327,7 @@ export function GeneratePage() {
   const [previewTick, setPreviewTick] = useState(0);
 
   const [generation, setGeneration] = useState<GenerationResponse | null>(null);
+  const [sseConnected, setSseConnected] = useState(false);
   const [creating, setCreating] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -311,6 +343,73 @@ export function GeneratePage() {
   const [restructureDescription, setRestructureDescription] = useState('');
   const [restructureBusy, setRestructureBusy] = useState(false);
   const [restructureError, setRestructureError] = useState<string | null>(null);
+  const [selectedFindingIds, setSelectedFindingIds] = useState<string[]>([]);
+  const [fixPreview, setFixPreview] = useState<GenerationFixPreviewResponse | null>(null);
+  const [fixDialogOpen, setFixDialogOpen] = useState(false);
+  const [fixApiKey, setFixApiKey] = useState('');
+  const [fixBusy, setFixBusy] = useState(false);
+  const [fixError, setFixError] = useState<string | null>(null);
+  const [retryExecutionId, setRetryExecutionId] = useState<string | null>(null);
+  const [retryApiKey, setRetryApiKey] = useState('');
+  const [retryBusy, setRetryBusy] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const [revertRoundNumber, setRevertRoundNumber] = useState<number | null>(null);
+  const fixDialogRef = useRef<HTMLElement>(null);
+  const retryDialogRef = useRef<HTMLElement>(null);
+  const revertDialogRef = useRef<HTMLElement>(null);
+
+  const unresolvedFindingIds = (generation?.findings ?? [])
+    .filter((finding) => ['OPEN', 'FIX_REQUESTED', 'FIX_PROPOSED'].includes(finding.status))
+    .map((finding) => finding.id);
+  const unresolvedFindingKey = unresolvedFindingIds.join('|');
+
+  useEffect(() => {
+    setSelectedFindingIds(unresolvedFindingKey ? unresolvedFindingKey.split('|') : []);
+  }, [generation?.id, generation?.iteration, unresolvedFindingKey]);
+
+  useEffect(() => {
+    const dialog = fixDialogOpen
+      ? fixDialogRef.current
+      : retryExecutionId
+        ? retryDialogRef.current
+        : revertRoundNumber !== null
+          ? revertDialogRef.current
+          : null;
+    if (!dialog) return;
+    const focusable = dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    focusable[0]?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        if (fixDialogOpen) {
+          setFixDialogOpen(false);
+          setFixPreview(null);
+          setFixApiKey('');
+        } else if (retryExecutionId) {
+          setRetryExecutionId(null);
+          setRetryApiKey('');
+          setRetryError(null);
+        } else {
+          setRevertRoundNumber(null);
+        }
+        return;
+      }
+      if (event.key !== 'Tab' || focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog.addEventListener('keydown', onKeyDown);
+    return () => dialog.removeEventListener('keydown', onKeyDown);
+  }, [fixDialogOpen, retryExecutionId, revertRoundNumber]);
 
   // Deep-link: /generate?genId=<id> opens the pipeline for an existing run.
   useEffect(() => {
@@ -323,11 +422,12 @@ export function GeneratePage() {
         setGeneration(loaded);
         setIdea(loaded.requirement);
         setName(loaded.name);
+        setExtraInfo(loaded.description ?? '');
         setBackend(loaded.backend);
         setFrontend(loaded.frontend);
-        setDatabase(loaded.database);
-        setAuth(loaded.auth);
-        setIntegrations(loaded.integrations ?? []);
+        setLanguageRuntime(loaded.languageRuntime ?? '');
+        setBackendCustom(loaded.backendCustom ?? '');
+        setFrontendCustom(loaded.frontendCustom ?? '');
         setStep(5);
       })
       .catch(() => {
@@ -339,33 +439,94 @@ export function GeneratePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, searchParams]);
 
-  // Poll real backend state while a run is in flight.
+  // Prefer backend change events. A 3-second poll is used only when the
+  // stream is unavailable, and is paused while the tab is hidden.
   useEffect(() => {
     if (!token || !generation || settled(generation)) return;
     const id = generation.id;
-    const timer = window.setInterval(() => {
+    const controller = new AbortController();
+    setSseConnected(false);
+    void streamGenerationUpdates(
+      apiClient(),
+      token,
+      id,
+      controller.signal,
+      () => {
+        setSseConnected(true);
+        getGeneration(apiClient(), token, id).then(setGeneration).catch(() => {
+          setSseConnected(false);
+        });
+      },
+      () => {
+        if (document.visibilityState === 'hidden') return;
+        getGeneration(apiClient(), token, id).then(setGeneration).catch(() => {
+          /* Polling remains available if a streamed refresh misses a transient failure. */
+        });
+      },
+    )
+      .then(() => {
+        if (!controller.signal.aborted) setSseConnected(false);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSseConnected(false);
+      });
+    return () => controller.abort();
+  }, [token, generation?.id, settled(generation)]);
+
+  useEffect(() => {
+    if (!token || !generation || settled(generation) || sseConnected) return;
+    const id = generation.id;
+    const poll = () => {
+      if (document.visibilityState === 'hidden') return;
       getGeneration(apiClient(), token, id)
         .then(setGeneration)
         .catch(() => {
           /* a transient poll failure is not a run failure */
         });
-    }, POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [token, generation]);
+    };
+    const timer = window.setInterval(poll, POLL_MS);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') poll();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [token, generation?.id, settled(generation), sseConnected]);
 
-  // Step 4 preview (stack-aware scaffold).
+  // Step 3: ask the backend for questions derived from steps 1–2. The
+  // frontend never invents a question or a default answer.
   useEffect(() => {
-    if (!token || step !== 4 || idea.trim().length < MIN_IDEA) return;
+    if (!token || step !== 3) return;
+    let cancelled = false;
+    setQuestionsLoading(true);
+    setQuestionsError(null);
+    getGenerationQuestions(apiClient(), token, buildQuestionsInput())
+      .then((response) => {
+        if (!cancelled) setQuestions(response);
+      })
+      .catch((e) => {
+        if (!cancelled) setQuestionsError(messageOf(e));
+      })
+      .finally(() => {
+        if (!cancelled) setQuestionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, step, name, idea, extraInfo, backend, frontend, languageRuntime, backendCustom, frontendCustom]);
+
+  // Step 4: plan built only from the explicit answers. A 400 names missing ids.
+  useEffect(() => {
+    if (!token || step !== 4) return;
     let cancelled = false;
     setPreviewLoading(true);
     setPreviewError(null);
-    previewGenerationPlan(apiClient(), token, {
-      requirement: idea.trim(),
-      backend,
-      frontend,
-      database,
-      auth,
-      integrations,
+    previewWizardPlan(apiClient(), token, {
+      project: buildQuestionsInput(),
+      answers: answersPayload(),
     })
       .then((response) => {
         if (!cancelled) setPlanPreview(response);
@@ -379,7 +540,8 @@ export function GeneratePage() {
     return () => {
       cancelled = true;
     };
-  }, [token, step, previewTick, idea, backend, frontend, database, auth, integrations]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, step, previewTick, name, idea, extraInfo, backend, frontend, languageRuntime, backendCustom, frontendCustom, answers, dbHost, dbPort, dbName, dbUser]);
 
   const loadFiles = useCallback(
     async (generationId: string) => {
@@ -429,89 +591,231 @@ export function GeneratePage() {
   function next() {
     setError(null);
     if (step === 1) {
+      if (!name.trim()) {
+        setError('Project name is required.');
+        return;
+      }
       if (idea.trim().length < MIN_IDEA) {
-        setError(`Please describe your idea in at least ${MIN_IDEA} characters.`);
+        setError(`Please describe the task in at least ${MIN_IDEA} characters.`);
         return;
       }
       setStep(2);
       return;
     }
     if (step === 2) {
+      if (!backend || !frontend) {
+        setError('Choose a backend and a frontend. Use None when one side does not apply.');
+        return;
+      }
       if (backend === 'NONE' && frontend === 'NONE') {
         setError('Choose at least a frontend or a backend.');
         return;
       }
-      if (backend === 'NONE' && auth !== 'NONE') {
-        setError('Authentication needs a backend. Pick a backend or choose None.');
+      if (!languageRuntime.trim()) {
+        setError('Language/runtime is required. Type the version you intend to use.');
         return;
       }
-      if (database !== 'NONE') {
-        const defaults = DB_DEFAULTS[database];
-        setDbPort((value) => value || defaults.port);
-        setDbUser((value) => value || defaults.user);
+      if (backend === 'OTHER' && !backendCustom.trim()) {
+        setError('Describe the custom backend.');
+        return;
+      }
+      if (frontend === 'OTHER' && !frontendCustom.trim()) {
+        setError('Describe the custom frontend.');
+        return;
       }
       setStep(3);
       return;
     }
     if (step === 3) {
+      const missing = questions.filter((question) => {
+        const answer = answers[question.id];
+        const blank = !answer || (!answer.skipped && !answer.value.trim());
+        return question.required && (blank || (answer?.skipped && !question.allowSkip));
+      });
+      const engine = answers['generation.engine']?.value;
+      if (engine && engine !== 'TEMPLATE') {
+        if (!answers['generation.model']?.value.trim()) {
+          missing.push({ ...questions[0], id: 'generation.model', prompt: 'Which generation model?' });
+        }
+        if (!answers['generation.apiKey']?.value.trim()) {
+          missing.push({ ...questions[0], id: 'generation.apiKey', prompt: 'Generation engine API key' });
+        }
+        if (engine === 'CUSTOM' && !answers['generation.baseUrl']?.value.trim()) {
+          missing.push({ ...questions[0], id: 'generation.baseUrl', prompt: 'Custom base URL' });
+        }
+      }
+      if (missing.length > 0) {
+        setError(`Answer these questions first: ${missing.map((item) => item.prompt).join('; ')}`);
+        return;
+      }
+      const databaseType = answers['database.type'];
+      const connection = answers['database.connection'];
+      if (databaseType && !databaseType.skipped && databaseType.value !== 'NONE'
+          && !connection?.skipped) {
+        const port = Number(dbPort);
+        if (!dbHost.trim() || !dbPort.trim() || !dbName.trim() || !dbUser.trim()
+            || !Number.isInteger(port) || port < 1 || port > 65535) {
+          setError(
+            'Enter database host, port, name and username, or choose Ask me later for the connection.',
+          );
+          return;
+        }
+      }
       setStep(4);
       setPreviewTick((value) => value + 1);
     }
   }
 
-  function toggleIntegration(value: GenerationIntegration) {
-    setIntegrations((current) =>
-      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
-    );
+  function setAnswerValue(questionId: string, value: string) {
+    setAnswers((current) => ({ ...current, [questionId]: { value, skipped: false } }));
+  }
+
+  function skipAnswer(questionId: string) {
+    setAnswers((current) => ({ ...current, [questionId]: { value: '', skipped: true } }));
+  }
+
+  function answersPayload(): GenerationAnswer[] {
+    const engine = answers['generation.engine']?.value;
+    return questions
+      .filter((question) => !(
+        engine === 'TEMPLATE'
+        && (question.id === 'generation.model'
+          || question.id === 'generation.apiKey'
+          || question.id === 'generation.baseUrl')
+      ))
+      .map((question) => {
+        if (question.id === 'database.connection') {
+          const connection = answers[question.id];
+          const text = databaseConnectionText();
+          return {
+            questionId: question.id,
+            value: text,
+            skipped: Boolean(connection?.skipped),
+          };
+        }
+        const answer = answers[question.id];
+        return {
+          questionId: question.id,
+          value: answer?.value ?? '',
+          skipped: Boolean(answer?.skipped),
+        };
+      });
+  }
+
+  function databaseConnectionText(): string {
+    const parts = [dbHost, dbPort, dbName, dbUser].map((part) => part.trim());
+    if (parts.every((part) => !part)) {
+      return '';
+    }
+    return `${parts[0]}:${parts[1]}/${parts[2]} user=${parts[3]}`;
+  }
+
+  function resolvedDatabase(): {
+    database: GenerationDatabase;
+    later: boolean;
+    config?: CreateGenerationInput['databaseConfig'];
+  } {
+    const type = answers['database.type'];
+    const connection = answers['database.connection'];
+    if (!type || type.skipped) {
+      return { database: 'NONE', later: true };
+    }
+    if (type.value === 'NONE') {
+      return { database: 'NONE', later: false };
+    }
+    if (connection?.skipped || !databaseConnectionText()) {
+      return { database: 'NONE', later: true };
+    }
+    return {
+      database: type.value as GenerationDatabase,
+      later: false,
+      config: {
+        host: dbHost.trim(),
+        port: Number(dbPort),
+        name: dbName.trim(),
+        username: dbUser.trim(),
+        password: dbPassword,
+        sslMode: 'prefer',
+      },
+    };
+  }
+
+  function resolvedAuth(): GenerationAuth {
+    const auth = answers['auth.method'];
+    if (!auth || auth.skipped || !auth.value || auth.value === 'NONE') {
+      return 'NONE';
+    }
+    return auth.value as GenerationAuth;
+  }
+
+  function resolvedIntegrations(): GenerationIntegration[] {
+    const raw = answers.integrations?.value ?? '';
+    return raw
+      .split(',')
+      .map((part) => part.trim().toUpperCase())
+      .filter((part): part is GenerationIntegration =>
+        INTEGRATION_VALUES.includes(part as GenerationIntegration));
+  }
+
+  function resolvedAiConfig(): CreateGenerationInput['aiConfig'] {
+    const engine = answers['generation.engine']?.value;
+    if (!engine || engine === 'TEMPLATE') {
+      return { provider: 'NONE', model: 'template' };
+    }
+    return {
+      provider: engine === 'CUSTOM' ? 'CUSTOM' : 'OPENROUTER',
+      model: answers['generation.model']?.value.trim() ?? '',
+      apiKey: answers['generation.apiKey']?.value ?? '',
+      ...(engine === 'CUSTOM'
+        ? { baseUrl: answers['generation.baseUrl']?.value.trim() ?? '' }
+        : {}),
+    };
+  }
+
+  function buildQuestionsInput(): GenerationQuestionsInput {
+    return {
+      name: name.trim(),
+      requirement: idea.trim(),
+      description: extraInfo.trim() || undefined,
+      backend: backend as GenerationBackend,
+      frontend: frontend as GenerationFrontend,
+      languageRuntime: languageRuntime.trim() || undefined,
+      backendCustom: backend === 'OTHER' ? backendCustom.trim() : undefined,
+      frontendCustom: frontend === 'OTHER' ? frontendCustom.trim() : undefined,
+    };
   }
 
   function buildInput(): CreateGenerationInput {
-    const title = name.trim() || `${slugify(idea)}-${Date.now().toString(36)}`;
+    const db = resolvedDatabase();
     return {
-      name: title,
+      name: name.trim(),
       requirement: idea.trim(),
-      description: '',
-      backend,
-      frontend,
-      database,
-      auth,
-      integrations,
-      databaseConfig:
-        database === 'NONE'
-          ? undefined
-          : {
-              host: dbHost.trim() || 'localhost',
-              port: Number(dbPort) || 5432,
-              name: dbName.trim() || 'app',
-              username: dbUser.trim() || 'app',
-              password: dbPassword,
-              sslMode: 'prefer',
-            },
-      aiConfig:
-        aiProvider === 'NONE'
-          ? { provider: 'NONE', model: 'template' }
-          : {
-              provider: aiProvider,
-              model: aiModel.trim() || DEFAULT_MODEL,
-              apiKey: aiKey,
-              ...(aiProvider === 'CUSTOM' ? { baseUrl: aiBaseUrl.trim() } : {}),
-            },
+      description: extraInfo.trim() || undefined,
+      backend: backend as GenerationBackend,
+      frontend: frontend as GenerationFrontend,
+      database: db.database,
+      auth: resolvedAuth(),
+      integrations: resolvedIntegrations(),
+      languageRuntime: languageRuntime.trim(),
+      backendCustom: backend === 'OTHER' ? backendCustom.trim() : undefined,
+      frontendCustom: frontend === 'OTHER' ? frontendCustom.trim() : undefined,
+      answers: answersPayload(),
+      databaseConfigureLater: db.later,
+      databaseConfig: db.config,
+      aiConfig: resolvedAiConfig(),
+      approvedPlan: planPreview ?? undefined,
       draft: false,
     };
   }
 
   async function generate() {
     if (!token || creating) return;
-    if (backend === 'NONE' && frontend === 'NONE') {
-      setError('Choose at least a frontend or a backend.');
+    if (!planPreview) {
+      setError('Review the plan before approving generation.');
       return;
     }
-    if (aiProvider !== 'NONE' && !aiKey.trim()) {
-      setError('An AI API key is required, or choose the template provider (None).');
-      return;
-    }
-    if (aiProvider === 'NONE' && (backend !== 'JAVA_SPRING_BOOT' || !['REACT_TYPESCRIPT', 'NONE'].includes(frontend))) {
-      setError('The template provider currently supports Spring Boot with React or no frontend.');
+    if (!backend || !frontend) {
+      setError('Choose a backend and a frontend.');
       return;
     }
     setCreating(true);
@@ -520,6 +824,17 @@ export function GeneratePage() {
       const created = await createGeneration(apiClient(), token, buildInput());
       setGeneration(created);
       setStep(5);
+      // Secrets were sent once. Drop them from component state after dispatch.
+      setAnswers((current) => {
+        const next = { ...current };
+        for (const [id, answer] of Object.entries(next)) {
+          if (id === 'generation.apiKey') {
+            next[id] = { ...answer, value: '' };
+          }
+        }
+        return next;
+      });
+      setDbPassword('');
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -620,6 +935,76 @@ export function GeneratePage() {
     }
   }
 
+  async function openFixDialog() {
+    if (!token || !generation || selectedFindingIds.length === 0 || fixBusy) return;
+    setFixBusy(true);
+    setFixError(null);
+    try {
+      const preview = await previewGenerationFix(
+        apiClient(), token, generation.id, selectedFindingIds,
+      );
+      setFixPreview(preview);
+      setFixDialogOpen(true);
+    } catch (e) {
+      setFixError(messageOf(e));
+    } finally {
+      setFixBusy(false);
+    }
+  }
+
+  async function approveFixes() {
+    if (!token || !generation || !fixPreview || fixBusy) return;
+    setFixBusy(true);
+    setFixError(null);
+    try {
+      const updated = await approveGenerationFix(
+        apiClient(), token, generation.id, selectedFindingIds, fixApiKey,
+      );
+      setGeneration(updated);
+      setFixDialogOpen(false);
+      setFixApiKey('');
+      setFixPreview(null);
+    } catch (e) {
+      setFixError(messageOf(e));
+    } finally {
+      setFixBusy(false);
+    }
+  }
+
+  async function revertFixRound(round: number) {
+    if (!token || !generation || fixBusy) return;
+    setFixBusy(true);
+    setFixError(null);
+    try {
+      const updated = await revertGenerationFixRound(apiClient(), token, generation.id, round);
+      setGeneration(updated);
+      setSelectedFile(null);
+      await loadFiles(generation.id);
+    } catch (e) {
+      setFixError(messageOf(e));
+    } finally {
+      setFixBusy(false);
+    }
+  }
+
+  async function retryStage() {
+    if (!token || !generation || !retryExecutionId || retryBusy) return;
+    setRetryBusy(true);
+    setRetryError(null);
+    try {
+      const updated = await retryGenerationStage(
+        apiClient(), token, generation.id, retryExecutionId, retryApiKey,
+      );
+      setGeneration(updated);
+      setRetryExecutionId(null);
+      setRetryApiKey('');
+    } catch (e) {
+      setRetryError(messageOf(e));
+    } finally {
+      setRetryBusy(false);
+    }
+  }
+
   function reset() {
     setGeneration(null);
     setFiles([]);
@@ -628,6 +1013,22 @@ export function GeneratePage() {
     setRestructures([]);
     setStep(1);
     setError(null);
+    setName('');
+    setIdea('');
+    setExtraInfo('');
+    setBackend('');
+    setFrontend('');
+    setLanguageRuntime('');
+    setBackendCustom('');
+    setFrontendCustom('');
+    setAnswers({});
+    setQuestions([]);
+    setPlanPreview(null);
+    setDbHost('');
+    setDbPort('');
+    setDbName('');
+    setDbUser('');
+    setDbPassword('');
     if (searchParams.has('genId')) {
       const next = new URLSearchParams(searchParams);
       next.delete('genId');
@@ -642,9 +1043,9 @@ export function GeneratePage() {
   return (
     <FeaturePage
       title="Generate"
-      description="Describe the idea, choose the stack and integrations, review the plan, then watch the real pipeline."
+      description="Choose the project and stack, answer the backend's questions, review the plan, then approve generation."
       steps={STEPS}
-      current={step - 1}
+      current={step === 5 ? STEPS.length - 1 : step - 1}
       actions={
         <Link to="/projects" className={secondaryButtonClass}>
           Projects
@@ -656,29 +1057,14 @@ export function GeneratePage() {
       {step === 1 && (
         <Panel className="space-y-5">
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">Describe your project</h2>
+            <h2 className="text-lg font-semibold text-slate-900">Project</h2>
             <p className="mt-1 text-sm text-slate-600">
-              One or two sentences are enough. You will choose the stack next.
-            </p>
-          </div>
-          <div>
-            <label htmlFor="idea" className="mb-1 block text-sm font-medium text-slate-700">
-              Project idea
-            </label>
-            <textarea
-              id="idea"
-              className={`${textareaClass} min-h-32`}
-              value={idea}
-              onChange={(event) => setIdea(event.target.value)}
-              placeholder="A task tracker where teams create projects, assign tasks, and comment."
-            />
-            <p className="mt-1 text-xs text-slate-500">
-              {idea.trim().length}/{MIN_IDEA} characters minimum
+              Tell us what to build. Every field is yours to fill; nothing is inferred.
             </p>
           </div>
           <div>
             <label htmlFor="name" className="mb-1 block text-sm font-medium text-slate-700">
-              Project title (optional)
+              Project name <span className="text-red-600">*</span>
             </label>
             <input
               id="name"
@@ -686,6 +1072,35 @@ export function GeneratePage() {
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="task-tracker"
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="idea" className="mb-1 block text-sm font-medium text-slate-700">
+              Task description <span className="text-red-600">*</span>
+            </label>
+            <textarea
+              id="idea"
+              className={`${textareaClass} min-h-32`}
+              value={idea}
+              onChange={(event) => setIdea(event.target.value)}
+              placeholder="A task tracker where teams create projects, assign tasks, and comment."
+              required
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              {idea.trim().length}/{MIN_IDEA} characters minimum
+            </p>
+          </div>
+          <div>
+            <label htmlFor="extra-info" className="mb-1 block text-sm font-medium text-slate-700">
+              Extra information (optional)
+            </label>
+            <textarea
+              id="extra-info"
+              className={`${textareaClass} min-h-24`}
+              value={extraInfo}
+              onChange={(event) => setExtraInfo(event.target.value)}
+              placeholder="Constraints, must-have screens, data you already have, or anything the plan should respect."
             />
           </div>
           <div className="flex justify-end">
@@ -699,89 +1114,258 @@ export function GeneratePage() {
       {step === 2 && (
         <Panel className="space-y-5">
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">Choose your stack</h2>
+            <h2 className="text-lg font-semibold text-slate-900">Stack</h2>
             <p className="mt-1 text-sm text-slate-600">
-              Explicit choices only. Nothing is inferred from the description.
+              Choose each part explicitly. Database, auth, AI, deployment, and
+              integrations are asked on the next step.
             </p>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Select label="Frontend" value={frontend} onChange={(value) => setFrontend(value as GenerationFrontend)}>
+              <option value="">Select frontend…</option>
               {Object.entries(FRONTEND_LABELS).map(([value, label]) => (
                 <option key={value} value={value}>{label}</option>
               ))}
             </Select>
             <Select label="Backend" value={backend} onChange={(value) => setBackend(value as GenerationBackend)}>
+              <option value="">Select backend…</option>
               {Object.entries(BACKEND_LABELS).map(([value, label]) => (
                 <option key={value} value={value}>{label}</option>
               ))}
             </Select>
-            <Select
-              label="Database"
-              value={database}
-              onChange={(value) => {
-                setDatabase(value as GenerationDatabase);
-                const defaults = DB_DEFAULTS[value as GenerationDatabase];
-                setDbPort(defaults.port);
-                setDbUser(defaults.user);
-              }}
-            >
-              {Object.entries(DATABASE_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </Select>
-            <Select label="Authentication" value={auth} onChange={(value) => setAuth(value as GenerationAuth)}>
-              {Object.entries(AUTH_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </Select>
+            {frontend === 'OTHER' && (
+              <div>
+                <label htmlFor="frontend-custom" className="mb-1 block text-sm font-medium text-slate-700">
+                  Custom frontend <span className="text-red-600">*</span>
+                </label>
+                <input
+                  id="frontend-custom"
+                  className={inputClass}
+                  value={frontendCustom}
+                  onChange={(event) => setFrontendCustom(event.target.value)}
+                  placeholder="e.g. SvelteKit"
+                />
+              </div>
+            )}
+            {backend === 'OTHER' && (
+              <div>
+                <label htmlFor="backend-custom" className="mb-1 block text-sm font-medium text-slate-700">
+                  Custom backend <span className="text-red-600">*</span>
+                </label>
+                <input
+                  id="backend-custom"
+                  className={inputClass}
+                  value={backendCustom}
+                  onChange={(event) => setBackendCustom(event.target.value)}
+                  placeholder="e.g. Go + Fiber"
+                />
+              </div>
+            )}
+            <div className="sm:col-span-2">
+              <label htmlFor="language-runtime" className="mb-1 block text-sm font-medium text-slate-700">
+                Language / runtime <span className="text-red-600">*</span>
+              </label>
+              <input
+                id="language-runtime"
+                className={inputClass}
+                value={languageRuntime}
+                onChange={(event) => setLanguageRuntime(event.target.value)}
+                placeholder="e.g. Java 21, Node 20, Python 3.12"
+                required
+              />
+            </div>
           </div>
-          {(backend === 'NONE' && frontend === 'NONE') && (
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-semibold text-slate-900">Need ideas?</span>
+              <button
+                type="button"
+                className={secondaryButtonClass}
+                onClick={() => setStackSuggestionsOpen((open) => !open)}
+              >
+                {stackSuggestionsOpen ? 'Hide suggestions' : 'Suggest options'}
+              </button>
+            </div>
+            {stackSuggestionsOpen && (
+              <p className="mt-2 text-xs text-slate-600">
+                Suggestions only — nothing is applied automatically. Common
+                starting points: Spring Boot + React, FastAPI + Next.js,
+                Node/Express + Vue. Pick one above or type your own.
+              </p>
+            )}
+          </div>
+          {backend === 'NONE' && frontend === 'NONE' && (
             <p className="text-sm text-amber-700">Pick at least a frontend or a backend.</p>
           )}
           <div className="flex justify-between">
             <button type="button" className={secondaryButtonClass} onClick={() => setStep(1)}>Back</button>
-            <button type="button" className={primaryButtonClass} onClick={next}>Choose integrations</button>
+            <button type="button" className={primaryButtonClass} onClick={next}>Answer questions</button>
           </div>
         </Panel>
       )}
 
       {step === 3 && (
-        <Panel className="space-y-5">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">Integrations</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              Optional. Each selection adds a thin adapter and an environment placeholder — never a credential.
+        <div className="space-y-5">
+          <Panel className="space-y-3">
+            <h2 className="text-lg font-semibold text-slate-900">Questions</h2>
+            <p className="text-sm text-slate-600">
+              These questions come from the backend based on your stack. There
+              are no preselected answers. Required questions block the plan;
+              optional questions can be skipped explicitly.
             </p>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {INTEGRATIONS.map((item) => (
-              <label
-                key={item.value}
-                className={`flex cursor-pointer gap-3 rounded-xl border p-3 transition-colors ${
-                  integrations.includes(item.value)
-                    ? 'border-indigo-300 bg-indigo-50'
-                    : 'border-slate-200 bg-white hover:border-slate-300'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  className="mt-1 h-4 w-4"
-                  checked={integrations.includes(item.value)}
-                  onChange={() => toggleIntegration(item.value)}
-                  aria-label={item.label}
-                />
-                <span>
-                  <span className="block text-sm font-semibold text-slate-900">{item.label}</span>
-                  <span className="block text-xs text-slate-600">{item.note}</span>
-                </span>
-              </label>
-            ))}
-          </div>
+            {questionsLoading && <LoadingState label="Preparing questions…" />}
+            {questionsError && <ErrorAlert message={questionsError} />}
+          </Panel>
+
+          {!questionsLoading && !questionsError && questions.map((question) => {
+            const answer = answers[question.id];
+            const skipped = Boolean(answer?.skipped);
+            const engine = answers['generation.engine']?.value;
+            const hiddenByTemplate = engine === 'TEMPLATE'
+              && (question.id === 'generation.model'
+                || question.id === 'generation.apiKey'
+                || question.id === 'generation.baseUrl');
+            if (hiddenByTemplate) {
+              return null;
+            }
+            const dbType = answers['database.type']?.value;
+            const dbQuestionDisabled = question.id === 'database.connection'
+              && (!dbType || dbType === 'NONE'
+                || answers['database.type']?.skipped || skipped);
+            return (
+              <Panel key={question.id} className="space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      {question.prompt}{' '}
+                      {question.required
+                        ? <span className="text-red-600">*</span>
+                        : <span className="text-xs font-normal text-slate-400">(optional)</span>}
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500">{question.help}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {question.secret && <Badge tone="amber">secret — sent once</Badge>}
+                    {question.allowSkip && (
+                      <button
+                        type="button"
+                        className={secondaryButtonClass}
+                        onClick={() => skipAnswer(question.id)}
+                        aria-pressed={skipped}
+                      >
+                        {skipped ? 'Skipped — change' : 'Ask me later'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {question.id === 'database.connection' ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {dbQuestionDisabled ? (
+                      <p className="text-sm text-slate-500 sm:col-span-2">
+                        {skipped
+                          ? 'You chose Ask me later. No connection details will be stored.'
+                          : 'No connection details needed because no database is selected.'}
+                      </p>
+                    ) : (
+                      <>
+                        <Field label="DB host" htmlFor="db-host" value={dbHost} onChange={setDbHost} />
+                        <Field label="DB port" htmlFor="db-port" value={dbPort} onChange={setDbPort} />
+                        <Field label="DB name" htmlFor="db-name" value={dbName} onChange={setDbName} />
+                        <Field label="DB user" htmlFor="db-user" value={dbUser} onChange={setDbUser} />
+                        <div className="sm:col-span-2">
+                          <label htmlFor="db-password" className="mb-1 block text-sm font-medium text-slate-700">
+                            DB password
+                          </label>
+                          <input
+                            id="db-password"
+                            type="password"
+                            autoComplete="off"
+                            className={inputClass}
+                            value={dbPassword}
+                            onChange={(event) => setDbPassword(event.target.value)}
+                            placeholder="Optional; sent once and never stored"
+                          />
+                        </div>
+                        <p className="text-xs text-slate-500 sm:col-span-2">
+                          Fill host, port, name and username, or choose Ask me later
+                          to leave the connection unconfigured.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                ) : question.type === 'CHOICE' ? (
+                  <select
+                    aria-label={question.prompt}
+                    className={selectClass}
+                    value={skipped ? '' : answer?.value ?? ''}
+                    onChange={(event) => setAnswerValue(question.id, event.target.value)}
+                    disabled={skipped}
+                  >
+                    <option value="">Select an answer…</option>
+                    {question.options.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                ) : question.type === 'YES_NO' ? (
+                  <div className="flex gap-2">
+                    {['YES', 'NO'].map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-pressed={!skipped && answer?.value === value}
+                        className={!skipped && answer?.value === value
+                          ? primaryButtonClass : secondaryButtonClass}
+                        onClick={() => setAnswerValue(question.id, value)}
+                      >
+                        {value === 'YES' ? 'Yes' : 'No'}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <input
+                      aria-label={question.prompt}
+                      type={question.secret ? 'password' : 'text'}
+                      autoComplete="off"
+                      className={inputClass}
+                      value={skipped ? '' : answer?.value ?? ''}
+                      onChange={(event) => setAnswerValue(question.id, event.target.value)}
+                      disabled={skipped}
+                      placeholder={question.secret
+                        ? 'Sent once, held in memory, never stored'
+                        : 'Type your answer'}
+                    />
+                    {question.id === 'integrations' && (
+                      <p className="text-xs text-slate-500">
+                        Known values: {INTEGRATION_VALUES.join(', ')}. Suggestions
+                        only; type the ones you want or skip this question.
+                      </p>
+                    )}
+                  </div>
+                )}
+                {skipped && (
+                  <p className="text-xs font-medium text-amber-700">
+                    You chose “ask me later”. The plan will say this is undecided;
+                    it will not invent a value.
+                  </p>
+                )}
+              </Panel>
+            );
+          })}
+
           <div className="flex justify-between">
             <button type="button" className={secondaryButtonClass} onClick={() => setStep(2)}>Back</button>
-            <button type="button" className={primaryButtonClass} onClick={next}>Review plan</button>
+            <button
+              type="button"
+              className={primaryButtonClass}
+              onClick={next}
+              disabled={questionsLoading || Boolean(questionsError) || questions.length === 0}
+            >
+              Review plan
+            </button>
           </div>
-        </Panel>
+        </div>
       )}
 
       {step === 4 && (
@@ -791,7 +1375,8 @@ export function GeneratePage() {
               <div>
                 <h2 className="text-lg font-semibold text-slate-900">Review the plan</h2>
                 <p className="mt-1 text-sm text-slate-600">
-                  Stack-aware scaffold preview. The Planner Agent produces the final file plan after you generate.
+                  This plan is built only from your answers. Nothing is generated
+                  until you press Approve and generate.
                 </p>
               </div>
               <button type="button" className={secondaryButtonClass} onClick={() => setPreviewTick((value) => value + 1)}>
@@ -799,7 +1384,7 @@ export function GeneratePage() {
               </button>
             </div>
 
-            {previewLoading && <LoadingState label="Building the plan preview…" />}
+            {previewLoading && <LoadingState label="Building the plan…" />}
             {previewError && <ErrorAlert message={previewError} />}
 
             {planPreview && !previewLoading && (
@@ -821,13 +1406,52 @@ export function GeneratePage() {
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900">Files ({planPreview.files.length})</h3>
                     <ul className="mt-2 max-h-56 space-y-1 overflow-auto rounded-xl border border-slate-200 p-3 text-sm">
-                      {planPreview.files.map((file) => (
-                        <li key={file.path} className="flex flex-col">
-                          <span className="font-mono text-xs text-slate-900">{file.path}</span>
-                          <span className="text-xs text-slate-500">{file.purpose}</span>
+                      {planPreview.files.map((file, index) => (
+                        <li key={`${index}-${file.path}`} className="grid gap-2 border-b border-slate-100 py-2 last:border-0">
+                          <label className="sr-only" htmlFor={`plan-file-path-${index}`}>Planned file path {index + 1}</label>
+                          <input
+                            id={`plan-file-path-${index}`}
+                            className={inputClass}
+                            aria-label={`Planned file path ${index + 1}`}
+                            value={file.path}
+                            onChange={(event) => setPlanPreview((current) => current
+                              ? { ...current, files: current.files.map((item, itemIndex) =>
+                                  itemIndex === index ? { ...item, path: event.target.value } : item) }
+                              : current)}
+                          />
+                          <label className="sr-only" htmlFor={`plan-file-purpose-${index}`}>Purpose for planned file {index + 1}</label>
+                          <input
+                            id={`plan-file-purpose-${index}`}
+                            className={inputClass}
+                            aria-label={`Purpose for planned file ${index + 1}`}
+                            value={file.purpose}
+                            onChange={(event) => setPlanPreview((current) => current
+                              ? { ...current, files: current.files.map((item, itemIndex) =>
+                                  itemIndex === index ? { ...item, purpose: event.target.value } : item) }
+                              : current)}
+                          />
+                          <button
+                            type="button"
+                            className="w-fit text-xs font-medium text-red-700 underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                            aria-label={`Remove planned file ${file.path}`}
+                            onClick={() => setPlanPreview((current) => current
+                              ? { ...current, files: current.files.filter((_, itemIndex) => itemIndex !== index) }
+                              : current)}
+                          >
+                            Remove file
+                          </button>
                         </li>
                       ))}
                     </ul>
+                    <button
+                      type="button"
+                      className={`${secondaryButtonClass} mt-2`}
+                      onClick={() => setPlanPreview((current) => current
+                        ? { ...current, files: [...current.files, { path: '', purpose: '' }] }
+                        : current)}
+                    >
+                      Add planned file
+                    </button>
                   </div>
                 </div>
                 {planPreview.dependencies.length > 0 && (
@@ -842,88 +1466,52 @@ export function GeneratePage() {
                     Edit stack
                   </button>
                   <button type="button" className={secondaryButtonClass} onClick={() => setStep(3)}>
-                    Edit integrations
+                    Edit answers
                   </button>
                 </div>
               </div>
             )}
           </Panel>
 
-          <Panel className="space-y-4">
-            <h2 className="text-lg font-semibold text-slate-900">Generation engine</h2>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Select
-                label="AI provider"
-                value={aiProvider}
-                onChange={(value) => setAiProvider(value as 'OPENROUTER' | 'CUSTOM' | 'NONE')}
-              >
-                <option value="OPENROUTER">OpenRouter</option>
-                <option value="CUSTOM">Custom (OpenAI-compatible)</option>
-                <option value="NONE">None — deterministic templates</option>
-              </Select>
-              <div>
-                <label htmlFor="ai-model" className="mb-1 block text-sm font-medium text-slate-700">AI model</label>
-                <input
-                  id="ai-model"
-                  className={inputClass}
-                  value={aiModel}
-                  onChange={(event) => setAiModel(event.target.value)}
-                />
-              </div>
-              {aiProvider === 'CUSTOM' && (
-                <div className="sm:col-span-2">
-                  <label htmlFor="ai-base-url" className="mb-1 block text-sm font-medium text-slate-700">Base URL</label>
-                  <input
-                    id="ai-base-url"
-                    className={inputClass}
-                    value={aiBaseUrl}
-                    onChange={(event) => setAiBaseUrl(event.target.value)}
-                    placeholder="https://api.example.com/v1"
-                  />
-                </div>
-              )}
-              {aiProvider !== 'NONE' && (
-                <div className="sm:col-span-2">
-                  <label htmlFor="ai-key" className="mb-1 block text-sm font-medium text-slate-700">AI API key</label>
-                  <input
-                    id="ai-key"
-                    type="password"
-                    autoComplete="off"
-                    className={inputClass}
-                    value={aiKey}
-                    onChange={(event) => setAiKey(event.target.value)}
-                    placeholder="Sent once, held in memory, never stored"
-                  />
-                </div>
-              )}
-            </div>
-            {database !== 'NONE' && (
-              <details className="rounded-xl border border-slate-200 p-3">
-                <summary className="cursor-pointer text-sm font-semibold text-slate-900">Database connection</summary>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <Field label="DB host" htmlFor="db-host" value={dbHost} onChange={setDbHost} />
-                  <Field label="DB port" htmlFor="db-port" value={dbPort} onChange={setDbPort} />
-                  <Field label="DB name" htmlFor="db-name" value={dbName} onChange={setDbName} />
-                  <Field label="DB user" htmlFor="db-user" value={dbUser} onChange={setDbUser} />
-                  <div className="sm:col-span-2">
-                    <label htmlFor="db-password" className="mb-1 block text-sm font-medium text-slate-700">DB password</label>
-                    <input
-                      id="db-password"
-                      type="password"
-                      autoComplete="off"
-                      className={inputClass}
-                      value={dbPassword}
-                      onChange={(event) => setDbPassword(event.target.value)}
-                      placeholder="Optional; never stored"
-                    />
-                  </div>
-                </div>
-              </details>
-            )}
+          {questions.length > 0 && (
+            <Panel className="space-y-3">
+              <h2 className="text-lg font-semibold text-slate-900">Your answers</h2>
+              <ul className="space-y-1 text-sm text-slate-600">
+                {questions.map((question) => {
+                  const answer = answers[question.id];
+                  if (!answer) {
+                    return null;
+                  }
+                  return (
+                    <li key={question.id} className="flex flex-wrap justify-between gap-2 border-b border-slate-100 pb-1">
+                      <span>{question.prompt}</span>
+                      <span className="font-medium text-slate-900">
+                        {question.secret
+                          ? (answer.value ? 'configured (not stored)' : 'not provided')
+                          : answer.skipped ? 'Ask me later' : (answer.value || 'not provided')}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </Panel>
+          )}
+
+          <Panel className="space-y-3">
+            <p className="text-sm text-slate-600">
+              Approval starts the real generation pipeline: plan, code, sandbox
+              build/test, verdict, and review. You can still send the result to
+              Review afterwards.
+            </p>
             <div className="flex flex-wrap justify-between gap-3">
               <button type="button" className={secondaryButtonClass} onClick={() => setStep(3)}>Back</button>
-              <button type="button" className={primaryButtonClass} onClick={() => void generate()} disabled={creating}>
-                {creating ? 'Starting…' : 'Generate project'}
+              <button
+                type="button"
+                className={primaryButtonClass}
+                onClick={() => void generate()}
+                disabled={creating || previewLoading || !planPreview}
+              >
+                {creating ? 'Starting…' : 'Approve and generate'}
               </button>
             </div>
           </Panel>
@@ -954,23 +1542,65 @@ export function GeneratePage() {
                       <span className="text-sm font-semibold text-slate-900">{index + 1}. {stage.label}</span>
                       <Badge tone={display.tone}>{display.label}</Badge>
                     </div>
+                    <p className="mt-1 text-[11px] text-slate-500">Round {stage.roundNumber}</p>
+                    <p className="mt-2 text-xs font-medium text-slate-700">{stage.role}</p>
                     <p className="mt-2 text-xs leading-5 text-slate-600">{stage.detail}</p>
+                    {(stage.startedAt || stage.finishedAt) && (
+                      <p className="mt-2 text-[11px] text-slate-500">
+                        {stage.startedAt
+                          ? `Started ${new Date(stage.startedAt).toLocaleTimeString()}`
+                          : 'Waiting to start'}
+                        {stage.finishedAt
+                          ? ` · Ended ${new Date(stage.finishedAt).toLocaleTimeString()}`
+                          : ''}
+                      </p>
+                    )}
+                    {stage.activityLog && (
+                      <p className="mt-1 break-words text-[11px] text-slate-500">
+                        Activity: {stage.activityLog}
+                      </p>
+                    )}
+                    {stage.state === 'failed' && stage.executionId && (
+                      <button
+                        type="button"
+                        className={`${secondaryButtonClass} mt-3 w-full`}
+                        onClick={() => {
+                          setRetryExecutionId(stage.executionId);
+                          setRetryError(null);
+                        }}
+                      >
+                        Retry {stage.label}
+                      </button>
+                    )}
                   </li>
                 );
               })}
             </ol>
 
-            {generation?.execution?.notVerified && (
+            {generation?.verificationLevel === 'SANDBOX_UNAVAILABLE' && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-                <strong>Not verified.</strong> The Docker sandbox is disabled, so Build &amp; Test did not run.
-                This run can still be reviewed, but the download stays locked until a real verification passes.
+                <strong>Build and tests not run: sandbox unavailable.</strong>
+                <span className="ml-1">Static checks and review are reported separately; this is not build verification.</span>
               </div>
+            )}
+            {generation?.verificationLevel === 'STATIC' && (
+              <p className="text-sm font-medium text-indigo-800">Verified (static)</p>
+            )}
+            {generation?.verificationLevel === 'BUILD_AND_TESTS' && (
+              <p className="text-sm font-medium text-green-800">Verified (build and tests)</p>
+            )}
+            {generation?.verificationLevel === 'ISSUES_FOUND' && (
+              <p className="text-sm font-medium text-amber-800">Checks found unresolved issues.</p>
             )}
             {generation?.status === 'FAILED' && (
               <ErrorAlert message={generation.error ?? 'Generation failed.'} />
             )}
             {generation && !settled(generation) && (
-              <p className="text-xs text-slate-500">Polling the backend every {POLL_MS / 1000}s…</p>
+              <p className="text-xs text-slate-500">
+                {sseConnected
+                  ? 'Receiving live updates.'
+                  : `Checking for updates every ${POLL_MS / 1000}s when this tab is visible.`}
+              </p>
             )}
             <div className="flex flex-wrap gap-2">
               <button
@@ -999,13 +1629,202 @@ export function GeneratePage() {
                 className={secondaryButtonClass}
                 onClick={() => void download()}
                 disabled={!generation?.downloadReady || downloading}
-                title={generation?.downloadReady ? 'Download the generated ZIP' : 'Available after verification'}
+                title={generation?.downloadReady
+                  ? 'Download the generated ZIP'
+                  : 'Available after all findings are resolved and review completes'}
               >
                 {downloading ? 'Preparing…' : 'Download ZIP'}
               </button>
+              <span className="basis-full text-xs text-slate-500">
+                Verification: {generation?.verificationLevel === 'STATIC'
+                  ? 'Verified (static)'
+                  : generation?.verificationLevel === 'BUILD_AND_TESTS'
+                    ? 'Verified (build and tests)'
+                    : generation?.verificationLevel === 'SANDBOX_UNAVAILABLE'
+                      ? 'Build and tests not run: sandbox unavailable'
+                      : 'Not verified'}
+              </span>
               <button type="button" className={secondaryButtonClass} onClick={reset}>Start another</button>
             </div>
           </Panel>
+
+          {generation?.rating && (
+            <Panel>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900">Rating</h2>
+                  <p className="mt-1 text-sm text-slate-600">Based on the findings in the latest review.</p>
+                </div>
+                <Badge tone={generation.rating.overall >= 80 ? 'green' : 'amber'}>
+                  {generation.rating.overall}/100
+                </Badge>
+              </div>
+              <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                {([
+                  ['Syntax', generation.rating.syntax],
+                  ['Logic', generation.rating.logic],
+                  ['Security', generation.rating.security],
+                  ['Style', generation.rating.style],
+                ] as const).map(([category, score]) => (
+                  <div key={category} className="rounded-xl bg-slate-50 p-3">
+                    <dt className="text-xs text-slate-500">{category}</dt>
+                    <dd className="mt-1 text-lg font-semibold text-slate-900">{score}/100</dd>
+                  </div>
+                ))}
+              </dl>
+            </Panel>
+          )}
+
+          {generation && (generation.findings?.length ?? 0) > 0 && (
+            <Panel className="space-y-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Findings</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  {generation.findings?.length ?? 0} issue{generation.findings?.length === 1 ? '' : 's'} from the latest review.
+                </p>
+              </div>
+              {generation.status === 'AWAITING_FIX_APPROVAL' &&
+                unresolvedFindingIds.length > 0 &&
+                generation.iteration < generation.maxIterations && (
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    className={secondaryButtonClass}
+                    onClick={() => setSelectedFindingIds(
+                      selectedFindingIds.length === unresolvedFindingIds.length
+                        ? []
+                        : unresolvedFindingIds,
+                    )}
+                  >
+                    {selectedFindingIds.length === unresolvedFindingIds.length
+                      ? 'Deselect all'
+                      : 'Select all'}
+                  </button>
+                  <button
+                    type="button"
+                    className={primaryButtonClass}
+                    onClick={() => void openFixDialog()}
+                    disabled={fixBusy || selectedFindingIds.length === 0}
+                  >
+                    {fixBusy ? 'Preparing…' : `Fix selected (${selectedFindingIds.length})`}
+                  </button>
+                </div>
+              )}
+              {generation.status === 'AWAITING_FIX_APPROVAL' &&
+                unresolvedFindingIds.length > 0 &&
+                generation.iteration >= generation.maxIterations && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                  <strong>Fix limit reached.</strong>{' '}
+                  These {unresolvedFindingIds.length} finding{unresolvedFindingIds.length === 1 ? '' : 's'} remain and cannot be fixed in another round.
+                </div>
+              )}
+              {fixError && <ErrorAlert message={fixError} />}
+              {findingsByFile(generation.findings ?? []).map(([file, findingsForFile]) => (
+                <section key={file} className="rounded-xl border border-slate-200 p-3">
+                  <h3 className="break-all font-mono text-xs font-semibold text-slate-800">{file}</h3>
+                  <ul className="mt-2 space-y-2">
+                    {findingsForFile.map((finding) => (
+                      <li key={finding.id} className="rounded-lg bg-slate-50 p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {['OPEN', 'FIX_REQUESTED', 'FIX_PROPOSED'].includes(finding.status ?? 'OPEN')
+                            && generation.status === 'AWAITING_FIX_APPROVAL'
+                            && generation.iteration < generation.maxIterations && (
+                            <input
+                              type="checkbox"
+                              aria-label={`Select finding: ${finding.title}`}
+                              checked={selectedFindingIds.includes(finding.id)}
+                              onChange={(event) => setSelectedFindingIds((current) =>
+                                event.target.checked
+                                  ? [...current, finding.id]
+                                  : current.filter((id) => id !== finding.id))}
+                              className="size-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600"
+                            />
+                          )}
+                          <Badge tone={finding.severity === 'CRITICAL' || finding.severity === 'HIGH' ? 'red' : 'amber'}>
+                            {finding.severity}
+                          </Badge>
+                          <Badge tone={finding.status === 'VERIFIED_FIXED' ? 'green' : 'gray'}>
+                            {(finding.status ?? 'OPEN').replaceAll('_', ' ')}
+                          </Badge>
+                          <span className="text-xs font-medium text-slate-600">
+                            {finding.category}{finding.line ? ` · line ${finding.line}` : ''}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{finding.title}</p>
+                        {finding.explanation && (
+                          <p className="mt-1 text-sm leading-5 text-slate-600">{finding.explanation}</p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </Panel>
+          )}
+
+          {generation && (generation.fixRounds?.length ?? 0) > 0 && (
+            <Panel className="space-y-3">
+              <h2 className="text-lg font-semibold text-slate-900">Fix round history</h2>
+              {generation.fixRounds.map((round) => {
+                const versions = generation.fileVersions.filter(
+                  (version) => version.roundNumber === round.roundNumber,
+                );
+                return (
+                  <section key={round.approvalId} className="rounded-xl border border-slate-200 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="font-semibold text-slate-900">Round {round.roundNumber}</h3>
+                        <p className="text-sm text-slate-600">
+                          Findings: {round.beforeFindingCount} before → {round.afterFindingCount ?? 'not completed'} after · {round.status}
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2" aria-label={`Agent states for round ${round.roundNumber}`}>
+                          {generation.agentWorkflow
+                            .filter((agent) => agent.roundNumber === round.roundNumber)
+                            .map((agent) => (
+                              <Badge key={`${agent.agentType}-${agent.createdAt}`} tone={agent.status === 'COMPLETED' ? 'green' : agent.status === 'FAILED' ? 'red' : 'blue'}>
+                                {agent.agentType}: {agent.status.replaceAll('_', ' ')}
+                              </Badge>
+                            ))}
+                        </div>
+                      </div>
+                      {!versions.every((version) => version.reverted) && versions.length > 0 && (
+                        <button
+                          type="button"
+                          className={secondaryButtonClass}
+                          onClick={() => setRevertRoundNumber(round.roundNumber)}
+                          disabled={fixBusy || (generation.status !== 'AWAITING_FIX_APPROVAL'
+                            && generation.status !== 'REVIEWED' && generation.status !== 'FAILED')}
+                        >
+                          Revert round {round.roundNumber}
+                        </button>
+                      )}
+                    </div>
+                    {versions.map((version) => (
+                      <details key={version.id} className="mt-3 rounded-lg border border-slate-200 p-3">
+                        <summary className="cursor-pointer break-all text-sm font-medium text-slate-800">
+                          Diff · {version.path}{version.reverted ? ' · Reverted' : ''}
+                        </summary>
+                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                          <div>
+                            <h4 className="text-xs font-semibold text-slate-600">Before</h4>
+                            <pre className="mt-1 max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
+                              {version.beforeContent}
+                            </pre>
+                          </div>
+                          <div>
+                            <h4 className="text-xs font-semibold text-slate-600">After</h4>
+                            <pre className="mt-1 max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">
+                              {version.afterContent}
+                            </pre>
+                          </div>
+                        </div>
+                      </details>
+                    ))}
+                  </section>
+                );
+              })}
+            </Panel>
+          )}
 
           {generation?.artifact && (
             <Panel className="space-y-4">
@@ -1162,12 +1981,185 @@ export function GeneratePage() {
                   )}
                   {latestProposal.status === 'APPLIED' && (
                     <p className="mt-2 text-xs text-amber-700">
-                      Structure applied. Re-run verification from Verify after reviewing the moved files.
+                      Structure applied. Open the finding in Review to fix and
+                      re-verify the moved files inline.
                     </p>
                   )}
                 </div>
               )}
             </Panel>
+          )}
+
+          {fixDialogOpen && fixPreview && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+              <section
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="generation-fix-title"
+                ref={fixDialogRef}
+                className="max-h-[90vh] w-full max-w-xl overflow-auto rounded-2xl bg-white p-6 shadow-xl"
+              >
+                <h2 id="generation-fix-title" className="text-lg font-semibold text-slate-900">
+                  {fixPreview.findingCount} issues found. Allow the coding agent to fix them?
+                </h2>
+                <p className="mt-2 text-sm text-slate-600">
+                  The coding agent will regenerate these files and their dependents. No files change until you approve below.
+                </p>
+                <h3 className="mt-4 text-sm font-semibold text-slate-800">Files that will change</h3>
+                <ul className="mt-2 max-h-48 space-y-1 overflow-auto rounded-lg border border-slate-200 p-3">
+                  {fixPreview.files.map((path) => (
+                    <li key={path} className="break-all font-mono text-xs text-slate-700">{path}</li>
+                  ))}
+                </ul>
+                {generation?.aiConfig.provider === 'NONE' ? (
+                  <p className="mt-4 text-sm text-amber-800">
+                    This template generation has no AI coding provider configured, so automatic fixes are unavailable.
+                  </p>
+                ) : (
+                  <div className="mt-4">
+                    <label htmlFor="fix-api-key" className="mb-1 block text-sm font-medium text-slate-700">
+                      AI provider API key (requested again for this round)
+                    </label>
+                    <input
+                      id="fix-api-key"
+                      type="password"
+                      autoComplete="off"
+                      className={inputClass}
+                      value={fixApiKey}
+                      onChange={(event) => setFixApiKey(event.target.value)}
+                    />
+                    <p className="mt-1 text-xs text-slate-500">Used in memory for this round only; never saved.</p>
+                  </div>
+                )}
+                {fixError && <div className="mt-3"><ErrorAlert message={fixError} /></div>}
+                <div className="mt-5 flex flex-wrap justify-end gap-2">
+                  <button
+                    type="button"
+                    className={secondaryButtonClass}
+                    onClick={() => {
+                      setFixDialogOpen(false);
+                      setFixPreview(null);
+                      setFixApiKey('');
+                    }}
+                    disabled={fixBusy}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className={primaryButtonClass}
+                    onClick={() => void approveFixes()}
+                    disabled={fixBusy || generation?.aiConfig.provider === 'NONE' || !fixApiKey.trim()}
+                  >
+                    {fixBusy ? 'Starting fix round…' : 'Confirm'}
+                  </button>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {retryExecutionId && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+              <section
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="retry-stage-title"
+                ref={retryDialogRef}
+                className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl"
+              >
+                <h2 id="retry-stage-title" className="text-lg font-semibold text-slate-900">
+                  Retry failed stage
+                </h2>
+                <p className="mt-2 text-sm text-slate-600">
+                  Only this stage in round {generation?.iteration} will run again.
+                </p>
+                {generation?.aiConfig.provider !== 'NONE' && (
+                  <div className="mt-4">
+                    <label htmlFor="retry-api-key" className="mb-1 block text-sm font-medium text-slate-700">
+                      AI provider API key
+                    </label>
+                    <input
+                      id="retry-api-key"
+                      type="password"
+                      autoComplete="off"
+                      className={inputClass}
+                      value={retryApiKey}
+                      onChange={(event) => setRetryApiKey(event.target.value)}
+                    />
+                  </div>
+                )}
+                {retryError && <div className="mt-3"><ErrorAlert message={retryError} /></div>}
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className={secondaryButtonClass}
+                    onClick={() => {
+                      setRetryExecutionId(null);
+                      setRetryApiKey('');
+                      setRetryError(null);
+                    }}
+                    disabled={retryBusy}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className={primaryButtonClass}
+                    onClick={() => void retryStage()}
+                    disabled={retryBusy || (
+                      generation?.aiConfig.provider !== 'NONE' && !retryApiKey.trim()
+                    )}
+                  >
+                    {retryBusy ? 'Retrying…' : 'Retry stage'}
+                  </button>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {revertRoundNumber !== null && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+              <section
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="revert-round-title"
+                ref={revertDialogRef}
+                className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl"
+              >
+                <h2 id="revert-round-title" className="text-lg font-semibold text-slate-900">
+                  Revert round {revertRoundNumber}?
+                </h2>
+                <p className="mt-2 text-sm text-slate-600">
+                  This restores the files from before the round and removes its fix changes. Nothing changes until you confirm.
+                </p>
+                {fixError && <div className="mt-3"><ErrorAlert message={fixError} /></div>}
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className={secondaryButtonClass}
+                    onClick={() => {
+                      setRevertRoundNumber(null);
+                      setFixError(null);
+                    }}
+                    disabled={fixBusy}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className={primaryButtonClass}
+                    onClick={() => {
+                      const round = revertRoundNumber;
+                      setRevertRoundNumber(null);
+                      void revertFixRound(round);
+                    }}
+                    disabled={fixBusy}
+                  >
+                    {fixBusy ? 'Reverting…' : 'Confirm revert'}
+                  </button>
+                </div>
+              </section>
+            </div>
           )}
         </div>
       )}

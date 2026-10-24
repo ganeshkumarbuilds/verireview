@@ -1,6 +1,6 @@
 # VeriReview — Product Requirements
 
-> Tagline: "Generate. Review. Fix. Verify."
+> Tagline: "Generate. Review."
 
 ## 1. Vision
 
@@ -74,6 +74,11 @@ Non-goals: full IDE replacement, full CI platform (GitHub Actions covers that), 
 
 Invariant: **no fix is ever marked "verified" on the Coding Agent's word alone.**
 
+Product surface: this entire workflow lives inside **Review**. There are no
+separate Fix or Verify pages or navigation entries; fixing and re-verification
+open from the finding they belong to. Old `/fix` and `/verify` links redirect to
+Review.
+
 ### 4.2 Generated-project workflow
 
 1. User enters natural-language requirement.
@@ -81,7 +86,7 @@ Invariant: **no fix is ever marked "verified" on the Coding Agent's word alone.*
 3. User approves/edits plan (explicit approval gate).
 4. Coding Agent scaffolds generated project from plan.
 5. Review Agent reviews generated code.
-6. Fix loop (same as §4.1) until verified or user stops.
+6. Fix loop (same as §4.1, inside Review) until verified or user stops.
 7. User downloads final project ZIP.
 
 Approval gates: plan approval and per-finding fix approval. No destructive or large-scale change without explicit user action.
@@ -97,7 +102,7 @@ Approval gates: plan approval and per-finding fix approval. No destructive or la
 | FR-05 | Ingestion-Paste | Accept single file: filename + language + content, size-capped, validated |
 | FR-06 | Ingestion-GitHub | Accept public repo URL (allowlist github.com), shallow clone by branch/commit, size cap |
 | FR-07 | Files | Browse project tree, view file content (read-only, size-capped), search |
-| FR-08 | Review | Trigger review per project; track status (QUEUED/RUNNING/COMPLETED/FAILED) |
+| FR-08 | Review | Trigger review per project; track status (QUEUED/RUNNING/COMPLETED/FAILED); fix and re-verify from a finding inside Review |
 | FR-09 | Findings | List/filter by severity, category, status; finding detail with evidence, file/line refs |
 | FR-10 | Fix | Create FixRequest for one finding at a time; approve scope explicitly |
 | FR-11 | Patch | Store patch as unified diff + file-level stats; never auto-apply to canonical project without verification |

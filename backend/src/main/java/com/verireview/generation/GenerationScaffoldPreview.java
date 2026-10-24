@@ -57,6 +57,10 @@ public final class GenerationScaffoldPreview {
       files.add(new PlanPreviewResponse.PlanFile("app/api/health.py", "Health router"));
       files.add(new PlanPreviewResponse.PlanFile("tests/test_health.py", "API test"));
       dependencies.addAll(List.of("fastapi", "uvicorn", "pytest"));
+    } else if (backend == GenerationBackend.OTHER) {
+      add(directories, "backend");
+      files.add(new PlanPreviewResponse.PlanFile(
+          "backend/README.md", "Backend scaffold notes for the chosen runtime"));
     }
 
     if (frontend == GenerationFrontend.REACT_TYPESCRIPT) {
@@ -82,6 +86,10 @@ public final class GenerationScaffoldPreview {
       files.add(new PlanPreviewResponse.PlanFile("frontend/src/main.ts", "Vue bootstrap"));
       files.add(new PlanPreviewResponse.PlanFile("frontend/src/App.vue", "Root component"));
       dependencies.addAll(List.of("vue", "vite", "typescript"));
+    } else if (frontend == GenerationFrontend.OTHER) {
+      add(directories, "frontend");
+      files.add(new PlanPreviewResponse.PlanFile(
+          "frontend/README.md", "Frontend scaffold notes for the chosen framework"));
     }
 
     if (database != GenerationDatabase.NONE) {
@@ -135,6 +143,77 @@ public final class GenerationScaffoldPreview {
         "Scaffold preview only. The Planner Agent produces the final file plan after you generate.");
   }
 
+  /**
+   * Plan derived strictly from explicit wizard answers. Starts from the
+   * stack scaffold and adds only the files justified by the user's own
+   * answers: deployment target, AI features, and an explicit "configure the
+   * database later" note. Unanswered optional choices add nothing.
+   */
+  public static PlanPreviewResponse buildWizard(
+      GenerationBackend backend,
+      GenerationFrontend frontend,
+      GenerationDatabase database,
+      GenerationAuth auth,
+      List<GenerationIntegration> integrations,
+      String languageRuntime,
+      String backendCustom,
+      String frontendCustom,
+      java.util.Map<String, String> answers) {
+    PlanPreviewResponse base = build(backend, frontend, database, auth, integrations);
+    Set<String> directories = new LinkedHashSet<>(base.directories());
+    List<PlanPreviewResponse.PlanFile> files = new ArrayList<>(base.files());
+    List<String> dependencies = new ArrayList<>(base.dependencies());
+    List<String> steps = new ArrayList<>(base.steps());
+
+    String deployment = answers.get(GenerationWizardCatalog.DEPLOYMENT_TARGET);
+    if ("DOCKER".equalsIgnoreCase(deployment)) {
+      files.add(new PlanPreviewResponse.PlanFile(
+          "Dockerfile", "Container image for the chosen stack"));
+      files.add(new PlanPreviewResponse.PlanFile(
+          "docker-compose.yml", "Local compose file for app and database"));
+    } else if ("CLOUD".equalsIgnoreCase(deployment)) {
+      add(directories, "deploy");
+      files.add(new PlanPreviewResponse.PlanFile(
+          "deploy/README.md", "Cloud container deployment steps"));
+      files.add(new PlanPreviewResponse.PlanFile(
+          ".github/workflows/deploy.yml", "Build and deploy workflow"));
+    }
+
+    if ("YES".equalsIgnoreCase(answers.get(GenerationWizardCatalog.AI_FEATURES))) {
+      add(directories, "integrations");
+      files.add(new PlanPreviewResponse.PlanFile(
+          "integrations/ai-llm.md", "AI feature adapter with the key read from the environment"));
+    }
+
+    if ("true".equals(answers.get("database.configureLater"))) {
+      files.add(new PlanPreviewResponse.PlanFile(
+          "docs/database.md", "Database connection is intentionally left for you to configure"));
+    }
+
+    StringBuilder architecture = new StringBuilder(base.architecture());
+    if (languageRuntime != null && !languageRuntime.isBlank()) {
+      architecture.append(" Language/runtime: ").append(languageRuntime.trim()).append('.');
+    }
+    if (backend == GenerationBackend.OTHER && backendCustom != null && !backendCustom.isBlank()) {
+      architecture.append(" Custom backend: ").append(backendCustom.trim()).append('.');
+    }
+    if (frontend == GenerationFrontend.OTHER && frontendCustom != null && !frontendCustom.isBlank()) {
+      architecture.append(" Custom frontend: ").append(frontendCustom.trim()).append('.');
+    }
+    if (deployment != null && !deployment.isBlank()) {
+      architecture.append(" Deployment: ").append(deployment).append('.');
+    }
+
+    return new PlanPreviewResponse(
+        architecture.toString(),
+        List.copyOf(new LinkedHashSet<>(dependencies)),
+        List.copyOf(directories),
+        base.apis(),
+        List.copyOf(new LinkedHashSet<>(steps)),
+        List.copyOf(files),
+        base.notes() + " Built only from your explicit answers; nothing was assumed.");
+  }
+
   private static void add(Set<String> directories, String... paths) {
     for (String path : paths) {
       if (path != null && !path.isBlank()) {
@@ -158,6 +237,7 @@ public final class GenerationScaffoldPreview {
       case JAVA_SPRING_BOOT -> ".java";
       case NODEJS -> ".js";
       case PYTHON_FASTAPI -> ".py";
+      case OTHER -> ".txt";
       case NONE -> ".ts";
     };
   }

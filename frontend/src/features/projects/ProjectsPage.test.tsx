@@ -67,7 +67,7 @@ afterEach(() => {
 });
 
 describe('ProjectsPage', () => {
-  it('lists projects with source, activity, status and a link to each feature', async () => {
+  it('lists projects with source, activity, status and one Review entry point', async () => {
     renderProjects((url) => {
       if (url.includes('/projects?')) return pageOf(PROJECTS);
       if (url.includes('/projects/p1/reviews')) return pageOf([REVIEW]);
@@ -83,14 +83,8 @@ describe('ProjectsPage', () => {
       'href',
       '/review?project=p1',
     );
-    expect(within(demoRow).getByRole('link', { name: 'Fix demo' })).toHaveAttribute(
-      'href',
-      '/fix?project=p1',
-    );
-    expect(within(demoRow).getByRole('link', { name: 'Verify demo' })).toHaveAttribute(
-      'href',
-      '/verify?project=p1',
-    );
+    expect(within(demoRow).queryByRole('link', { name: 'Fix demo' })).not.toBeInTheDocument();
+    expect(within(demoRow).queryByRole('link', { name: 'Verify demo' })).not.toBeInTheDocument();
 
     const githubRow = screen.getByRole('row', { name: /github-app/ });
     expect(within(githubRow).getByText('ACTIVE')).toBeInTheDocument();

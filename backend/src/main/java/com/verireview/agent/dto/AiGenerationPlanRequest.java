@@ -1,6 +1,7 @@
 package com.verireview.agent.dto;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Backend → AI generation-plan invocation (mirrors Python {@code PlanRequest}).
@@ -23,5 +24,9 @@ public record AiGenerationPlanRequest(
     String aiProvider,
     String apiKey,
     String baseUrl,
-    String model) {
+    String model,
+    String languageRuntime,
+    String backendCustom,
+    String frontendCustom,
+    Map<String, String> answers) {
 }

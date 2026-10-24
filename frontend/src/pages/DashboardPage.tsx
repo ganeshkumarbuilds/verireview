@@ -15,9 +15,7 @@ import { formatRelativeTime } from '../components/workflow';
 import {
   FolderOpen,
   SearchCode,
-  ShieldCheck,
   Sparkles,
-  Wrench,
 } from 'lucide-react';
 
 const REFRESH_INTERVAL_MS = 30_000;
@@ -31,37 +29,23 @@ interface Feature {
 }
 
 /**
- * The four pipeline features. Every card opens its own page; no card mixes
- * another feature's inputs.
+ * The product has exactly two features. Fixing and re-verification happen
+ * inside a finding in Review, not on separate pages.
  */
 const FEATURES: Feature[] = [
   {
     title: 'Generate',
-    description: 'Create a new project from a prompt and tech stack.',
+    description: 'Create a new project with an explicit, reviewed plan.',
     href: '/generate',
     label: 'Start generation',
     icon: Sparkles,
   },
   {
     title: 'Review',
-    description: 'Bring in code and investigate findings.',
+    description: 'Analyze existing code, then fix and re-verify findings inline.',
     href: '/review',
     label: 'Open review',
     icon: SearchCode,
-  },
-  {
-    title: 'Fix',
-    description: 'Request and apply fixes for open findings.',
-    href: '/fix',
-    label: 'Fix findings',
-    icon: Wrench,
-  },
-  {
-    title: 'Verify',
-    description: 'Build, test, and verify fixes in isolated sandboxes.',
-    href: '/verify',
-    label: 'Run verification',
-    icon: ShieldCheck,
   },
 ];
 
@@ -147,7 +131,8 @@ export function DashboardPage() {
         <div className="min-w-0">
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">Dashboard</h1>
           <p className="mt-1 text-sm leading-relaxed text-slate-600">
-            Generate, review, fix, and verify your code in one place.
+            Generate a new project or review existing code — fix and re-verify
+            findings without leaving the review flow.
           </p>
         </div>
         <Link to="/review" className={`${primaryButtonClass} shrink-0`}>
@@ -157,7 +142,7 @@ export function DashboardPage() {
 
       {error && <ErrorAlert message={error} onRetry={handleRetry} />}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2">
         {FEATURES.map((feature) => (
           <FeatureCard key={feature.title} {...feature} />
         ))}

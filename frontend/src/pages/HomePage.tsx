@@ -38,19 +38,11 @@ const FEATURES = [
 const STEPS = [
   {
     title: 'Generate',
-    body: 'Describe what you want. A planning agent drafts a design; you approve or redirect it before a single file is scaffolded.',
+    body: 'Describe the project, choose the stack, answer every clarifying question, and approve a plan built only from your answers before a single file is written.',
   },
   {
     title: 'Review',
-    body: 'Deterministic analyzers scan the code in a sandbox, then the Review Agent layers AI findings on top — deduplicated, ranked, and labeled.',
-  },
-  {
-    title: 'Fix',
-    body: 'Pick a finding and request a fix. The Coding Agent returns a minimal unified diff for your approval — your tree stays untouched until you say so.',
-  },
-  {
-    title: 'Verify',
-    body: 'The patch is applied to an isolated copy, built, tested, and re-analyzed. Green build plus passing tests plus no new critical issues earns VERIFIED.',
+    body: 'Bring in existing code or the generated project. Investigate findings, then request, apply, and sandbox-verify fixes without leaving Review.',
   },
 ];
 
@@ -164,13 +156,13 @@ export function HomePage() {
               AI-powered review with deterministic proof
             </p>
             <h1 className="text-4xl font-bold tracking-tight text-indigo-950 sm:text-5xl">
-              Generate. Review. Fix. Verify.
+              Generate. Review.
             </h1>
             <p className="mx-auto mt-5 max-w-xl text-base leading-relaxed text-indigo-950/60">
-              VeriReview is an AI software-engineering platform with one rule:
-              the AI is never taken at its word. Upload a project, collect
-              reproducible findings, approve surgical fixes, and ship only what
-              a sandboxed build and its tests prove correct.
+              VeriReview has two features: generate a new project from an
+              explicit, reviewed plan, or review existing code. Fixes and
+              re-verification happen inside Review — always backed by sandbox
+              evidence, never by an AI claim.
             </p>
             <div className="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
               <Link
@@ -229,8 +221,8 @@ export function HomePage() {
             <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600">
               The loop
             </p>
-            <h2 className="mt-1 text-2xl font-bold tracking-tight text-indigo-950">From idea to proven fix</h2>
-            <ol className="mt-6 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+            <h2 className="mt-1 text-2xl font-bold tracking-tight text-indigo-950">Two features, one evidence trail</h2>
+            <ol className="mt-6 grid gap-6 sm:grid-cols-2">
               {STEPS.map((step, index) => (
                 <li key={step.title} className="flex flex-col gap-2">
                   <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-sm font-bold text-white">
@@ -378,8 +370,9 @@ export function HomePage() {
               <span className="text-sm font-semibold tracking-wide text-indigo-950">VeriReview</span>
             </div>
             <p className="mt-3 max-w-xs text-sm leading-relaxed text-slate-500">
-              Generate. Review. Fix. Verify. AI proposes — deterministic tools,
-              sandboxes, and backend policy dispose.
+              Generate a new project or review existing code. Fixes are
+              requested, applied, and verified inside Review — AI proposes,
+              deterministic tools and backend policy dispose.
             </p>
           </div>
           <nav aria-label="Product">

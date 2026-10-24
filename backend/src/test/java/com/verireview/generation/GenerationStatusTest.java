@@ -51,7 +51,12 @@ class GenerationStatusTest {
   void failureAndCancellationRemainAvailableForActiveStates() {
     for (GenerationStatus status : GenerationStatus.values()) {
       if (status.isTerminal()) {
-        assertThat(status.allowedTransitions()).isEmpty();
+        if (status == GenerationStatus.FAILED) {
+          assertThat(status.canTransitionTo(GenerationStatus.REVIEWING)).isTrue();
+          assertThat(status.canTransitionTo(GenerationStatus.CODING)).isTrue();
+        } else {
+          assertThat(status.allowedTransitions()).isEmpty();
+        }
       } else if (status == GenerationStatus.DRAFT) {
         assertThat(status.canTransitionTo(GenerationStatus.FAILED)).isFalse();
         assertThat(status.canTransitionTo(GenerationStatus.CANCELLED)).isTrue();

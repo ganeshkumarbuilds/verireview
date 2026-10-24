@@ -64,6 +64,10 @@ public class GenerationAiClient {
     root.put("api_key", request.apiKey());
     root.put("base_url", request.baseUrl());
     root.put("model", request.model());
+    root.put("language_runtime", request.languageRuntime());
+    root.put("backend_custom", request.backendCustom());
+    root.put("frontend_custom", request.frontendCustom());
+    root.put("answers", request.answers());
     String body = post("/internal/generate/plan", root);
     return parsePlan(body, request.generationId());
   }
@@ -86,6 +90,13 @@ public class GenerationAiClient {
     root.put("api_key", request.apiKey());
     root.put("base_url", request.baseUrl());
     root.put("model", request.model());
+    root.put("language_runtime", request.languageRuntime());
+    root.put("backend_custom", request.backendCustom());
+    root.put("frontend_custom", request.frontendCustom());
+    root.put("answers", request.answers());
+    root.put("fix_round", request.fixRound());
+    root.put("fix_findings", request.fixFindings());
+    root.put("existing_files", request.existingFiles());
     List<Object> plan = new ArrayList<>();
     for (AiGenerationFilesRequest.PlannedFileRef ref : request.plan()) {
       Map<String, Object> item = new LinkedHashMap<>();

@@ -73,6 +73,15 @@ def _stack_lines(stack: dict) -> list[str]:
         value = stack.get(key)
         if value not in (None, ""):
             lines.append(f"{key}: {value}")
+    for key in ("language_runtime", "backend_custom", "frontend_custom"):
+        value = stack.get(key)
+        if value not in (None, ""):
+            lines.append(f"{key}: {value}")
+    answers = stack.get("answers") or {}
+    if isinstance(answers, dict) and answers:
+        lines.append("user_answers:")
+        for key in sorted(answers):
+            lines.append(f"  {key}: {answers[key]}")
     return lines
 
 
@@ -99,6 +108,37 @@ def build_files_prompt(request: FilesRequest) -> tuple[str, str]:
     ]
     for item in request.plan:
         user_lines.append(f"- {item.path} :: {item.purpose}")
+    if request.fix_round is not None:
+        user_lines += [
+            "",
+            f"USER-APPROVED FIX ROUND: {request.fix_round}.",
+            "Regenerate only the exact approved target files listed above.",
+            "Use these review findings as the required corrections:",
+        ]
+        for finding in request.fix_findings:
+            user_lines.append(
+                "- "
+                + json.dumps(
+                    finding,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        user_lines += [
+            "",
+            "Current project files for import/reference context (read-only):",
+        ]
+        for item in request.existing_files:
+            user_lines.append(
+                f"<current-file path={json.dumps(str(item.get('path', '')))}>"
+            )
+            user_lines.append(str(item.get("content", "")))
+            user_lines.append("</current-file>")
+        user_lines += [
+            "",
+            "Preserve unrelated behavior. Include dependent target files if their "
+            "imports or references must change. Return every target path exactly once.",
+        ]
     user_lines += [
         "",
         "TASK: produce the single FILES JSON object described in the system prompt.",

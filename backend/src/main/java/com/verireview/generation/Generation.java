@@ -43,6 +43,32 @@ public class Generation extends BaseEntity {
   @Column(name = "description", columnDefinition = "TEXT")
   private String description;
 
+  /**
+   * User-declared language/runtime from step 2 (e.g. "Java 21", "Node 20").
+   * Never inferred from the backend choice; may be null for legacy rows.
+   */
+  @Column(name = "language_runtime", length = 200)
+  private String languageRuntime;
+
+  /** Free-text backend when {@link GenerationBackend#OTHER} is chosen. */
+  @Column(name = "backend_custom", length = 200)
+  private String backendCustom;
+
+  /** Free-text frontend when {@link GenerationFrontend#OTHER} is chosen. */
+  @Column(name = "frontend_custom", length = 200)
+  private String frontendCustom;
+
+  /**
+   * Non-secret wizard answers as a JSON array. Secret answers are filtered out
+   * before serialisation and live only in {@link GenerationSecrets} for the run.
+   */
+  @Column(name = "answers_json", nullable = false, columnDefinition = "TEXT")
+  private String answersJson = "[]";
+
+  /** True when the user explicitly chose "I will configure the database later". */
+  @Column(name = "database_configure_later", nullable = false)
+  private boolean databaseConfigureLater;
+
   @Enumerated(EnumType.STRING)
   @Column(name = "backend_stack", nullable = false, length = 30)
   private GenerationBackend backendStack;
@@ -144,6 +170,46 @@ public class Generation extends BaseEntity {
 
   public void setDescription(String description) {
     this.description = description;
+  }
+
+  public String getLanguageRuntime() {
+    return languageRuntime;
+  }
+
+  public void setLanguageRuntime(String languageRuntime) {
+    this.languageRuntime = languageRuntime;
+  }
+
+  public String getBackendCustom() {
+    return backendCustom;
+  }
+
+  public void setBackendCustom(String backendCustom) {
+    this.backendCustom = backendCustom;
+  }
+
+  public String getFrontendCustom() {
+    return frontendCustom;
+  }
+
+  public void setFrontendCustom(String frontendCustom) {
+    this.frontendCustom = frontendCustom;
+  }
+
+  public String getAnswersJson() {
+    return answersJson;
+  }
+
+  public void setAnswersJson(String answersJson) {
+    this.answersJson = answersJson == null || answersJson.isBlank() ? "[]" : answersJson;
+  }
+
+  public boolean isDatabaseConfigureLater() {
+    return databaseConfigureLater;
+  }
+
+  public void setDatabaseConfigureLater(boolean databaseConfigureLater) {
+    this.databaseConfigureLater = databaseConfigureLater;
   }
 
   public GenerationBackend getBackendStack() {

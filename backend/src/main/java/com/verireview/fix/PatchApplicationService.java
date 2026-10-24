@@ -3,6 +3,7 @@ package com.verireview.fix;
 import com.verireview.audit.AuditService;
 import com.verireview.fix.dto.PatchResponse;
 import com.verireview.generation.Generation;
+import com.verireview.generation.GenerationService;
 import com.verireview.ingestion.ProjectStorage;
 import com.verireview.project.Project;
 import com.verireview.user.User;
@@ -39,6 +40,7 @@ public class PatchApplicationService {
   private final AuditService audits;
   private final UserRepository users;
   private final PatchSnapshotRepository snapshots;
+  private final GenerationService generations;
 
   public PatchApplicationService(
       PatchRepository patches,
@@ -46,13 +48,15 @@ public class PatchApplicationService {
       ProjectStorage storage,
       AuditService audits,
       UserRepository users,
-      PatchSnapshotRepository snapshots) {
+      PatchSnapshotRepository snapshots,
+      GenerationService generations) {
     this.patches = patches;
     this.patchService = patchService;
     this.storage = storage;
     this.audits = audits;
     this.users = users;
     this.snapshots = snapshots;
+    this.generations = generations;
   }
 
   @Transactional
@@ -73,6 +77,11 @@ public class PatchApplicationService {
     String entityId;
 
     if (generation != null) {
+      if (!generations.hasApprovedFix(
+          ownerId, generation.getId(), patch.getFixRequest().getFinding().getId())) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+            "A user-approved generation fix request is required before applying this patch");
+      }
       // Generation patch: apply to generation workspace
       targetDir = storage.generationWorkspaceDir(generation.getId(), generation.getIteration());
       if (!Files.isDirectory(targetDir)) {

@@ -16,7 +16,8 @@ class FlywayMigrationTest extends AbstractPersistenceTest {
   private static final List<String> EXPECTED_TABLES = List.of(
       "roles", "users", "user_roles", "projects", "repositories",
       "project_files", "reviews", "findings", "fix_requests", "patches",
-      "verification_runs", "test_results", "agent_executions", "audit_logs");
+      "verification_runs", "test_results", "agent_executions", "audit_logs",
+      "generation_fix_approvals", "generation_file_versions");
 
   @Autowired
   private JdbcTemplate jdbc;
@@ -29,7 +30,8 @@ class FlywayMigrationTest extends AbstractPersistenceTest {
 
     assertThat(versions).containsExactly(
         "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-        "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21");
+        "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21",
+        "22", "23", "24", "25", "26");
   }
 
   @Test

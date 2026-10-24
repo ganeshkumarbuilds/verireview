@@ -10,7 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Validates that all Flyway migrations (1-21) apply cleanly on a blank database
+ * Validates that all Flyway migrations (1-26) apply cleanly on a blank database
  * and that Hibernate JPA schema validation passes (ddl-auto=validate).
  * This test runs against a real PostgreSQL Testcontainer.
  * The fact that this SpringBootTest starts successfully proves JPA validation passed.
@@ -25,14 +25,15 @@ class FlywayAndJpaValidationTest extends AbstractPersistenceTest {
 
   @Test
   void allMigrationsApplyAndJpaValidates() {
-    // 1. Verify all 21 migrations applied successfully
+    // 1. Verify all 26 migrations applied successfully
     var versions = jdbc.queryForList(
         "SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
         String.class);
 
     assertThat(versions).containsExactly(
         "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-        "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21");
+        "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21",
+        "22", "23", "24", "25", "26");
 
     // 2. Verify all expected tables exist (including V17/V18 tables)
     var tables = jdbc.queryForList(
@@ -50,10 +51,33 @@ class FlywayAndJpaValidationTest extends AbstractPersistenceTest {
         "project_health_scores",
         "generation_plans",
         "generation_execution_evidence",
+        "generation_fix_approvals",
+        "generation_file_versions",
         "generation_revisions",
         "generation_artifacts",
         "import_jobs",
         "execution_runs");
+
+    var fixApprovalColumns = jdbc.queryForList(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'generation_fix_approvals'",
+        String.class);
+    assertThat(fixApprovalColumns).contains(
+        "generation_id", "user_id", "round_number", "selected_finding_ids",
+        "before_finding_count", "after_finding_count", "approved_at", "completed_at",
+        "created_at", "updated_at");
+
+    var fileVersionColumns = jdbc.queryForList(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'generation_file_versions'",
+        String.class);
+    assertThat(fileVersionColumns).contains(
+        "generation_id", "approval_id", "round_number", "file_path",
+        "before_content", "after_content", "reverted", "created_at", "updated_at");
+
+    var roundColumnExists = jdbc.queryForObject(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+            + "WHERE table_name = 'agent_executions' AND column_name = 'round_number')",
+        Boolean.class);
+    assertThat(roundColumnExists).isTrue();
 
     // 3. Verify check_run_gates has updated_at column (V18 fix)
     var checkRunGatesColumns = jdbc.queryForList(

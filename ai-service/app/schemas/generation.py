@@ -30,6 +30,10 @@ class PlanRequest(BaseModel):
     api_key: str = Field(max_length=2000)
     base_url: str | None = Field(default=None, max_length=500)
     model: str = Field(min_length=1, max_length=200)
+    language_runtime: str | None = Field(default=None, max_length=200)
+    backend_custom: str | None = Field(default=None, max_length=200)
+    frontend_custom: str | None = Field(default=None, max_length=200)
+    answers: dict[str, str] = Field(default_factory=dict)
 
 
 class PlannedFile(BaseModel):
@@ -75,7 +79,14 @@ class FilesRequest(BaseModel):
     api_key: str = Field(max_length=2000)
     base_url: str | None = Field(default=None, max_length=500)
     model: str = Field(min_length=1, max_length=200)
+    language_runtime: str | None = Field(default=None, max_length=200)
+    backend_custom: str | None = Field(default=None, max_length=200)
+    frontend_custom: str | None = Field(default=None, max_length=200)
+    answers: dict[str, str] = Field(default_factory=dict)
     plan: list[PlannedFile] = Field(min_length=1, max_length=80)
+    fix_round: int | None = Field(default=None, ge=2, le=5)
+    fix_findings: list[dict] = Field(default_factory=list, max_length=200)
+    existing_files: list[dict] = Field(default_factory=list, max_length=80)
 
 
 class GeneratedFile(BaseModel):

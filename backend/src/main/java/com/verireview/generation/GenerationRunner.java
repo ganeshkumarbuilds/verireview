@@ -27,6 +27,7 @@ import com.verireview.project.ProjectRepository;
 import com.verireview.project.ProjectSourceType;
 import com.verireview.user.UserRepository;
 import com.verireview.generation.GenerationExecutionEvidence;
+import com.verireview.generation.dto.GenerationResponse;
 import com.verireview.verification.VerificationVerdict;
 import com.verireview.review.Review;
 import com.verireview.review.ReviewStatus;
@@ -36,10 +37,12 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -103,6 +106,7 @@ public class GenerationRunner {
   private final ProjectFileRepository files;
   private final ProjectStorage storage;
   private final AuditService audits;
+  private final GenerationStaticAnalyzer staticAnalyzer;
 
   public GenerationRunner(
       @Lazy GenerationService generations,
@@ -115,7 +119,8 @@ public class GenerationRunner {
       ProjectRepository projects,
       ProjectFileRepository files,
       ProjectStorage storage,
-      AuditService audits) {
+      AuditService audits,
+      GenerationStaticAnalyzer staticAnalyzer) {
     this.generations = generations;
     this.aiClient = aiClient;
     this.sandboxRunner = sandboxRunner;
@@ -127,6 +132,7 @@ public class GenerationRunner {
     this.files = files;
     this.storage = storage;
     this.audits = audits;
+    this.staticAnalyzer = staticAnalyzer;
   }
 
   /**
@@ -226,8 +232,6 @@ public class GenerationRunner {
       return;
     }
     try {
-      // Patch ownership/state is validated before dispatch. Keep the runner
-      // responsible for the asynchronous rebuild/re-verification lifecycle.
       Patch patch = generations.getPatch(patchId);
       if (patch.getGeneration() == null || !patch.getGeneration().getId().equals(generationId)) {
         fail(generationId, snapshot.ownerId(), "Patch not found for this generation");
@@ -237,21 +241,309 @@ public class GenerationRunner {
         fail(generationId, snapshot.ownerId(), "Patch must be in APPLIED state to trigger rebuild");
         return;
       }
-
       Generation gen = generations.findById(generationId);
       int iteration = gen.getIteration();
-
-      // GenerationService.triggerRebuildAndReverify already moved the row to
-      // REBUILDING before dispatch. Only transition here if that has not
-      // happened, so a same-state transition can never fail the run.
       if (gen.getStatus() != GenerationStatus.REBUILDING) {
         generations.markStatus(generationId, GenerationStatus.REBUILDING, null);
       }
       runRebuildAndReverify(generationId, snapshot, iteration);
-
     } catch (Exception e) {
       log.warn("Generation {} rebuild failed: {}", generationId, e.toString());
       fail(generationId, snapshot.ownerId(), truncate(messageOf(e), 2000));
+    }
+  }
+
+    @Async("generationExecutor")
+    public void runApprovedFix(UUID generationId, UUID approvalId) {
+      GenerationService.GenerationSnapshot snapshot = generations.snapshot(generationId);
+      if (snapshot == null) return;
+      GenerationSecrets secrets = generations.peekSecrets(generationId);
+      GenerationService.FixRunContext context = generations.fixRunContext(generationId, approvalId);
+      int round = context.roundNumber();
+      generations.beginFixApproval(approvalId);
+      try {
+        if (secrets == null || secrets.aiApiKey() == null) {
+          throw new GenerationException("AI provider key is missing. Enter it again and retry this round.");
+        }
+
+        Path beforeWorkspace = storage.generationWorkspaceDir(generationId, round - 1);
+        Path workspace = storage.generationWorkspaceDir(generationId, round);
+        copyWorkspace(beforeWorkspace, workspace);
+        Map<String, String> currentFiles = readTextFileMap(workspace);
+        Set<String> targets = GenerationFixScope.affectedFiles(context.findings(), currentFiles);
+        if (targets.isEmpty()) {
+          throw new GenerationException("No generated files matched the selected findings.");
+        }
+        Map<String, String> before = new LinkedHashMap<>();
+        for (String path : targets) {
+          String content = currentFiles.get(path);
+          if (content == null) {
+            throw new GenerationException("A selected finding points to a file that no longer exists.");
+          }
+          before.put(path, content);
+        }
+
+        Map<String, String> purposes = new LinkedHashMap<>();
+        AiGenerationPlanResult approvedPlan = generations.savedPlan(generationId, round - 1);
+        if (approvedPlan != null) {
+          approvedPlan.files().forEach(file -> purposes.put(file.path(), file.purpose()));
+        }
+        List<AiGenerationFilesRequest.PlannedFileRef> plan = targets.stream()
+            .sorted()
+            .map(path -> new AiGenerationFilesRequest.PlannedFileRef(
+                path, purposes.getOrDefault(path, "User-approved fix for reviewed findings")))
+            .toList();
+        List<AiGenerationFilesRequest.FixFindingInstruction> instructions =
+            context.findings().stream()
+                .map(finding -> new AiGenerationFilesRequest.FixFindingInstruction(
+                    finding.getFilePath(),
+                    finding.getLineStart(),
+                    finding.getCategory() == null ? "CODE_QUALITY" : finding.getCategory().name(),
+                    finding.getSeverity() == null ? "MEDIUM" : finding.getSeverity().name(),
+                    finding.getTitle(),
+                    finding.getExplanation() == null ? finding.getDescription() : finding.getExplanation()))
+                .toList();
+        List<AiGenerationFilesRequest.ExistingFileSnapshot> snapshots = currentFiles.entrySet().stream()
+            .map(entry -> new AiGenerationFilesRequest.ExistingFileSnapshot(entry.getKey(), entry.getValue()))
+            .toList();
+
+        UUID executionId = generations.startAgentExecution(
+            generationId, AgentType.CODING, snapshot.aiModel(), PROMPT_VERSION,
+            GenerationService.inputHash(generationId.toString(), String.valueOf(round),
+                targets.toString(), instructions.toString()));
+        long started = System.nanoTime();
+        try {
+          AiGenerationFilesRequest request = new AiGenerationFilesRequest(
+              snapshot.id().toString(),
+              snapshot.requirement(),
+              snapshot.backend().name(),
+              snapshot.frontend().name(),
+              snapshot.database().name(),
+              snapshot.auth().name(),
+              snapshot.integrations().stream().map(Enum::name).toList(),
+              snapshot.dbHost(),
+              snapshot.dbPort(),
+              snapshot.dbName(),
+              snapshot.dbUsername(),
+              snapshot.dbSslMode(),
+              snapshot.aiProvider().name(),
+              secrets.aiApiKey(),
+              snapshot.aiBaseUrl(),
+              snapshot.aiModel(),
+              snapshot.languageRuntime(),
+              snapshot.backendCustom(),
+              snapshot.frontendCustom(),
+              snapshot.answers(),
+              plan,
+              round,
+              instructions,
+              snapshots);
+          List<AiGenerationFilesResult.GeneratedFile> generated = aiClient.files(request).files();
+          if (!generated.stream().map(AiGenerationFilesResult.GeneratedFile::path)
+              .collect(java.util.stream.Collectors.toSet()).equals(targets)
+              || generated.size() != targets.size()) {
+            throw new GenerationException("Coding output did not match the approved affected-file list.");
+          }
+          List<ValidatedFile> validated = review(generated, secrets);
+          Map<String, String> after = new LinkedHashMap<>();
+          validated.forEach(file -> after.put(file.path(), file.content()));
+          for (ValidatedFile file : validated) {
+            Path target = storage.resolveJailed(workspace, file.path());
+            Files.createDirectories(target.getParent());
+            Files.writeString(target, file.content(), StandardCharsets.UTF_8);
+          }
+          generations.saveFixFileVersions(generationId, approvalId, round, before, after);
+          long chars = readGeneratedFiles(workspace).stream()
+              .mapToLong(file -> file.content().length()).sum();
+          List<ValidatedFile> complete = review(readGeneratedFiles(workspace), secrets);
+          UUID artifact = generations.recordArtifact(
+              generationId, round, complete.size(), chars, manifestSha(complete), workspace.toString());
+          generations.finishAgentExecution(executionId, AgentExecutionStatus.COMPLETED,
+              null, millisSince(started), "artifact:" + artifact);
+        } catch (Exception e) {
+          generations.finishAgentExecution(executionId, AgentExecutionStatus.FAILED,
+              truncate("Coding agent could not complete the approved fix: " + messageOf(e), 2000),
+              millisSince(started), null);
+          throw new GenerationException(messageOf(e), e);
+        }
+
+        generations.markStatus(generationId, GenerationStatus.REBUILDING, null);
+        runRebuildAndReverify(generationId, snapshot, round);
+      } catch (Exception e) {
+        generations.setFixApprovalStatus(approvalId, "FAILED", null);
+        log.warn("Generation {} approved fix round {} failed: {}", generationId, round, e.toString());
+        fail(generationId, snapshot.ownerId(),
+            "The approved fix round failed. Retry the failed stage or revert its files.");
+      } finally {
+        generations.clearSecrets(generationId);
+      }
+    }
+
+    private void copyWorkspace(Path source, Path target) {
+      if (!Files.isDirectory(source)) {
+        throw new GenerationException("The previous generated files are unavailable for this fix round.");
+      }
+      try (var paths = Files.walk(source)) {
+        for (Path entry : paths.toList()) {
+          if (Files.isSymbolicLink(entry)) {
+            throw new GenerationException("A generated workspace contains an unsafe symbolic link.");
+          }
+          Path destination = target.resolve(source.relativize(entry)).normalize();
+          if (!destination.startsWith(target.normalize())) {
+            throw new GenerationException("A generated file path escaped its workspace.");
+          }
+          if (Files.isDirectory(entry)) {
+            Files.createDirectories(destination);
+          } else if (Files.isRegularFile(entry)) {
+            Files.createDirectories(destination.getParent());
+            Files.copy(entry, destination, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+          }
+        }
+      } catch (Exception e) {
+        storage.deleteQuietly(target);
+        throw new GenerationException("Could not prepare the isolated fix workspace", e);
+      }
+    }
+
+    private Map<String, String> readTextFileMap(Path workspace) {
+      Map<String, String> files = new LinkedHashMap<>();
+      try (var paths = Files.walk(workspace)) {
+        for (Path path : paths.filter(Files::isRegularFile).toList()) {
+          if (Files.isSymbolicLink(path) || Files.size(path) > MAX_CHARS_PER_FILE) continue;
+          String relative = workspace.relativize(path).toString().replace('\\', '/');
+          String content = Files.readString(path, StandardCharsets.UTF_8);
+          if (content.indexOf('\0') < 0) files.put(relative, content);
+        }
+        return files;
+      } catch (Exception e) {
+        throw new GenerationException("Could not read generated files for the approved fix", e);
+      }
+    }
+
+
+  @Async("generationExecutor")
+  public void retryFailedStage(UUID generationId, AgentType agentType, UUID approvalId) {
+    GenerationService.GenerationSnapshot snapshot = generations.snapshot(generationId);
+    if (snapshot == null) return;
+    GenerationSecrets secrets = generations.peekSecrets(generationId);
+    int round = generations.findById(generationId).getIteration();
+    try {
+      switch (agentType) {
+        case PLANNING -> runPlanning(generationId, snapshot, secrets, round);
+        case CODING -> {
+          if (approvalId == null) {
+            AiGenerationPlanResult plan = generations.savedPlan(generationId, round);
+            if (plan == null) {
+              throw new GenerationException("The approved plan is unavailable for coding retry.");
+            }
+            runCoding(generationId, snapshot, secrets, round, plan.files());
+          } else {
+            retryApprovedCodingOnly(generationId, snapshot, secrets, approvalId);
+          }
+        }
+        case VERIFIED -> {
+          GenerationService.RetryVerificationContext context =
+              generations.retryVerificationContext(generationId, round);
+          runVerifying(generationId, snapshot, round, context.evidence(), context.verificationRunId());
+        }
+        case REVIEW -> {
+          runReviewing(generationId, snapshot, round, false);
+          generations.finishReviewRound(generationId, round);
+        }
+        case RATING -> {
+          runRating(generationId, snapshot, round);
+          if (generations.findById(generationId).getStatus() != GenerationStatus.FAILED) {
+            generations.finishReviewRound(generationId, round);
+          }
+        }
+      }
+    } catch (Exception e) {
+      log.warn("Generation {} stage {} retry failed: {}", generationId, agentType, e.toString());
+      fail(generationId, snapshot.ownerId(),
+          "The " + agentType.name().toLowerCase(Locale.ROOT)
+              + " stage could not be retried. Review the error and retry again.");
+    } finally {
+      generations.clearSecrets(generationId);
+    }
+  }
+
+  private void retryApprovedCodingOnly(
+      UUID generationId,
+      GenerationService.GenerationSnapshot snapshot,
+      GenerationSecrets secrets,
+      UUID approvalId) {
+    GenerationService.FixRunContext context = generations.fixRunContext(generationId, approvalId);
+    int round = context.roundNumber();
+    if (secrets == null || secrets.aiApiKey() == null) {
+      throw new GenerationException("Enter the AI provider key again to retry coding.");
+    }
+    Path workspace = storage.generationWorkspaceDir(generationId, round);
+    storage.deleteQuietly(workspace);
+    copyWorkspace(storage.generationWorkspaceDir(generationId, round - 1), workspace);
+    Map<String, String> current = readTextFileMap(workspace);
+    Set<String> targets = GenerationFixScope.affectedFiles(context.findings(), current);
+    Map<String, String> before = new LinkedHashMap<>();
+    targets.forEach(path -> before.put(path, current.get(path)));
+    List<AiGenerationFilesRequest.FixFindingInstruction> instructions =
+        context.findings().stream()
+            .map(finding -> new AiGenerationFilesRequest.FixFindingInstruction(
+                finding.getFilePath(), finding.getLineStart(),
+                finding.getCategory() == null ? "CODE_QUALITY" : finding.getCategory().name(),
+                finding.getSeverity() == null ? "MEDIUM" : finding.getSeverity().name(),
+                finding.getTitle(),
+                finding.getExplanation() == null ? finding.getDescription() : finding.getExplanation()))
+            .toList();
+    List<AiGenerationFilesRequest.PlannedFileRef> plan = targets.stream().sorted()
+        .map(path -> new AiGenerationFilesRequest.PlannedFileRef(path, "Approved fix target"))
+        .toList();
+    List<AiGenerationFilesRequest.ExistingFileSnapshot> snapshots = current.entrySet().stream()
+        .map(entry -> new AiGenerationFilesRequest.ExistingFileSnapshot(entry.getKey(), entry.getValue()))
+        .toList();
+    UUID executionId = generations.startAgentExecution(
+        generationId, AgentType.CODING, snapshot.aiModel(), PROMPT_VERSION,
+        GenerationService.inputHash(generationId.toString(), String.valueOf(round), targets.toString()));
+    long started = System.nanoTime();
+    try {
+      List<AiGenerationFilesResult.GeneratedFile> generated = aiClient.files(new AiGenerationFilesRequest(
+          snapshot.id().toString(), snapshot.requirement(), snapshot.backend().name(),
+          snapshot.frontend().name(), snapshot.database().name(), snapshot.auth().name(),
+          snapshot.integrations().stream().map(Enum::name).toList(), snapshot.dbHost(),
+          snapshot.dbPort(), snapshot.dbName(), snapshot.dbUsername(), snapshot.dbSslMode(),
+          snapshot.aiProvider().name(), secrets.aiApiKey(), snapshot.aiBaseUrl(), snapshot.aiModel(),
+          snapshot.languageRuntime(), snapshot.backendCustom(), snapshot.frontendCustom(),
+          snapshot.answers(), plan, round, instructions, snapshots)).files();
+      if (generated.size() != targets.size()
+          || !generated.stream().map(AiGenerationFilesResult.GeneratedFile::path)
+              .collect(java.util.stream.Collectors.toSet()).equals(targets)) {
+        throw new GenerationException("Coding output did not match the approved affected files.");
+      }
+      List<ValidatedFile> validated = review(generated, secrets);
+      Map<String, String> after = new LinkedHashMap<>();
+      for (ValidatedFile file : validated) {
+        after.put(file.path(), file.content());
+        Path target = storage.resolveJailed(workspace, file.path());
+        Files.createDirectories(target.getParent());
+        Files.writeString(target, file.content(), StandardCharsets.UTF_8);
+      }
+      generations.saveFixFileVersions(generationId, approvalId, round, before, after);
+      generations.finishAgentExecution(executionId, AgentExecutionStatus.COMPLETED,
+          null, millisSince(started), "fix-round:" + round);
+      generations.setFixApprovalStatus(approvalId, "APPROVED", null);
+    } catch (Exception e) {
+      generations.finishAgentExecution(executionId, AgentExecutionStatus.FAILED,
+          "Coding retry failed: " + messageOf(e), millisSince(started), null);
+      throw new GenerationException("Coding retry failed: " + messageOf(e), e);
+    }
+  }
+
+  @Async("generationExecutor")
+  public void rereviewAfterRevert(UUID generationId, int round) {
+    GenerationService.GenerationSnapshot snapshot = generations.snapshot(generationId);
+    if (snapshot == null) return;
+    try {
+      runReReview(generationId, snapshot, round);
+    } catch (Exception e) {
+      fail(generationId, snapshot.ownerId(), "Review after revert failed. Retry the Reviewing stage.");
     }
   }
 
@@ -270,12 +562,17 @@ public class GenerationRunner {
         generationId, AgentType.PLANNING, snapshot.aiModel(), promptVersion, hash);
     long startedNanos = System.nanoTime();
     try {
-      AiGenerationPlanResult result = template
-          ? GenerationTemplates.plan(snapshot.id().toString(), snapshot.backend(),
-              snapshot.frontend(), snapshot.database())
-          : planFiles(snapshot, secrets);
+      AiGenerationPlanResult approvedPlan = generations.savedPlan(generationId, iteration);
+      AiGenerationPlanResult result = approvedPlan != null
+          ? approvedPlan
+          : template
+              ? GenerationTemplates.plan(snapshot.id().toString(), snapshot.backend(),
+                  snapshot.frontend(), snapshot.database())
+              : planFiles(snapshot, secrets);
       validatePlan(result);
-      UUID planId = generations.savePlan(generationId, iteration, result);
+      UUID planId = approvedPlan != null
+          ? generations.planId(generationId, iteration)
+          : generations.savePlan(generationId, iteration, result);
       generations.finishAgentExecution(executionId, AgentExecutionStatus.COMPLETED,
           null, millisSince(startedNanos), "plan:" + planId);
       return result.files();
@@ -309,8 +606,9 @@ public class GenerationRunner {
     long startedNanos = System.nanoTime();
     try {
       List<AiGenerationFilesResult.GeneratedFile> generated = template
-          ? GenerationTemplates.files(snapshot.backend(), snapshot.frontend(), snapshot.database())
+          ? GenerationTemplates.files(snapshot.backend(), snapshot.frontend(), snapshot.database(), plan)
           : generateFiles(snapshot, secrets, plan);
+      validateGeneratedFiles(generated, plan);
       List<ValidatedFile> validated = review(generated, secrets);
       Path workspace = writeWorkspace(generationId, iteration, validated);
       long totalChars = validated.stream().mapToLong(file -> file.content().length()).sum();
@@ -327,6 +625,20 @@ public class GenerationRunner {
       generations.finishAgentExecution(executionId, AgentExecutionStatus.FAILED,
           truncate(messageOf(e), 2000), millisSince(startedNanos), null);
       throw e;
+    }
+  }
+
+  private void validateGeneratedFiles(
+      List<AiGenerationFilesResult.GeneratedFile> generated,
+      List<AiGenerationPlanResult.PlannedFile> plan) {
+    Set<String> expected = plan.stream().map(AiGenerationPlanResult.PlannedFile::path)
+        .collect(java.util.stream.Collectors.toSet());
+    Set<String> actual = generated.stream()
+        .map(AiGenerationFilesResult.GeneratedFile::path)
+        .collect(java.util.stream.Collectors.toSet());
+    if (actual.size() != generated.size() || !actual.equals(expected)) {
+      throw new GenerationException(
+          "Generated files did not match the approved file list. Please review the plan and retry.");
     }
   }
 
@@ -375,7 +687,11 @@ public class GenerationRunner {
         snapshot.aiProvider().name(),
         secrets.aiApiKey(),
         snapshot.aiBaseUrl(),
-        snapshot.aiModel());
+        snapshot.aiModel(),
+        snapshot.languageRuntime(),
+        snapshot.backendCustom(),
+        snapshot.frontendCustom(),
+        snapshot.answers());
     AiGenerationPlanResult result = aiClient.plan(request);
     if (result.files().size() > MAX_FILES) {
       throw new GenerationException(
@@ -409,7 +725,14 @@ public class GenerationRunner {
         secrets.aiApiKey(),
         snapshot.aiBaseUrl(),
         snapshot.aiModel(),
-        refs);
+        snapshot.languageRuntime(),
+        snapshot.backendCustom(),
+        snapshot.frontendCustom(),
+        snapshot.answers(),
+        refs,
+        null,
+        List.of(),
+        List.of());
     return aiClient.files(request).files();
   }
 
@@ -505,7 +828,7 @@ public class GenerationRunner {
     Project project = new Project(
         users.getReferenceById(snapshot.ownerId()), snapshot.name(), ProjectSourceType.GENERATED);
     project.setDescription(snapshot.description());
-    project.setLanguage(primaryLanguage(snapshot.backend()));
+    project.setLanguage(languageFor(snapshot));
     try {
       projects.saveAndFlush(project);
     } catch (DataIntegrityViolationException e) {
@@ -725,12 +1048,18 @@ public class GenerationRunner {
    */
   private void runReviewing(UUID generationId,
       GenerationService.GenerationSnapshot snapshot, int iteration) {
+    runReviewing(generationId, snapshot, iteration, true);
+  }
+
+  private void runReviewing(UUID generationId,
+      GenerationService.GenerationSnapshot snapshot, int iteration, boolean rateAfter) {
     // Start REVIEW agent execution
     String hash = GenerationService.inputHash(
         snapshot.id().toString(), String.valueOf(iteration), "review");
     UUID executionId = generations.startAgentExecution(
         generationId, AgentType.REVIEW, snapshot.aiModel(), PROMPT_VERSION, hash);
     long startedNanos = System.nanoTime();
+    boolean completed = false;
     try {
       // Create a review record for this generation
       UUID reviewId = generations.createReview(generationId, iteration);
@@ -742,14 +1071,24 @@ public class GenerationRunner {
       Path workspace = storage.generationWorkspaceDir(generationId, iteration);
       List<com.verireview.agent.dto.AiFileSnapshot> files = readWorkspaceFiles(workspace);
 
-      // Prepare deterministic findings (empty for generation review - no deterministic tools run yet)
-      List<com.verireview.agent.dto.AiDeterministicFinding> deterministic = new ArrayList<>();
+      List<GenerationStaticAnalyzer.StaticFinding> staticFindings =
+          staticAnalyzer.analyze(readGeneratedFiles(workspace));
+      List<com.verireview.agent.dto.AiDeterministicFinding> deterministic =
+          staticFindings.stream()
+              .map(finding -> new com.verireview.agent.dto.AiDeterministicFinding(
+                  "generation-static",
+                  "generation-static:" + finding.category(),
+                  finding.file(),
+                  finding.line(),
+                  finding.explanation()))
+              .toList();
+      int staticAdded = generations.persistGenerationStaticFindings(reviewId, staticFindings);
 
       // Build review request
       com.verireview.agent.dto.AiReviewRequest request = new com.verireview.agent.dto.AiReviewRequest(
           reviewId.toString(),
           generationId.toString(),
-          primaryLanguage(snapshot.backend()),
+          languageFor(snapshot),
           files,
           deterministic,
           "gen-review-" + reviewId);
@@ -760,6 +1099,7 @@ public class GenerationRunner {
       // Persist AI findings using shared validation/dedup logic
       int added = generations.persistGenerationReviewFindings(
           reviewId, result, result.promptVersion(), aiServiceProperties.modelLabel());
+      added += staticAdded;
 
       // Update review with results
       generations.updateReview(reviewId, ReviewStatus.COMPLETED, added, null);
@@ -769,12 +1109,47 @@ public class GenerationRunner {
 
       // Transition to REVIEWED
       generations.markStatus(generationId, GenerationStatus.REVIEWED, null);
+      completed = true;
 
     } catch (Exception e) {
       generations.finishAgentExecution(executionId, AgentExecutionStatus.FAILED,
           truncate("Review failed: " + e.getMessage(), 2000),
           millisSince(startedNanos), null);
       fail(generationId, snapshot.ownerId(), "Review error: " + e.getMessage());
+    }
+    if (completed && rateAfter) {
+      runRating(generationId, snapshot, iteration);
+      if (generations.findById(generationId).getStatus() != GenerationStatus.FAILED) {
+        generations.finishReviewRound(generationId, iteration);
+      }
+    }
+  }
+
+  private void runRating(
+      UUID generationId, GenerationService.GenerationSnapshot snapshot, int iteration) {
+    String hash = GenerationService.inputHash(
+        snapshot.id().toString(),
+        String.valueOf(iteration),
+        "rating");
+    UUID executionId = generations.startAgentExecution(
+        generationId, AgentType.RATING, "deterministic-rating-v1", "rating/v1", hash);
+    long startedNanos = System.nanoTime();
+    try {
+      GenerationResponse.RatingView rating = generations.ratingForGeneration(generationId);
+      generations.finishAgentExecution(
+          executionId,
+          AgentExecutionStatus.COMPLETED,
+          null,
+          millisSince(startedNanos),
+          "overall:" + rating.overall());
+    } catch (Exception e) {
+      generations.finishAgentExecution(
+          executionId,
+          AgentExecutionStatus.FAILED,
+          "Rating failed: " + messageOf(e),
+          millisSince(startedNanos),
+          null);
+      fail(generationId, snapshot.ownerId(), "Rating failed. Retry generation to try again.");
     }
   }
 
@@ -811,19 +1186,31 @@ public class GenerationRunner {
     UUID executionId = generations.startAgentExecution(
         generationId, AgentType.REVIEW, snapshot.aiModel(), PROMPT_VERSION, hash);
     long startedNanos = System.nanoTime();
+    boolean completed = false;
     try {
       generations.linkReviewToAgentExecution(executionId, reviewId);
 
       Path workspace = storage.generationWorkspaceDir(generationId, iteration);
       List<com.verireview.agent.dto.AiFileSnapshot> files = readWorkspaceFiles(workspace);
-      List<com.verireview.agent.dto.AiDeterministicFinding> deterministic = new ArrayList<>();
+      List<GenerationStaticAnalyzer.StaticFinding> staticFindings =
+          staticAnalyzer.analyze(readGeneratedFiles(workspace));
+      List<com.verireview.agent.dto.AiDeterministicFinding> deterministic =
+          staticFindings.stream()
+              .map(finding -> new com.verireview.agent.dto.AiDeterministicFinding(
+                  "generation-static",
+                  "generation-static:" + finding.category(),
+                  finding.file(),
+                  finding.line(),
+                  finding.explanation()))
+              .toList();
+      int staticAdded = generations.persistGenerationStaticFindings(reviewId, staticFindings);
 
       // The idempotency key must differ from the first review's key, or the
       // AI service may answer with its cached result for the unfixed files.
       com.verireview.agent.dto.AiReviewRequest request = new com.verireview.agent.dto.AiReviewRequest(
           reviewId.toString(),
           generationId.toString(),
-          primaryLanguage(snapshot.backend()),
+          languageFor(snapshot),
           files,
           deterministic,
           "gen-rereview-" + reviewId + "-" + System.currentTimeMillis());
@@ -837,6 +1224,7 @@ public class GenerationRunner {
 
       int added = generations.persistGenerationReviewFindings(
           reviewId, result, result.promptVersion(), aiServiceProperties.modelLabel());
+      added += staticAdded;
 
       int resolved = generations.resolveFixedFindings(reviewId, currentDedupKeys);
 
@@ -847,12 +1235,19 @@ public class GenerationRunner {
           "re-review:" + reviewId + " new:" + added + " fixed:" + resolved);
 
       generations.markStatus(generationId, GenerationStatus.REVIEWED, null);
+      completed = true;
 
     } catch (Exception e) {
       generations.finishAgentExecution(executionId, AgentExecutionStatus.FAILED,
           truncate("Re-review failed: " + e.getMessage(), 2000),
           millisSince(startedNanos), null);
       fail(generationId, snapshot.ownerId(), "Re-review error: " + e.getMessage());
+    }
+    if (completed) {
+      runRating(generationId, snapshot, iteration);
+      if (generations.findById(generationId).getStatus() != GenerationStatus.FAILED) {
+        generations.finishReviewRound(generationId, iteration);
+      }
     }
   }
 
@@ -922,30 +1317,48 @@ public class GenerationRunner {
    */
   private List<com.verireview.agent.dto.AiFileSnapshot> readWorkspaceFiles(Path workspace) {
     List<com.verireview.agent.dto.AiFileSnapshot> snapshots = new ArrayList<>();
-    try {
-      if (Files.exists(workspace)) {
-        Files.walk(workspace)
-            .filter(Files::isRegularFile)
-            .forEach(file -> {
-              try {
-                String relativePath = workspace.relativize(file).toString();
-                String content = Files.readString(file);
-                if (content.indexOf('\0') < 0 && !content.isBlank()) {
-                  snapshots.add(new com.verireview.agent.dto.AiFileSnapshot(
-                      relativePath,
-                      languageOf(relativePath, null),
-                      content,
-                      false));
-                }
-              } catch (Exception ignored) {
-                // Skip unreadable files
-              }
-            });
-      }
-    } catch (Exception ignored) {
-      // Return empty list on error
+    if (!Files.isDirectory(workspace)) {
+      return List.of();
     }
-    return snapshots;
+    try (var paths = Files.walk(workspace)) {
+      for (Path file : paths.filter(Files::isRegularFile).toList()) {
+        if (Files.isSymbolicLink(file)) {
+          continue;
+        }
+        String relativePath = workspace.relativize(file).toString().replace('\\', '/');
+        String content = Files.readString(file);
+        if (content.indexOf('\0') < 0 && !content.isBlank()) {
+          snapshots.add(new com.verireview.agent.dto.AiFileSnapshot(
+              relativePath, languageOf(relativePath, null), content, false));
+        }
+      }
+      return List.copyOf(snapshots);
+    } catch (Exception e) {
+      throw new GenerationException("Review could not read generated files", e);
+    }
+  }
+
+  private List<AiGenerationFilesResult.GeneratedFile> readGeneratedFiles(Path workspace) {
+    List<AiGenerationFilesResult.GeneratedFile> files = new ArrayList<>();
+    if (!Files.isDirectory(workspace)) {
+      return List.of();
+    }
+    try (var paths = Files.walk(workspace)) {
+      for (Path file : paths.filter(Files::isRegularFile).toList()) {
+        if (Files.isSymbolicLink(file)) {
+          continue;
+        }
+        String relative = workspace.relativize(file).toString().replace('\\', '/');
+        String content = Files.readString(file);
+        if (content.indexOf('\0') < 0 && !content.isBlank()) {
+          files.add(new AiGenerationFilesResult.GeneratedFile(
+              relative, content, languageOf(relative, null)));
+        }
+      }
+      return List.copyOf(files);
+    } catch (Exception e) {
+      throw new GenerationException("Static checks could not read generated files", e);
+    }
   }
 
   /**
@@ -989,8 +1402,16 @@ public class GenerationRunner {
       case JAVA_SPRING_BOOT -> "java";
       case PYTHON_FASTAPI -> "python";
       case NODEJS -> "javascript";
-      case NONE -> null;
+      case OTHER, NONE -> null;
     };
+  }
+
+  /** Explicit language/runtime wins; the backend enum is only a fallback. */
+  static String languageFor(GenerationService.GenerationSnapshot snapshot) {
+    String runtime = snapshot.languageRuntime();
+    return runtime == null || runtime.isBlank()
+        ? primaryLanguage(snapshot.backend())
+        : runtime.trim();
   }
 
   static String languageOf(String path, String hint) {

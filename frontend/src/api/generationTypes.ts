@@ -3,8 +3,13 @@
  * body only; they are never stored locally and never appear in responses.
  */
 
-export type GenerationBackend = 'JAVA_SPRING_BOOT' | 'PYTHON_FASTAPI' | 'NODEJS' | 'NONE';
-export type GenerationFrontend = 'REACT_TYPESCRIPT' | 'NEXTJS' | 'VUE' | 'NONE';
+export type GenerationBackend =
+  | 'JAVA_SPRING_BOOT'
+  | 'PYTHON_FASTAPI'
+  | 'NODEJS'
+  | 'OTHER'
+  | 'NONE';
+export type GenerationFrontend = 'REACT_TYPESCRIPT' | 'NEXTJS' | 'VUE' | 'OTHER' | 'NONE';
 export type GenerationDatabase = 'POSTGRESQL' | 'MYSQL' | 'MONGODB' | 'SQLITE' | 'NONE';
 export type GenerationAuth = 'JWT' | 'OAUTH_GOOGLE' | 'NONE';
 export type GenerationIntegration =
@@ -31,6 +36,7 @@ export type GenerationStatus =
   | 'VERIFIED'
   | 'REVIEWING'
   | 'REVIEWED'
+  | 'AWAITING_FIX_APPROVAL'
   | 'REBUILDING'
   | 'REVERIFYING'
   | 'FIXING'
@@ -64,10 +70,58 @@ export interface CreateGenerationInput {
   database: GenerationDatabase;
   auth?: GenerationAuth;
   integrations?: GenerationIntegration[];
+  languageRuntime?: string;
+  backendCustom?: string;
+  frontendCustom?: string;
+  answers?: GenerationAnswer[];
+  databaseConfigureLater?: boolean;
   databaseConfig?: GenerationDatabaseInput;
   aiConfig: GenerationAiInput;
+  /** The user's reviewed plan. The backend persists and generates exactly these files. */
+  approvedPlan?: PlanPreviewResponse;
   /** Draft mode persists configuration only: secrets optional, nothing dispatched. */
   draft?: boolean;
+}
+
+export type GenerationQuestionType = 'CHOICE' | 'TEXT' | 'YES_NO';
+
+export interface GenerationQuestionOption {
+  value: string;
+  label: string;
+}
+
+export interface GenerationQuestion {
+  id: string;
+  prompt: string;
+  help: string;
+  type: GenerationQuestionType;
+  required: boolean;
+  allowSkip: boolean;
+  secret: boolean;
+  options: GenerationQuestionOption[];
+}
+
+export interface GenerationAnswer {
+  questionId: string;
+  value?: string;
+  skipped: boolean;
+}
+
+/** Steps 1–2 context sent to the backend to derive step 3 questions. */
+export interface GenerationQuestionsInput {
+  name: string;
+  requirement: string;
+  description?: string;
+  backend: GenerationBackend;
+  frontend: GenerationFrontend;
+  languageRuntime?: string;
+  backendCustom?: string;
+  frontendCustom?: string;
+}
+
+export interface GenerationWizardPlanInput {
+  project: GenerationQuestionsInput;
+  answers: GenerationAnswer[];
 }
 
 export interface UpdateGenerationInput {
@@ -78,6 +132,9 @@ export interface UpdateGenerationInput {
   frontend?: GenerationFrontend;
   database?: GenerationDatabase;
   auth?: GenerationAuth;
+  languageRuntime?: string;
+  backendCustom?: string;
+  frontendCustom?: string;
   integrations?: GenerationIntegration[];
   databaseConfig?: {
     host?: string;
@@ -139,12 +196,33 @@ export interface GenerationResponse {
   workflowStats: WorkflowStatsView | null;
   verification: VerificationView | null;
   review: ReviewView | null;
+  rating: RatingView | null;
+  findings: GenerationFindingView[];
   execution: ExecutionView | null;
   agentWorkflow: AgentStepView[];
+  fixRounds: GenerationFixRoundView[];
+  fileVersions: GenerationFileVersionView[];
+  verificationLevel: 'NOT_RUN' | 'ISSUES_FOUND' | 'SANDBOX_UNAVAILABLE' | 'STATIC' | 'BUILD_AND_TESTS';
   downloadReady: boolean;
   previewReady: boolean;
+  languageRuntime: string | null;
+  backendCustom: string | null;
+  frontendCustom: string | null;
+  databaseConfigureLater: boolean;
+  answers: GenerationAnswerView[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface GenerationAnswerView {
+  questionId: string;
+  prompt: string;
+  type: string;
+  value: string | null;
+  skipped: boolean;
+  required: boolean;
+  secret: boolean;
+  configured: boolean;
 }
 
 export interface ArtifactView {
@@ -246,12 +324,61 @@ export interface ReviewView {
   error: string | null;
 }
 
+export interface RatingView {
+  overall: number;
+  syntax: number;
+  logic: number;
+  security: number;
+  style: number;
+}
+
+export interface GenerationFindingView {
+  id: string;
+  file: string | null;
+  line: number | null;
+  category: string;
+  severity: string;
+  title: string;
+  explanation: string | null;
+  status: string;
+}
+
 export interface AgentStepView {
+  id: string;
   agentType: string;
   status: string;
   durationMs: number | null;
   error: string | null;
   createdAt: string;
+  finishedAt: string | null;
+  activityLog: string | null;
+  roundNumber: number;
+}
+
+export interface GenerationFixRoundView {
+  approvalId: string;
+  roundNumber: number;
+  findingIds: string[];
+  beforeFindingCount: number;
+  afterFindingCount: number | null;
+  status: string;
+  approvedAt: string;
+  completedAt: string | null;
+}
+
+export interface GenerationFileVersionView {
+  id: string;
+  roundNumber: number;
+  path: string;
+  beforeContent: string;
+  afterContent: string;
+  reverted: boolean;
+  createdAt: string;
+}
+
+export interface GenerationFixPreviewResponse {
+  files: string[];
+  findingCount: number;
 }
 
 /**

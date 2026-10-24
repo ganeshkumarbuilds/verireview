@@ -14,7 +14,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
         <div className="w-full max-w-md">{children}</div>
       </main>
       <footer className="pb-8 text-center text-xs font-medium text-indigo-400">
-        Generate. Review. Fix. Verify.
+        Generate. Review.
       </footer>
     </div>
   );

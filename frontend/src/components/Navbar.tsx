@@ -77,7 +77,7 @@ export function Navbar() {
         <div className="leading-tight">
           <p className="text-sm font-bold tracking-wide text-indigo-950">VeriReview</p>
           <p className="hidden text-[11px] font-medium text-indigo-500 sm:block">
-            Generate. Review. Fix. Verify.
+            Generate. Review.
           </p>
         </div>
         {token && (

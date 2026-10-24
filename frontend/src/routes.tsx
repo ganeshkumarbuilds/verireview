@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useParams } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 import { RedirectIfAuthenticated, RequireAuth } from './auth/AuthContext';
 import { Layout } from './components/Layout';
 import { DashboardPage } from './pages/DashboardPage';
@@ -10,8 +10,6 @@ import { RegisterPage } from './pages/RegisterPage';
 import { GeneratePage } from './features/generate/GeneratePage';
 import { ReviewPage } from './features/review/ReviewPage';
 import { FindingDetailPage } from './features/review/FindingDetailPage';
-import { FixPage } from './features/fix/FixPage';
-import { VerifyPage } from './features/verify/VerifyPage';
 import { ProjectsPage } from './features/projects/ProjectsPage';
 
 /** Old /projects/:id workspace bookmarks now open Review for that project. */
@@ -20,6 +18,18 @@ function LegacyProjectRedirect() {
   return (
     <Navigate
       to={id ? `/review?project=${encodeURIComponent(id)}` : '/projects'}
+      replace
+    />
+  );
+}
+
+/** Old /fix and /verify bookmarks now open the Review flow (project kept). */
+function LegacyFlowRedirect() {
+  const location = useLocation();
+  const project = new URLSearchParams(location.search).get('project');
+  return (
+    <Navigate
+      to={project ? `/review?project=${encodeURIComponent(project)}` : '/review'}
       replace
     />
   );
@@ -104,7 +114,7 @@ export function AppRoutes() {
           path="fix"
           element={
             <RequireAuth>
-              <FixPage />
+              <LegacyFlowRedirect />
             </RequireAuth>
           }
         />
@@ -112,7 +122,7 @@ export function AppRoutes() {
           path="verify"
           element={
             <RequireAuth>
-              <VerifyPage />
+              <LegacyFlowRedirect />
             </RequireAuth>
           }
         />

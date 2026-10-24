@@ -205,13 +205,6 @@ export function FindingsPanel({
               </li>
             ))}
           </ul>
-          {projectId && (
-            <div className="mt-4">
-              <Link to={`/fix?project=${projectId}`} className={secondaryButtonClass}>
-                Open Fix for these findings
-              </Link>
-            </div>
-          )}
         </>
       )}
     </Card>

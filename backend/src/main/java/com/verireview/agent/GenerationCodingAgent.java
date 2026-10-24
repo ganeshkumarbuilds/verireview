@@ -102,11 +102,15 @@ public class GenerationCodingAgent implements CodingAgent {
   }
 
   private String primaryLanguage(Generation generation) {
+    String runtime = generation.getLanguageRuntime();
+    if (runtime != null && !runtime.isBlank()) {
+      return runtime.trim();
+    }
     return switch (generation.getBackendStack()) {
       case JAVA_SPRING_BOOT -> "java";
       case PYTHON_FASTAPI -> "python";
       case NODEJS -> "javascript";
-      case NONE -> "text";
+      case OTHER, NONE -> "text";
     };
   }
 

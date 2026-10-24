@@ -15,8 +15,16 @@ import com.verireview.agent.dto.AiReviewResult;
 import com.verireview.verification.VerificationVerdict;
 import com.verireview.agent.dto.AiGenerationFilesResult;
 import com.verireview.agent.dto.AiGenerationPlanResult;
+import com.verireview.execution.SandboxRunner;
 import com.verireview.ingestion.ProjectStorage;
 import com.verireview.persistence.AbstractPersistenceTest;
+import com.verireview.review.Finding;
+import com.verireview.review.FindingCategory;
+import com.verireview.review.FindingRepository;
+import com.verireview.review.FindingSeverity;
+import com.verireview.review.FindingSource;
+import com.verireview.review.Review;
+import com.verireview.review.ReviewRepository;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -28,6 +36,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.JsonNode;
@@ -35,6 +44,9 @@ import tools.jackson.databind.ObjectMapper;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -52,14 +64,26 @@ class GenerationTest extends AbstractPersistenceTest {
   @Autowired private MockMvc mockMvc;
   @Autowired private ObjectMapper objects;
   @Autowired private ProjectStorage storage;
+  @Autowired private ReviewRepository reviews;
+  @Autowired private FindingRepository findings;
   @MockitoBean private GenerationAiClient generationAiClient;
   @MockitoBean private VerifiedAgentClient verifiedAgentClient;
   @MockitoBean private ReviewAiClient reviewAiClient;
+  /**
+   * The default execution image is Maven, while the Python fixture asks for
+   * {@code pytest}; no project files in that fixture are runnable anyway. Spy
+   * the sandbox so the Python lifecycle tests stay hermetic. The NONE-provider
+   * template test uses the JDK build command and still runs in real Docker.
+   */
+  @MockitoSpyBean private SandboxRunner sandboxRunner;
 
   private static final String PLAN_FILE = "src/main/java/app/App.java";
 
   @BeforeEach
   void stubGenerationAi() {
+    doReturn(new SandboxRunner.ExecutionResult(0, "BUILD SUCCESS", "", 10L, false))
+        .when(sandboxRunner)
+        .executeBuild(any(Path.class), argThat(command -> command != null && command.startsWith("pytest")));
     when(generationAiClient.plan(any())).thenAnswer(inv ->
         new AiGenerationPlanResult("g",
             List.of(new AiGenerationPlanResult.PlannedFile(PLAN_FILE, "Entrypoint")),
@@ -366,7 +390,7 @@ class GenerationTest extends AbstractPersistenceTest {
     String token = access(register());
     String id = createGeneration(token, validBody("gen-" + UUID.randomUUID()));
     JsonNode settled = pollUntilSettled(token, id);
-    assertThat(settled.get("status").asText()).isEqualTo("REVIEWED");
+    assertThat(settled.get("status").asText()).isEqualTo("AWAITING_FIX_APPROVAL");
     assertThat(settled.get("workflowStats").get("openFindings").asInt()).isEqualTo(2);
 
     MvcResult bulk = mockMvc.perform(post("/api/v1/generations/" + id + "/fix-requests")
@@ -412,13 +436,14 @@ class GenerationTest extends AbstractPersistenceTest {
     assertThat(settled.get("workflowStats").get("totalFindings").asInt()).isEqualTo(0);
     assertThat(settled.get("workflowStats").get("openFindings").asInt()).isEqualTo(0);
     assertThat(settled.get("downloadReady").asBoolean()).isTrue();
+    assertThat(settled.get("verificationLevel").asText()).isEqualTo("BUILD_AND_TESTS");
 
     Path appJava = storage
         .generationWorkspaceDir(UUID.fromString(id), 1)
         .resolve("src/main/java/app/App.java");
     assertThat(Files.readString(appJava)).contains("package app;");
 
-    // Zero blocking findings + verified artifact ⇒ downloadable ZIP.
+    // Zero unresolved findings + verified artifact => downloadable ZIP.
     MvcResult download = mockMvc.perform(get("/api/v1/generations/" + id + "/download")
             .header("Authorization", "Bearer " + token))
         .andExpect(status().isOk())
@@ -432,6 +457,96 @@ class GenerationTest extends AbstractPersistenceTest {
     // Hermetic: drop the workspace only after the download consumed it.
     storage.deleteQuietly(
         storage.generationWorkspaceDir(UUID.fromString(id), 1));
+  }
+
+  @Test
+  void generatedFilesFollowTheUserApprovedPlan() throws Exception {
+    String token = access(register());
+    String name = "approved-plan-" + UUID.randomUUID();
+    String body = noneBody(name).replace(
+        ",\"aiConfig\"",
+        ",\"approvedPlan\":{"
+            + "\"architecture\":\"User-approved dependency-free Java plan\","
+            + "\"dependencies\":[],"
+            + "\"directories\":[\"src/main/java/app\",\"src/test/java/app\",\"docs\"],"
+            + "\"apis\":\"No external API\","
+            + "\"steps\":[\"Create the service\",\"Verify the service\"],"
+            + "\"files\":["
+            + "{\"path\":\"src/main/java/app/App.java\",\"purpose\":\"Service entrypoint\"},"
+            + "{\"path\":\"src/test/java/app/AppTest.java\",\"purpose\":\"Service checks\"},"
+            + "{\"path\":\"README.md\",\"purpose\":\"Project guide\"},"
+            + "{\"path\":\"docs/user-approved.md\",\"purpose\":\"User-selected documentation\"}],"
+            + "\"notes\":\"Edited and approved by the user\"},"
+            + "\"aiConfig\"");
+    MvcResult created = mockMvc.perform(post("/api/v1/generations")
+            .header("Authorization", "Bearer " + token)
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.plan.files[3].path").value("docs/user-approved.md"))
+        .andReturn();
+    String id = objects.readTree(created.getResponse().getContentAsString()).get("id").asText();
+
+    JsonNode settled = pollUntilSettled(token, id);
+    assertThat(settled.get("status").asText()).isEqualTo("REVIEWED");
+    MvcResult filesResult = mockMvc.perform(get("/api/v1/generations/" + id + "/files")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andReturn();
+    JsonNode generatedFiles = objects.readTree(filesResult.getResponse().getContentAsString());
+    assertThat(generatedFiles.toString()).contains("docs/user-approved.md");
+    Path userSelectedFile = storage.generationWorkspaceDir(UUID.fromString(id), 1)
+        .resolve("docs/user-approved.md");
+    assertThat(Files.readString(userSelectedFile))
+        .contains("User-selected documentation");
+  }
+
+  @Test
+  void sandboxSkipDoesNotBlockZipWhenStaticReviewHasNoFindings() throws Exception {
+    doReturn(new SandboxRunner.ExecutionResult(
+        0, "sandbox unavailable", "", 0L, false, true))
+        .when(sandboxRunner)
+        .executeBuild(any(Path.class), eq(GenerationTemplates.BUILD_COMMAND));
+
+    String token = access(register());
+    String id = createGeneration(token, noneBody("static-ready-" + UUID.randomUUID()));
+    JsonNode settled = pollUntilSettled(token, id);
+
+    assertThat(settled.get("status").asText()).isEqualTo("REVIEWED");
+    assertThat(settled.get("verificationLevel").asText()).isEqualTo("SANDBOX_UNAVAILABLE");
+    assertThat(settled.get("downloadReady").asBoolean()).isTrue();
+    mockMvc.perform(get("/api/v1/generations/" + id + "/download")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk());
+  }
+
+  @Test
+  void styleFindingBlocksZipEvenWhenSandboxBuildPassed() throws Exception {
+    String token = access(register());
+    String id = createGeneration(token, noneBody("style-blocked-" + UUID.randomUUID()));
+    JsonNode settled = pollUntilSettled(token, id);
+    assertThat(settled.get("status").asText()).isEqualTo("REVIEWED");
+
+    Review review = reviews.findByGenerationIdOrderByCreatedAtDesc(UUID.fromString(id))
+        .get(0);
+    Finding styleFinding = new Finding(
+        review, FindingCategory.STYLE, FindingSeverity.LOW, FindingSource.DETERMINISTIC,
+        "Style finding");
+    styleFinding.setRule("test-style");
+    styleFinding.setFilePath("README.md");
+    styleFinding.setLineStart(1);
+    styleFinding.setDedupKey("style-download-gate-" + id);
+    findings.saveAndFlush(styleFinding);
+
+    mockMvc.perform(get("/api/v1/generations/" + id + "/download")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isConflict());
+    MvcResult statusResult = mockMvc.perform(get("/api/v1/generations/" + id)
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andReturn();
+    assertThat(objects.readTree(statusResult.getResponse().getContentAsString())
+        .get("downloadReady").asBoolean()).isFalse();
   }
 
   @Test
@@ -590,7 +705,8 @@ class GenerationTest extends AbstractPersistenceTest {
       JsonNode root = objects.readTree(result.getResponse().getContentAsString());
       String status = root.get("status").asText();
       // Successful runs settle after build, verification, and review.
-      if (status.equals("REVIEWED") || status.equals("COMPLETED") || status.equals("FAILED")) {
+      if (status.equals("REVIEWED") || status.equals("AWAITING_FIX_APPROVAL")
+          || status.equals("COMPLETED") || status.equals("FAILED")) {
         return root;
       }
       if (System.currentTimeMillis() > deadline) {

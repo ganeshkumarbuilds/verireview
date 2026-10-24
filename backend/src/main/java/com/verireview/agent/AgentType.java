@@ -4,5 +4,6 @@ public enum AgentType {
   PLANNING,
   REVIEW,
   CODING,
-  VERIFIED
+  VERIFIED,
+  RATING
 }

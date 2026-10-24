@@ -12,7 +12,10 @@ import com.verireview.analysis.Fingerprint;
 import com.verireview.common.PagedResponse;
 import com.verireview.generation.dto.CreateGenerationRequest;
 import com.verireview.generation.dto.CreateGenerationRevisionRequest;
+import com.verireview.generation.dto.GenerationAnswerRequest;
 import com.verireview.generation.dto.GenerationFileView;
+import com.verireview.generation.dto.GenerationFixPreviewResponse;
+import com.verireview.generation.dto.GenerationQuestionsRequest;
 import com.verireview.generation.dto.GenerationResponse;
 import com.verireview.generation.dto.GenerationRevisionResponse;
 import com.verireview.generation.dto.PlanPreviewRequest;
@@ -54,6 +57,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -116,13 +120,11 @@ public class GenerationService {
   private final ObjectMapper objects;
   private final PatchRepository patches;
   private final ProjectStorage storage;
+  private final GenerationWizardService wizard;
+  private final GenerationEventStream eventStream;
+  private final GenerationFixApprovalRepository fixApprovals;
+  private final GenerationFileVersionRepository fileVersions;
   private final ConcurrentMap<UUID, GenerationSecrets> secrets = new ConcurrentHashMap<>();
-
-  private static final List<FindingCategory> BLOCKING_CATEGORIES = List.of(
-      FindingCategory.BUG,
-      FindingCategory.SECURITY,
-      FindingCategory.CODE_QUALITY
-  );
 
   private static final Logger log = LoggerFactory.getLogger(GenerationService.class);
 
@@ -144,7 +146,11 @@ public class GenerationService {
       @Lazy GenerationRunner runner,
       AuditService audits,
       ObjectMapper objects,
-      ProjectStorage storage) {
+      ProjectStorage storage,
+      GenerationWizardService wizard,
+      GenerationEventStream eventStream,
+      GenerationFixApprovalRepository fixApprovals,
+      GenerationFileVersionRepository fileVersions) {
     this.generations = generations;
     this.revisions = revisions;
     this.artifacts = artifacts;
@@ -163,6 +169,10 @@ public class GenerationService {
     this.audits = audits;
     this.objects = objects;
     this.storage = storage;
+    this.wizard = wizard;
+    this.eventStream = eventStream;
+    this.fixApprovals = fixApprovals;
+    this.fileVersions = fileVersions;
   }
 
   public GenerationExecutionEvidenceRepository executionEvidence() {
@@ -189,28 +199,70 @@ public class GenerationService {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "Generation name is already used");
     }
     boolean draft = Boolean.TRUE.equals(request.draft());
-    GenerationAuth auth = request.auth() == null ? GenerationAuth.NONE : request.auth();
-    List<GenerationIntegration> integrations = normalizeIntegrations(request.integrations());
-    checkSelection(request.backend(), request.frontend(), request.database(), auth, integrations);
-    checkStackCoherence(request.backend(), request.frontend(), request.database(),
+    String requirement = request.requirement().trim();
+    GenerationQuestionsRequest wizardProject = new GenerationQuestionsRequest(
+        name,
+        requirement,
+        request.description(),
+        request.backend(),
+        request.frontend(),
+        request.languageRuntime(),
+        request.backendCustom(),
+        request.frontendCustom());
+    boolean hasAnswers = request.answers() != null && !request.answers().isEmpty();
+    GenerationWizardCatalog.Resolution resolved = hasAnswers
+        ? wizard.resolve(wizardProject, request.answers())
+        : null;
+    if (resolved != null && !resolved.complete()) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST,
+          "Answer these questions before generating: " + String.join(", ", resolved.missing()));
+    }
+    if (resolved != null) {
+      checkAnswersMatchAiConfig(resolved, request.aiConfig());
+    }
+    GenerationDatabase database = resolved != null ? resolved.database() : request.database();
+    GenerationAuth auth = resolved != null
+        ? resolved.auth()
+        : (request.auth() == null ? GenerationAuth.NONE : request.auth());
+    List<GenerationIntegration> integrations = resolved != null
+        ? resolved.integrations()
+        : normalizeIntegrations(request.integrations());
+    boolean databaseConfigureLater = resolved != null
+        ? resolved.databaseConfigureLater()
+        : Boolean.TRUE.equals(request.databaseConfigureLater());
+    if (databaseConfigureLater && database != GenerationDatabase.NONE) {
+      // "Configure later" is explicit; no connection metadata is fabricated.
+      database = GenerationDatabase.NONE;
+    }
+    String answersJson = wizard.storedAnswersJson(wizardProject, request.answers());
+    checkSelection(request.backend(), request.frontend(), database, auth, integrations);
+    checkStackCoherence(request.backend(), request.frontend(), database,
         request.databaseConfig() != null,
         request.aiConfig().provider(), request.aiConfig().baseUrl(), request.aiConfig().apiKey(),
-        request.aiConfig().model(), draft);
+        request.aiConfig().model(), draft, databaseConfigureLater);
     if (!draft) {
-      requireSecrets(request);
+      requireSecrets(request, databaseConfigureLater);
     }
 
     Generation generation = new Generation();
     generation.setOwner(users.getReferenceById(ownerId));
     generation.setName(name);
-    generation.setRequirement(request.requirement().trim());
+    generation.setRequirement(requirement);
     generation.setDescription(blankToNull(request.description()));
     generation.setBackendStack(request.backend());
     generation.setFrontendStack(request.frontend());
-    generation.setDatabaseType(request.database());
+    generation.setLanguageRuntime(blankToNull(request.languageRuntime()));
+    generation.setBackendCustom(request.backend() == GenerationBackend.OTHER
+        ? blankToNull(request.backendCustom()) : null);
+    generation.setFrontendCustom(request.frontend() == GenerationFrontend.OTHER
+        ? blankToNull(request.frontendCustom()) : null);
+    generation.setAnswersJson(answersJson);
+    generation.setDatabaseConfigureLater(databaseConfigureLater);
+    generation.setDatabaseType(database);
     generation.setAuthType(auth);
     generation.setIntegrations(joinIntegrations(integrations));
-    if (request.database() != GenerationDatabase.NONE) {
+    if (database != GenerationDatabase.NONE && !databaseConfigureLater) {
       CreateGenerationRequest.DatabaseConfig db = request.databaseConfig();
       generation.setDbHost(db.host().trim());
       generation.setDbPort(db.port());
@@ -228,6 +280,10 @@ public class GenerationService {
       generations.saveAndFlush(generation);
       revisions.save(new GenerationRevision(
           generation, 1, generation.getRequirement()));
+      if (request.approvedPlan() != null) {
+        validateApprovedPlan(request.approvedPlan());
+        savePlan(generation.getId(), 1, toAgentPlan(generation.getId(), request.approvedPlan()));
+      }
     } catch (DataIntegrityViolationException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "Generation name is already used");
     }
@@ -235,7 +291,7 @@ public class GenerationService {
     if (!draft) {
       // In-memory only: never persisted, never logged, never returned.
       // The database password is optional: a blank value becomes "".
-      String dbPassword = request.database() != GenerationDatabase.NONE
+      String dbPassword = database != GenerationDatabase.NONE && !databaseConfigureLater
           ? (request.databaseConfig().password() == null
               ? "" : request.databaseConfig().password())
           : null;
@@ -327,6 +383,24 @@ public class GenerationService {
     }
     if (request.frontend() != null) {
       generation.setFrontendStack(request.frontend());
+    }
+    if (request.languageRuntime() != null) {
+      if (request.languageRuntime().length() > 200) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid language/runtime");
+      }
+      generation.setLanguageRuntime(blankToNull(request.languageRuntime()));
+    }
+    if (request.backendCustom() != null) {
+      if (request.backendCustom().length() > 200) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid custom backend");
+      }
+      generation.setBackendCustom(blankToNull(request.backendCustom()));
+    }
+    if (request.frontendCustom() != null) {
+      if (request.frontendCustom().length() > 200) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid custom frontend");
+      }
+      generation.setFrontendCustom(blankToNull(request.frontendCustom()));
     }
     GenerationDatabase database = generation.getDatabaseType();
     if (request.database() != null) {
@@ -459,10 +533,46 @@ public class GenerationService {
     }
   }
 
+  /**
+   * The wizard answers are authoritative. Reject a request whose AI config
+   * names a different engine/model than the user approved instead of silently
+   * running one and displaying the other.
+   */
+  private static void checkAnswersMatchAiConfig(
+      GenerationWizardCatalog.Resolution resolved, CreateGenerationRequest.AiConfig aiConfig) {
+    String engine = resolved.values().get(GenerationWizardCatalog.ENGINE);
+    GenerationAiProvider expectedProvider = switch (engine == null ? "" : engine) {
+      case "TEMPLATE" -> GenerationAiProvider.NONE;
+      case "CUSTOM" -> GenerationAiProvider.CUSTOM;
+      default -> GenerationAiProvider.OPENROUTER;
+    };
+    if (aiConfig.provider() != expectedProvider) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "AI provider does not match the approved generation engine");
+    }
+    if (!"TEMPLATE".equals(engine)) {
+      String expectedModel = resolved.values().getOrDefault(GenerationWizardCatalog.MODEL, "");
+      String requestedModel = aiConfig.model() == null ? "" : aiConfig.model().trim();
+      if (!expectedModel.equals(requestedModel)) {
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST, "AI model does not match the approved generation model");
+      }
+    }
+    if ("CUSTOM".equals(engine)) {
+      String expectedBaseUrl = resolved.values().getOrDefault(GenerationWizardCatalog.BASE_URL, "");
+      String requestedBaseUrl = aiConfig.baseUrl() == null ? "" : aiConfig.baseUrl().trim();
+      if (!expectedBaseUrl.equals(requestedBaseUrl)) {
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST, "AI base URL does not match the approved generation endpoint");
+      }
+    }
+  }
+
   private void checkStackCoherence(
       GenerationBackend backend, GenerationFrontend frontend, GenerationDatabase database,
       boolean hasDatabaseConfig,
-      GenerationAiProvider provider, String baseUrl, String apiKey, String model, boolean draft) {
+      GenerationAiProvider provider, String baseUrl, String apiKey, String model, boolean draft,
+      boolean databaseConfigureLater) {
     boolean wantsDb = database != GenerationDatabase.NONE;
     if (wantsDb && !hasDatabaseConfig) {
       throw new ResponseStatusException(
@@ -471,6 +581,10 @@ public class GenerationService {
     if (!wantsDb && hasDatabaseConfig) {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "Database configuration must be omitted when no database is selected");
+    }
+    if (databaseConfigureLater && wantsDb) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Choose None when configuring the database later");
     }
     if (provider == GenerationAiProvider.NONE) {
       if (apiKey != null && !apiKey.isBlank()) {
@@ -536,8 +650,9 @@ public class GenerationService {
     return List.copyOf(result);
   }
 
-  private void requireSecrets(CreateGenerationRequest request) {
+  private void requireSecrets(CreateGenerationRequest request, boolean databaseConfigureLater) {
     // The database password is optional: a blank password is passed through.
+    // When the user explicitly chose "configure later", no DB secret exists.
     if (request.aiConfig().provider() != GenerationAiProvider.NONE
         && (request.aiConfig().apiKey() == null || request.aiConfig().apiKey().isBlank())) {
       throw new ResponseStatusException(
@@ -590,6 +705,90 @@ public class GenerationService {
     checkSelection(request.backend(), request.frontend(), request.database(), auth, integrations);
     return GenerationScaffoldPreview.build(request.backend(), request.frontend(),
         request.database(), auth, integrations);
+  }
+
+  private void validateApprovedPlan(PlanPreviewResponse plan) {
+    Set<String> paths = new HashSet<>();
+    for (PlanPreviewResponse.PlanFile file : plan.files()) {
+      String path = file.path();
+      if (path == null || path.isBlank() || path.startsWith("/")
+          || path.startsWith("\\") || path.contains("\\")
+          || path.matches("^[A-Za-z]:.*")
+          || !path.matches("^[A-Za-z0-9._@+/-]+$")
+          || java.util.Arrays.stream(path.split("/", -1))
+              .anyMatch(part -> part.isBlank() || part.equals(".") || part.equals(".."))
+          || !paths.add(path)) {
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST, "The approved plan contains an invalid or duplicate file path");
+      }
+    }
+    Set<String> directories = new HashSet<>();
+    for (String directory : plan.directories()) {
+      if (directory == null || directory.isBlank() || directory.startsWith("/")
+          || directory.startsWith("\\") || directory.contains("\\")
+          || directory.matches("^[A-Za-z]:.*")
+          || !directory.matches("^[A-Za-z0-9._@+/-]+$")
+          || java.util.Arrays.stream(directory.split("/", -1))
+              .anyMatch(part -> part.isBlank() || part.equals(".") || part.equals(".."))
+          || !directories.add(directory)) {
+        throw new ResponseStatusException(
+            HttpStatus.BAD_REQUEST, "The approved plan contains an invalid or duplicate directory");
+      }
+    }
+  }
+
+  private AiGenerationPlanResult toAgentPlan(UUID generationId, PlanPreviewResponse plan) {
+    return new AiGenerationPlanResult(
+        generationId.toString(),
+        plan.files().stream()
+            .map(file -> new AiGenerationPlanResult.PlannedFile(file.path(), file.purpose()))
+            .toList(),
+        plan.notes(),
+        new AiGenerationPlanResult.PlanSections(
+            plan.architecture(),
+            plan.dependencies(),
+            plan.directories(),
+            plan.apis(),
+            plan.steps()));
+  }
+
+  @Transactional(readOnly = true)
+  public AiGenerationPlanResult savedPlan(UUID generationId, int iteration) {
+    GenerationPlan plan = plans.findByGenerationIdAndIteration(generationId, iteration).orElse(null);
+    if (plan == null) {
+      return null;
+    }
+    try {
+      JsonNode root = objects.readTree(plan.getPlanJson());
+      List<AiGenerationPlanResult.PlannedFile> files = new ArrayList<>();
+      JsonNode fileNodes = root.get("files");
+      if (fileNodes != null && fileNodes.isArray()) {
+        for (JsonNode file : fileNodes) {
+          files.add(new AiGenerationPlanResult.PlannedFile(
+              textOrEmpty(file.get("path")), textOrEmpty(file.get("purpose"))));
+        }
+      }
+
+      return new AiGenerationPlanResult(
+          generationId.toString(),
+          List.copyOf(files),
+          textOrEmpty(root.get("notes")),
+          new AiGenerationPlanResult.PlanSections(
+              textOrEmpty(root.get("architecture")),
+              strings(root.get("dependencies")),
+              strings(root.get("directories")),
+              textOrEmpty(root.get("apis")),
+              strings(root.get("steps"))));
+    } catch (Exception e) {
+      throw new IllegalStateException("Could not read the approved generation plan", e);
+    }
+  }
+
+  @Transactional(readOnly = true)
+  public UUID planId(UUID generationId, int iteration) {
+    return plans.findByGenerationIdAndIteration(generationId, iteration)
+        .map(GenerationPlan::getId)
+        .orElseThrow(() -> new IllegalStateException("Approved generation plan is missing"));
   }
 
   /**
@@ -699,7 +898,9 @@ public class GenerationService {
     Project project = new Project(users.getReferenceById(ownerId),
         uniqueProjectName(ownerId, generation.getName()), ProjectSourceType.GENERATED);
     project.setDescription(generation.getDescription());
-    project.setLanguage(GenerationRunner.primaryLanguage(generation.getBackendStack()));
+    project.setLanguage(generation.getLanguageRuntime() != null
+        ? generation.getLanguageRuntime()
+        : GenerationRunner.primaryLanguage(generation.getBackendStack()));
     projects.saveAndFlush(project);
     Path projectDir = storage.projectDir(project.getId());
     try {
@@ -768,6 +969,9 @@ public class GenerationService {
         generation.getDescription(),
         generation.getBackendStack(),
         generation.getFrontendStack(),
+        generation.getLanguageRuntime(),
+        generation.getBackendCustom(),
+        generation.getFrontendCustom(),
         generation.getDatabaseType(),
         generation.getAuthType(),
         parseIntegrations(generation.getIntegrations()),
@@ -778,7 +982,28 @@ public class GenerationService {
         generation.getDbSslMode(),
         generation.getAiProvider(),
         generation.getAiModel(),
-        generation.getAiBaseUrl());
+        generation.getAiBaseUrl(),
+        answerValues(generation.getAnswersJson()));
+  }
+
+  /** Non-secret question values for the agents; secret entries have no value. */
+  private Map<String, String> answerValues(String json) {
+    Map<String, String> values = new LinkedHashMap<>();
+    try {
+      JsonNode root = objects.readTree(json == null ? "[]" : json);
+      if (root != null && root.isArray()) {
+        for (JsonNode item : root) {
+          JsonNode id = item.get("questionId");
+          JsonNode value = item.get("value");
+          if (id != null && id.isTextual() && value != null && value.isTextual()) {
+            values.put(id.asText(), value.asText());
+          }
+        }
+      }
+    } catch (Exception ignored) {
+      // Legacy or malformed rows simply contribute no answer context.
+    }
+    return Map.copyOf(values);
   }
 
   public record GenerationSnapshot(
@@ -789,6 +1014,9 @@ public class GenerationService {
       String description,
       GenerationBackend backend,
       GenerationFrontend frontend,
+      String languageRuntime,
+      String backendCustom,
+      String frontendCustom,
       GenerationDatabase database,
       GenerationAuth auth,
       List<GenerationIntegration> integrations,
@@ -799,7 +1027,8 @@ public class GenerationService {
       String dbSslMode,
       GenerationAiProvider aiProvider,
       String aiModel,
-      String aiBaseUrl) {
+      String aiBaseUrl,
+      Map<String, String> answers) {
   }
 
   /** Returns the run secrets without consuming them (for rebuild flows). */
@@ -867,6 +1096,385 @@ public class GenerationService {
     return managed.getIteration();
   }
 
+    @Transactional
+    public GenerationResponse approveFixes(
+        UUID ownerId, UUID generationId, List<UUID> requestedFindingIds, String apiKey) {
+      Generation managed = owned(ownerId, generationId);
+      if (managed.getStatus() != GenerationStatus.AWAITING_FIX_APPROVAL) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+            "Fix approval is available only after review has findings");
+      }
+      if (managed.getIteration() >= managed.getMaxIterations()) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+            "The five-round fix limit has been reached. Review the remaining findings or revert.");
+      }
+
+      List<Review> generationReviews =
+          reviews.findByGenerationIdOrderByCreatedAtDesc(generationId);
+      if (generationReviews.isEmpty()) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "No completed review is available");
+      }
+      List<Finding> unresolved = findings.findByReviewId(generationReviews.get(0).getId()).stream()
+          .filter(this::isUnresolved)
+          .toList();
+      if (unresolved.isEmpty()) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "There are no unresolved findings");
+      }
+
+      Set<UUID> validIds = unresolved.stream().map(Finding::getId)
+          .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+      Set<UUID> selectedIds = requestedFindingIds == null || requestedFindingIds.isEmpty()
+          ? validIds
+          : new LinkedHashSet<>(requestedFindingIds);
+      if (selectedIds.isEmpty()
+          || (requestedFindingIds != null && !requestedFindingIds.isEmpty()
+              && selectedIds.size() != requestedFindingIds.size())
+          || !validIds.containsAll(selectedIds)) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+            "Choose only unresolved findings from the latest review");
+      }
+      List<Finding> approvedFindings = unresolved.stream()
+          .filter(finding -> selectedIds.contains(finding.getId()))
+          .filter(finding -> !fixRequests.findByFindingIdAndRequestedByIdAndStatusIn(
+              finding.getId(), ownerId,
+              List.of(FixRequestStatus.REQUESTED, FixRequestStatus.IN_PROGRESS)).isEmpty())
+          .toList();
+      if (approvedFindings.size() != selectedIds.size()) {
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+            "Each selected finding requires an approved fix request for this user");
+      }
+
+      GenerationSnapshot snapshot = snapshot(generationId);
+      boolean requiresKey = snapshot.aiProvider() != GenerationAiProvider.NONE;
+      if (requiresKey && (apiKey == null || apiKey.isBlank())) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+            "Enter the AI provider key again to run this fix round");
+      }
+      if (!requiresKey) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+            "This template-only generation has no coding provider configured for automatic fixes");
+      }
+
+      int round = managed.getIteration() + 1;
+      GenerationFixApproval approval = new GenerationFixApproval(
+          managed,
+          users.getReferenceById(ownerId),
+          round,
+          writeJson(selectedIds),
+          unresolved.size(),
+          java.time.Instant.now());
+      fixApprovals.saveAndFlush(approval);
+      managed.setIteration(round);
+      managed.setStatus(GenerationStatus.FIXING);
+      managed.setError(null);
+      secrets.put(generationId, new GenerationSecrets(null, apiKey));
+      audits.record(managed.getOwner(), "GENERATION_FIX_APPROVED", "generation", generationId.toString());
+      dispatchFixAfterCommit(generationId, approval.getId());
+      publishAfterCommit(generationId);
+      return toResponse(managed);
+    }
+
+    @Transactional(readOnly = true)
+    public GenerationFixPreviewResponse previewFixFiles(
+        UUID ownerId, UUID generationId, List<UUID> requestedFindingIds) {
+      Generation generation = owned(ownerId, generationId);
+      if (generation.getStatus() != GenerationStatus.AWAITING_FIX_APPROVAL) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+            "Fix scope is available only after review has findings");
+      }
+      Review latest = reviews.findByGenerationIdOrderByCreatedAtDesc(generationId).stream()
+          .findFirst()
+          .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT, "No review is available"));
+      List<Finding> unresolved = findings.findByReviewId(latest.getId()).stream()
+          .filter(this::isUnresolved)
+          .toList();
+      Set<UUID> validIds = unresolved.stream().map(Finding::getId)
+          .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+      Set<UUID> selectedIds = requestedFindingIds == null || requestedFindingIds.isEmpty()
+          ? validIds : new LinkedHashSet<>(requestedFindingIds);
+      if (selectedIds.isEmpty()
+          || (requestedFindingIds != null && !requestedFindingIds.isEmpty()
+              && selectedIds.size() != requestedFindingIds.size())
+          || !validIds.containsAll(selectedIds)) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+            "Choose only unresolved findings from the latest review");
+      }
+      List<Finding> selected = unresolved.stream()
+          .filter(finding -> selectedIds.contains(finding.getId()))
+          .toList();
+      Path workspace = storage.generationWorkspaceDir(generationId, generation.getIteration());
+      Map<String, String> files = new LinkedHashMap<>();
+      try (var paths = Files.walk(workspace)) {
+        for (Path path : paths.filter(Files::isRegularFile).toList()) {
+          if (Files.isSymbolicLink(path) || Files.size(path) > GenerationRunner.MAX_CHARS_PER_FILE) {
+            continue;
+          }
+          String relative = workspace.relativize(path).toString().replace('\\', '/');
+          String content = Files.readString(path, StandardCharsets.UTF_8);
+          if (content.indexOf('\0') < 0) {
+            files.put(relative, content);
+          }
+        }
+      } catch (IOException e) {
+        throw new IllegalStateException("Could not inspect generated files for the fix preview", e);
+      }
+      List<String> affected = GenerationFixScope.affectedFiles(selected, files).stream().sorted().toList();
+      if (affected.isEmpty()) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+            "No generated files match the selected findings");
+      }
+      return new GenerationFixPreviewResponse(affected, selected.size());
+    }
+
+    private void dispatchFixAfterCommit(UUID generationId, UUID approvalId) {
+      if (TransactionSynchronizationManager.isSynchronizationActive()) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+          @Override
+          public void afterCommit() {
+            runner.runApprovedFix(generationId, approvalId);
+          }
+        });
+      } else {
+        runner.runApprovedFix(generationId, approvalId);
+      }
+    }
+
+    @Transactional(readOnly = true)
+    public FixRunContext fixRunContext(UUID generationId, UUID approvalId) {
+      GenerationFixApproval approval = fixApprovals.findByIdAndGenerationIdAndUserId(
+              approvalId, generationId,
+              generations.findById(generationId).orElseThrow().getOwner().getId())
+          .orElseThrow(() -> new ResponseStatusException(HttpStatus.FORBIDDEN,
+              "No approved fix request exists for this generation"));
+      if (!"APPROVED".equals(approval.getStatus())) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+            "The approved fix request is no longer available");
+      }
+      List<UUID> ids = readUuidList(approval.getSelectedFindingIds());
+      List<Finding> selected = ids.stream()
+          .map(id -> findings.findById(id).orElseThrow(() ->
+              new ResponseStatusException(HttpStatus.CONFLICT, "An approved finding no longer exists")))
+          .toList();
+      return new FixRunContext(approval.getId(), approval.getRoundNumber(), selected);
+    }
+
+    public record FixRunContext(UUID approvalId, int roundNumber, List<Finding> findings) {
+    }
+
+    @Transactional
+    public void beginFixApproval(UUID approvalId) {
+      GenerationFixApproval approval = fixApprovals.findById(approvalId).orElseThrow();
+      approval.setStatus("RUNNING");
+      publishAfterCommit(approval.getGeneration().getId());
+    }
+
+    @Transactional
+    public void setFixApprovalStatus(UUID approvalId, String status, Integer afterCount) {
+      GenerationFixApproval approval = fixApprovals.findById(approvalId).orElseThrow();
+      approval.setStatus(status);
+      if (afterCount != null) {
+        approval.setAfterFindingCount(afterCount);
+      }
+      if ("COMPLETED".equals(status) || "FAILED".equals(status)) {
+        approval.setCompletedAt(java.time.Instant.now());
+      }
+      publishAfterCommit(approval.getGeneration().getId());
+    }
+
+    @Transactional(readOnly = true)
+    public boolean hasApprovedFix(UUID ownerId, UUID generationId, UUID findingId) {
+      return fixApprovals.findByGenerationIdOrderByRoundNumberAscCreatedAtAsc(generationId).stream()
+          .anyMatch(approval -> approval.getUser().getId().equals(ownerId)
+              && ("APPROVED".equals(approval.getStatus()) || "RUNNING".equals(approval.getStatus()))
+              && readUuidList(approval.getSelectedFindingIds()).contains(findingId));
+    }
+
+    @Transactional
+    public void finishReviewRound(UUID generationId, int roundNumber) {
+      Generation generation = generations.findById(generationId).orElseThrow();
+      int unresolved = unresolvedFindingCount(generationId);
+      generation.setStatus(unresolved > 0
+          ? GenerationStatus.AWAITING_FIX_APPROVAL
+          : GenerationStatus.REVIEWED);
+      generation.setError(null);
+      fixApprovals.findByGenerationIdOrderByRoundNumberAscCreatedAtAsc(generationId).stream()
+          .filter(approval -> approval.getRoundNumber() == roundNumber
+              && "RUNNING".equals(approval.getStatus()))
+          .findFirst()
+          .ifPresent(approval -> {
+            approval.setAfterFindingCount(unresolved);
+            approval.setStatus("COMPLETED");
+            approval.setCompletedAt(java.time.Instant.now());
+          });
+      secrets.remove(generationId);
+      publishAfterCommit(generationId);
+    }
+
+    @Transactional(readOnly = true)
+    public int unresolvedFindingCount(UUID generationId) {
+      return reviews.findByGenerationIdOrderByCreatedAtDesc(generationId).stream()
+          .findFirst()
+          .map(review -> (int) findings.findByReviewId(review.getId()).stream()
+              .filter(this::isUnresolved)
+              .count())
+          .orElse(0);
+    }
+
+    @Transactional
+    public GenerationResponse retryFailedStage(
+        UUID ownerId, UUID generationId, UUID executionId, String apiKey) {
+      Generation generation = owned(ownerId, generationId);
+      AgentExecution execution = executions.findById(executionId)
+          .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Agent stage not found"));
+      if (execution.getGeneration() == null
+          || !execution.getGeneration().getId().equals(generationId)
+          || execution.getStatus() != AgentExecutionStatus.FAILED) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "Only a failed stage of this generation can be retried");
+      }
+      if (execution.getRoundNumber() != generation.getIteration()) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "Only a failed stage from the current round can be retried");
+      }
+      if (generation.getStatus() != GenerationStatus.FAILED) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "The generation is not in a failed state");
+      }
+      GenerationSnapshot snapshot = snapshot(generationId);
+      boolean requiresKey = snapshot.aiProvider() != GenerationAiProvider.NONE
+          && (execution.getAgentType() == AgentType.PLANNING
+              || execution.getAgentType() == AgentType.CODING
+              || execution.getAgentType() == AgentType.VERIFIED);
+      if (requiresKey && (apiKey == null || apiKey.isBlank())) {
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+            "Enter the AI provider key again to retry this stage");
+      }
+      if (apiKey != null && !apiKey.isBlank()) {
+        secrets.put(generationId, new GenerationSecrets(null, apiKey));
+      }
+      UUID currentApprovalId = fixApprovals
+          .findByGenerationIdOrderByRoundNumberAscCreatedAtAsc(generationId).stream()
+          .filter(approval -> approval.getRoundNumber() == generation.getIteration())
+          .reduce((first, second) -> second)
+          .map(GenerationFixApproval::getId)
+          .orElse(null);
+      if (currentApprovalId != null) {
+        setFixApprovalStatus(currentApprovalId, "APPROVED", null);
+      }
+      generation.setStatus(switch (execution.getAgentType()) {
+        case PLANNING -> GenerationStatus.PLANNING;
+        case CODING -> currentApprovalId == null ? GenerationStatus.CODING : GenerationStatus.FIXING;
+        case VERIFIED -> GenerationStatus.VERIFYING;
+        case REVIEW -> GenerationStatus.REVIEWING;
+        case RATING -> GenerationStatus.REVIEWED;
+      });
+      generation.setError(null);
+      runner.retryFailedStage(generationId, execution.getAgentType(), currentApprovalId);
+      publishAfterCommit(generationId);
+      return toResponse(generation);
+    }
+
+    @Transactional(readOnly = true)
+    public RetryVerificationContext retryVerificationContext(UUID generationId, int round) {
+      GenerationExecutionEvidence evidence = executionEvidence
+          .findByGenerationIdAndIteration(generationId, round)
+          .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
+              "Build evidence is not available for verification retry"));
+      VerificationRun verification = verificationRuns.findByGenerationIdOrderByCreatedAtDesc(generationId)
+          .stream()
+          .filter(item -> item.getGeneration() != null
+              && item.getGeneration().getId().equals(generationId))
+          .findFirst()
+          .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
+              "Verification record is not available for retry"));
+      return new RetryVerificationContext(evidence, verification.getId());
+    }
+
+    public record RetryVerificationContext(GenerationExecutionEvidence evidence, UUID verificationRunId) {
+    }
+
+    @Transactional
+    public void saveFixFileVersions(
+        UUID generationId, UUID approvalId, int round,
+        Map<String, String> before, Map<String, String> after) {
+      Generation generation = generations.findById(generationId).orElseThrow();
+      GenerationFixApproval approval = fixApprovals.findById(approvalId).orElseThrow();
+      if (!approval.getGeneration().getId().equals(generationId)
+          || approval.getRoundNumber() != round) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "Fix approval does not match this round");
+      }
+      if (!before.keySet().equals(after.keySet())) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "Fix output did not match approved files");
+      }
+      before.forEach((path, prior) -> fileVersions.save(new GenerationFileVersion(
+          generation, approval, round, path, prior, after.get(path))));
+    }
+
+    @Transactional
+    public GenerationResponse revertFixRound(UUID ownerId, UUID generationId, int round) {
+      Generation generation = owned(ownerId, generationId);
+      if (generation.getStatus() != GenerationStatus.AWAITING_FIX_APPROVAL
+          && generation.getStatus() != GenerationStatus.REVIEWED
+          && generation.getStatus() != GenerationStatus.FAILED) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT,
+            "Files can be reverted only when the generation is not running");
+      }
+      List<GenerationFileVersion> versions =
+          fileVersions.findByGenerationIdAndRoundNumberOrderByFilePathAsc(generationId, round);
+      if (versions.isEmpty() || versions.stream().allMatch(GenerationFileVersion::isReverted)) {
+        throw new ResponseStatusException(HttpStatus.CONFLICT, "No restorable file versions exist for this round");
+      }
+      Path workspace = storage.generationWorkspaceDir(generationId, generation.getIteration());
+      try {
+        for (GenerationFileVersion version : versions) {
+          Path target = storage.resolveJailed(workspace, version.getFilePath());
+          Files.createDirectories(target.getParent());
+          Files.writeString(target, version.getBeforeContent(), StandardCharsets.UTF_8);
+          version.setReverted(true);
+        }
+      } catch (IOException e) {
+        throw new IllegalStateException("Could not restore the prior generated files", e);
+      }
+      GenerationFixApproval approval = versions.get(0).getApproval();
+      approval.setStatus("REVERTED");
+      generation.setStatus(GenerationStatus.REVIEWING);
+      generation.setError(null);
+      audits.record(generation.getOwner(), "GENERATION_FIX_REVERTED", "generation",
+          generationId + ":round:" + round);
+      publishAfterCommit(generationId);
+      int currentRound = generation.getIteration();
+      if (TransactionSynchronizationManager.isSynchronizationActive()) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+          @Override
+          public void afterCommit() {
+            runner.rereviewAfterRevert(generationId, currentRound);
+          }
+        });
+      } else {
+        runner.rereviewAfterRevert(generationId, currentRound);
+      }
+      return toResponse(generation);
+    }
+
+    private boolean isUnresolved(Finding finding) {
+      return finding.getStatus() == FindingStatus.OPEN
+          || finding.getStatus() == FindingStatus.FIX_REQUESTED
+          || finding.getStatus() == FindingStatus.FIX_PROPOSED;
+    }
+
+    private String writeJson(Set<UUID> values) {
+      try {
+        return objects.writeValueAsString(values);
+      } catch (Exception e) {
+        throw new IllegalStateException("Could not encode approved findings", e);
+      }
+    }
+
+    private List<UUID> readUuidList(String value) {
+      try {
+        return objects.readValue(value,
+            objects.getTypeFactory().constructCollectionType(List.class, UUID.class));
+      } catch (Exception e) {
+        throw new IllegalStateException("Could not read approved finding identifiers", e);
+      }
+    }
   /**
    * Records verified-artifact facts for an iteration. Metadata only — file
    * contents stay on disk and server paths never leave the backend.
@@ -933,9 +1541,12 @@ public class GenerationService {
     execution.setAgentType(agentType);
     execution.setModel(model);
     execution.setPromptVersion(promptVersion);
+    execution.setRoundNumber(managed.getIteration());
     execution.setStatus(AgentExecutionStatus.RUNNING);
     execution.setInputHash(inputHash);
-    return executions.save(execution).getId();
+    UUID executionId = executions.save(execution).getId();
+    publishAfterCommit(generationId);
+    return executionId;
   }
 
   /** Closes an agent execution with its outcome. Error text must stay secret-free. */
@@ -947,6 +1558,9 @@ public class GenerationService {
     execution.setError(error);
     execution.setDurationMs(durationMs);
     execution.setOutputRef(outputRef);
+    if (execution.getGeneration() != null) {
+      publishAfterCommit(execution.getGeneration().getId());
+    }
   }
 
   @Transactional(readOnly = true)
@@ -957,6 +1571,14 @@ public class GenerationService {
   @Transactional(readOnly = true)
   public Review getReview(UUID reviewId) {
     return reviews.findById(reviewId).orElseThrow();
+  }
+
+  @Transactional(readOnly = true)
+  public GenerationResponse.RatingView ratingForGeneration(UUID generationId) {
+    return reviews.findByGenerationIdOrderByCreatedAtDesc(generationId).stream()
+        .findFirst()
+        .map(review -> GenerationRatingCalculator.rate(findings.findByReviewId(review.getId())))
+        .orElseGet(() -> GenerationRatingCalculator.rate(List.of()));
   }
 
   @Transactional
@@ -1164,6 +1786,38 @@ public class GenerationService {
     return rows.size();
   }
 
+  @Transactional
+  public int persistGenerationStaticFindings(
+      UUID reviewId, List<GenerationStaticAnalyzer.StaticFinding> staticFindings) {
+    Review review = reviews.findById(reviewId).orElseThrow();
+    List<Finding> rows = new ArrayList<>();
+    for (GenerationStaticAnalyzer.StaticFinding item : staticFindings) {
+      FindingCategory category = switch (item.category()) {
+        case "security" -> FindingCategory.SECURITY;
+        case "style" -> FindingCategory.STYLE;
+        default -> FindingCategory.BUG;
+      };
+      String dedupKey = Fingerprint.of(
+          "generation-static", item.category(), item.file(), item.line(), item.title());
+      if (findings.existsByReviewIdAndDedupKey(reviewId, dedupKey)) {
+        continue;
+      }
+      Finding finding = new Finding(
+          review, category, item.severity(), FindingSource.DETERMINISTIC, item.title());
+      finding.setFilePath(item.file());
+      finding.setLineStart(item.line());
+      finding.setLineEnd(item.line());
+      finding.setRule("generation-static:" + item.category());
+      finding.setAnalyzer("generation-static");
+      finding.setExplanation(item.explanation());
+      finding.setDedupKey(dedupKey);
+      finding.setToolConfirmed(true);
+      rows.add(finding);
+    }
+    findings.saveAll(rows);
+    return rows.size();
+  }
+
   /**
    * Computes the dedup keys the Review Agent reports in a fresh scan,
    * without persisting anything. Used after a rebuild's re-review to tell
@@ -1208,9 +1862,23 @@ public class GenerationService {
    */
   @Transactional
   public int resolveFixedFindings(UUID reviewId, Set<String> currentDedupKeys) {
+    Review review = reviews.findById(reviewId).orElseThrow();
+    Set<UUID> approvedFindingIds = Set.of();
+    if (review.getGeneration() != null) {
+      Generation generation = review.getGeneration();
+      approvedFindingIds = fixApprovals
+          .findByGenerationIdOrderByRoundNumberAscCreatedAtAsc(generation.getId()).stream()
+          .filter(approval -> approval.getRoundNumber() == generation.getIteration()
+              && "RUNNING".equals(approval.getStatus()))
+          .reduce((first, second) -> second)
+          .map(approval -> Set.copyOf(readUuidList(approval.getSelectedFindingIds())))
+          .orElse(Set.of());
+    }
+    Set<UUID> selectedIds = approvedFindingIds;
     List<Finding> candidates = findings.findByReviewId(reviewId).stream()
         .filter(f -> f.getStatus() == FindingStatus.FIX_REQUESTED
-            || f.getStatus() == FindingStatus.FIX_PROPOSED)
+            || f.getStatus() == FindingStatus.FIX_PROPOSED
+            || (f.getStatus() == FindingStatus.OPEN && selectedIds.contains(f.getId())))
         .toList();
     int resolved = 0;
     for (Finding finding : candidates) {
@@ -1281,9 +1949,10 @@ public class GenerationService {
   public BulkFixRequestResult createGenerationFixRequests(UUID ownerId, UUID generationId,
       String scopeNote) {
     Generation managed = owned(ownerId, generationId);
-    if (managed.getStatus() != GenerationStatus.REVIEWED) {
+    if (managed.getStatus() != GenerationStatus.REVIEWED
+        && managed.getStatus() != GenerationStatus.AWAITING_FIX_APPROVAL) {
       throw new ResponseStatusException(HttpStatus.CONFLICT,
-          "Fix requests can only be created while the generation is REVIEWED");
+          "Fix requests can only be created after a completed review");
     }
     List<Review> generationReviews =
         reviews.findByGenerationIdOrderByCreatedAtDesc(managed.getId());
@@ -1373,6 +2042,10 @@ public class GenerationService {
     if (patch.getGeneration() == null || !patch.getGeneration().getId().equals(generationId)) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Patch not found for this generation");
     }
+    if (!hasApprovedFix(ownerId, generationId, patch.getFixRequest().getFinding().getId())) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT,
+          "A user-approved generation fix request is required before rebuilding");
+    }
     if (patch.getStatus() != PatchStatus.APPLIED) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Patch must be in APPLIED state to trigger rebuild");
@@ -1436,6 +2109,7 @@ public class GenerationService {
     Generation managed = generations.findById(generationId).orElseThrow();
     transition(managed, status);
     managed.setError(error);
+    publishAfterCommit(generationId);
   }
 
   @Transactional
@@ -1453,6 +2127,19 @@ public class GenerationService {
           "Illegal generation transition from " + managed.getStatus() + " to " + next);
     }
     managed.setStatus(next);
+  }
+
+  private void publishAfterCommit(UUID generationId) {
+    if (TransactionSynchronizationManager.isSynchronizationActive()) {
+      TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        @Override
+        public void afterCommit() {
+          eventStream.publish(generationId);
+        }
+      });
+    } else {
+      eventStream.publish(generationId);
+    }
   }
 
   private Generation owned(UUID ownerId, UUID generationId) {
@@ -1536,7 +2223,7 @@ public class GenerationService {
           generation.getDbName(),
           generation.getDbUsername(),
           generation.getDbSslMode(),
-          sealed);
+          sealed && generation.getDbHost() != null);
     }
     GenerationResponse.AiView ai = new GenerationResponse.AiView(
         generation.getAiProvider(),
@@ -1561,11 +2248,39 @@ public class GenerationService {
     // Latest review for current iteration
     GenerationResponse.ReviewView review = findLatestReview(generation);
 
+    List<GenerationResponse.FindingView> generationFindings = findGenerationFindings(generation);
+
     // Latest sandbox evidence (build/test actually ran or was skipped)
     GenerationResponse.ExecutionView execution = findLatestExecution(generation);
 
     // Agent workflow timeline
     List<GenerationResponse.AgentStepView> agentWorkflow = findAgentWorkflow(generation);
+    List<GenerationResponse.FixRoundView> fixRounds = fixApprovals
+        .findByGenerationIdOrderByRoundNumberAscCreatedAtAsc(generation.getId()).stream()
+        .map(approval -> new GenerationResponse.FixRoundView(
+            approval.getId(),
+            approval.getRoundNumber(),
+            readUuidList(approval.getSelectedFindingIds()),
+            approval.getBeforeFindingCount(),
+            approval.getAfterFindingCount(),
+            approval.getStatus(),
+            approval.getApprovedAt(),
+            approval.getCompletedAt()))
+        .toList();
+    List<GenerationResponse.FileVersionView> versions = fileVersions
+        .findByGenerationIdOrderByRoundNumberAscFilePathAsc(generation.getId()).stream()
+        .map(version -> new GenerationResponse.FileVersionView(
+            version.getId(),
+            version.getRoundNumber(),
+            version.getFilePath(),
+            version.getBeforeContent(),
+            version.getAfterContent(),
+            version.isReverted(),
+            version.getCreatedAt()))
+        .toList();
+
+    // Rating is available only after a persisted Rating Agent execution completes.
+    GenerationResponse.RatingView rating = findLatestRating(generation, agentWorkflow);
 
     // Backend-authoritative download gate
     boolean downloadReady = computeDownloadReady(generation, workflowStats, verification, review, artifactView);
@@ -1598,12 +2313,46 @@ public class GenerationService {
         workflowStats,
         verification,
         review,
+        rating,
+        generationFindings,
         execution,
         agentWorkflow,
+        fixRounds,
+        versions,
+        verificationLevel(artifactView, verification, review, execution, hasUnresolvedFindings(generation)),
         downloadReady,
         previewReady,
+        generation.getLanguageRuntime(),
+        generation.getBackendCustom(),
+        generation.getFrontendCustom(),
+        generation.isDatabaseConfigureLater(),
+        answerViews(generation.getAnswersJson()),
         generation.getCreatedAt(),
         generation.getUpdatedAt());
+  }
+
+  private List<GenerationResponse.AnswerView> answerViews(String json) {
+    List<GenerationResponse.AnswerView> answers = new ArrayList<>();
+    try {
+      JsonNode root = objects.readTree(json == null ? "[]" : json);
+      if (root != null && root.isArray()) {
+        for (JsonNode item : root) {
+          answers.add(new GenerationResponse.AnswerView(
+              textOrEmpty(item.get("questionId")),
+              textOrEmpty(item.get("prompt")),
+              textOrEmpty(item.get("type")),
+              item.get("value") == null || item.get("value").isNull()
+                  ? null : textOrEmpty(item.get("value")),
+              item.path("skipped").asBoolean(false),
+              item.path("required").asBoolean(false),
+              item.path("secret").asBoolean(false),
+              item.path("configured").asBoolean(false)));
+        }
+      }
+    } catch (Exception ignored) {
+      // Polling must not fail because a legacy row has no answers.
+    }
+    return List.copyOf(answers);
   }
 
   private GenerationResponse.WorkflowStatsView computeWorkflowStats(Generation generation) {
@@ -1697,9 +2446,42 @@ public class GenerationService {
           ex.getStatus() != null ? ex.getStatus().name() : "PENDING",
           ex.getDurationMs(),
           ex.getError(),
-          ex.getCreatedAt()));
+          ex.getCreatedAt(),
+          ex.getStatus() == AgentExecutionStatus.RUNNING
+              || ex.getStatus() == AgentExecutionStatus.PENDING
+              ? null : ex.getUpdatedAt(),
+          ex.getOutputRef(),
+          ex.getRoundNumber()));
     }
     return steps;
+  }
+
+  private GenerationResponse.RatingView findLatestRating(
+      Generation generation, List<GenerationResponse.AgentStepView> agentWorkflow) {
+    boolean ratingCompleted = agentWorkflow.stream()
+        .filter(step -> "RATING".equals(step.agentType()))
+        .reduce((first, second) -> second)
+        .map(step -> "COMPLETED".equals(step.status()))
+        .orElse(false);
+    return ratingCompleted ? ratingForGeneration(generation.getId()) : null;
+  }
+
+  private List<GenerationResponse.FindingView> findGenerationFindings(Generation generation) {
+    return reviews.findByGenerationIdOrderByCreatedAtDesc(generation.getId()).stream()
+        .findFirst()
+        .map(review -> findings.findByReviewId(review.getId()).stream()
+            .map(finding -> new GenerationResponse.FindingView(
+                finding.getId(),
+                finding.getFilePath(),
+                finding.getLineStart(),
+                GenerationRatingCalculator.category(finding),
+                finding.getSeverity() == null ? "INFO" : finding.getSeverity().name(),
+                finding.getTitle(),
+                finding.getExplanation() == null || finding.getExplanation().isBlank()
+                    ? finding.getDescription() : finding.getExplanation(),
+                finding.getStatus() == null ? "OPEN" : finding.getStatus().name()))
+            .toList())
+        .orElseGet(List::of);
   }
 
   private boolean computeDownloadReady(Generation generation,
@@ -1707,36 +2489,42 @@ public class GenerationService {
       GenerationResponse.VerificationView verification,
       GenerationResponse.ReviewView review,
       GenerationResponse.ArtifactView artifact) {
-    /*
-     * Backend-authoritative final quality gate.
-     *
-     * The project is deliverable only when:
-     * - an artifact exists,
-     * - the generation is in REVIEWED state,
-     * - the latest verification is VERIFIED,
-     * - the build succeeded,
-     * - the review completed, and
-     * - no blocking finding remains unresolved.
-     */
     if (artifact == null) {
       return false;
     }
     if (generation.getStatus() != GenerationStatus.REVIEWED) {
       return false;
     }
-    if (!"VERIFIED".equals(verification != null ? verification.verdict() : "")) {
-      return false;
-    }
-    if (!"SUCCESS".equals(verification != null ? verification.buildStatus() : "")) {
-      return false;
-    }
     if (review == null || !"COMPLETED".equals(review.status())) {
       return false;
     }
-    return !hasBlockingFindings(generation);
+    return !hasUnresolvedFindings(generation);
   }
 
-  private boolean hasBlockingFindings(Generation generation) {
+  private String verificationLevel(
+      GenerationResponse.ArtifactView artifact,
+      GenerationResponse.VerificationView verification,
+      GenerationResponse.ReviewView review,
+      GenerationResponse.ExecutionView execution,
+      boolean unresolvedFindings) {
+    if (artifact == null || review == null || !"COMPLETED".equals(review.status())) {
+      return "NOT_RUN";
+    }
+    if (unresolvedFindings) {
+      return "ISSUES_FOUND";
+    }
+    if (execution != null && execution.notVerified()) {
+      return "SANDBOX_UNAVAILABLE";
+    }
+    if (verification != null
+        && "VERIFIED".equals(verification.verdict())
+        && "SUCCESS".equals(verification.buildStatus())) {
+      return "BUILD_AND_TESTS";
+    }
+    return "STATIC";
+  }
+
+  private boolean hasUnresolvedFindings(Generation generation) {
     List<Review> generationReviews =
         reviews.findByGenerationIdOrderByCreatedAtDesc(generation.getId());
     if (generationReviews.isEmpty()) {
@@ -1750,8 +2538,7 @@ public class GenerationService {
         FindingStatus.OPEN,
         FindingStatus.FIX_REQUESTED,
         FindingStatus.FIX_PROPOSED)) {
-      if (findings.existsByReviewIdAndCategoryInAndStatus(
-          latestReview.getId(), BLOCKING_CATEGORIES, status)) {
+      if (findings.existsByReviewIdAndStatus(latestReview.getId(), status)) {
         return true;
       }
     }
@@ -1783,19 +2570,13 @@ public class GenerationService {
     if (generation.getStatus() != GenerationStatus.REVIEWED) {
       return new DownloadResult(false, "Generation review has not completed", null, null);
     }
-    if (!"VERIFIED".equals(verification != null ? verification.verdict() : "")) {
-      return new DownloadResult(false, "Verification not passed", null, null);
-    }
-    if (!"SUCCESS".equals(verification != null ? verification.buildStatus() : "")) {
-      return new DownloadResult(false, "Build not successful", null, null);
-    }
     if (review == null || !"COMPLETED".equals(review.status())) {
       return new DownloadResult(false, "Review not completed", null, null);
     }
-    if (hasBlockingFindings(generation)) {
+    if (hasUnresolvedFindings(generation)) {
       return new DownloadResult(
           false,
-          "Unresolved blocking findings must be fixed and verified",
+          "All findings must be resolved and verified",
           null,
           null);
     }

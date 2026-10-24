@@ -2,13 +2,16 @@ package com.verireview.generation;
 
 import com.verireview.common.PagedResponse;
 import com.verireview.generation.dto.CreateGenerationRequest;
+import com.verireview.generation.dto.ApproveGenerationFixRequest;
 import com.verireview.generation.dto.CreateGenerationRevisionRequest;
 import com.verireview.generation.dto.GenerationFileContentView;
 import com.verireview.generation.dto.GenerationFileView;
 import com.verireview.generation.dto.GenerationResponse;
+import com.verireview.generation.dto.GenerationFixPreviewResponse;
 import com.verireview.generation.dto.GenerationRevisionResponse;
 import com.verireview.generation.dto.PlanPreviewRequest;
 import com.verireview.generation.dto.PlanPreviewResponse;
+import com.verireview.generation.dto.RetryGenerationStageRequest;
 import com.verireview.generation.dto.RestructureProposalRequest;
 import com.verireview.generation.dto.RestructureView;
 import com.verireview.generation.dto.StartGenerationRequest;
@@ -32,6 +35,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
  * Generation API boundary.
@@ -50,11 +54,14 @@ public class GenerationController {
 
   private final GenerationService generations;
   private final GenerationRestructureService restructures;
+  private final GenerationEventStream eventStream;
 
   public GenerationController(GenerationService generations,
-      GenerationRestructureService restructures) {
+      GenerationRestructureService restructures,
+      GenerationEventStream eventStream) {
     this.generations = generations;
     this.restructures = restructures;
+    this.eventStream = eventStream;
   }
 
   @PostMapping
@@ -88,6 +95,14 @@ public class GenerationController {
       @AuthenticationPrincipal VeriReviewUserDetails principal,
       @PathVariable("id") UUID id) {
     return ResponseEntity.ok(generations.get(principal.getId(), id));
+  }
+
+  @GetMapping(value = "/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  public SseEmitter events(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id) {
+    generations.get(principal.getId(), id);
+    return eventStream.subscribe(id);
   }
 
   /** Files actually present in the latest generated workspace (paths only). */
@@ -196,6 +211,46 @@ public class GenerationController {
         .body(new BulkFixRequestsResponse(
             result.reviewId(), result.created(), result.skippedOpen()));
   }
+
+  @PostMapping("/{id}/fix-approvals")
+  public ResponseEntity<GenerationResponse> approveFixes(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id,
+      @Valid @RequestBody(required = false) ApproveGenerationFixRequest request) {
+    return ResponseEntity.accepted().body(generations.approveFixes(
+        principal.getId(),
+        id,
+        request == null ? null : request.findingIds(),
+        request == null ? null : request.apiKey()));
+  }
+
+  @PostMapping("/{id}/fix-approvals/preview")
+  public ResponseEntity<GenerationFixPreviewResponse> previewFixFiles(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id,
+      @Valid @RequestBody(required = false) ApproveGenerationFixRequest request) {
+    return ResponseEntity.ok(generations.previewFixFiles(
+        principal.getId(), id, request == null ? null : request.findingIds()));
+  }
+
+  @PostMapping("/{id}/fix-rounds/{round}/revert")
+  public ResponseEntity<GenerationResponse> revertFixRound(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id,
+      @PathVariable("round") int round) {
+    return ResponseEntity.ok(generations.revertFixRound(principal.getId(), id, round));
+  }
+
+  @PostMapping("/{id}/agent-executions/{executionId}/retry")
+  public ResponseEntity<GenerationResponse> retryFailedStage(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID id,
+      @PathVariable("executionId") UUID executionId,
+      @Valid @RequestBody(required = false) RetryGenerationStageRequest request) {
+    return ResponseEntity.accepted()
+        .body(generations.retryFailedStage(
+            principal.getId(), id, executionId, request == null ? null : request.apiKey()));
+  }
   /**
    * Rebuilds an existing generated project after an applied generation patch.
    *
@@ -214,16 +269,15 @@ public class GenerationController {
   }
 
   /**
-   * Downloads the verified generated project as a ZIP archive.
+   * Downloads a reviewed generated project as a ZIP archive.
    *
    * <p>The backend is the sole authority on whether a generation is downloadable.
-   * The artifact is only served when ALL conditions are met:
+   * Sandbox build evidence is not required; the artifact is only served when:
    * <ul>
-   *   <li>Build successful</li>
-   *   <li>Verification successful (VERIFIED verdict)</li>
    *   <li>Review completed</li>
-   *   <li>Zero unresolved blocking findings (BUG, SECURITY, ERROR, CORRECTNESS)</li>
-   *   <li>Artifact verified (exists and SHA matches)</li>
+   *   <li>Generation is in REVIEWED state</li>
+   *   <li>There are zero unresolved findings of any category</li>
+   *   <li>The artifact exists and its SHA matches</li>
    * </ul>
    * If any condition fails, a 409 Conflict is returned with a reason.
    */

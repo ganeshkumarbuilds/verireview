@@ -47,7 +47,7 @@ describe('DashboardPage', () => {
 
     await waitFor(() => expect(screen.getByText('Dashboard')).toBeInTheDocument());
     expect(
-      screen.getByText('Generate, review, fix, and verify your code in one place.'),
+      screen.getByText(/Generate a new project or review existing code/),
     ).toBeInTheDocument();
 
     // Header primary action points at the review/upload page.
@@ -56,10 +56,12 @@ describe('DashboardPage', () => {
       '/review',
     );
 
-    // Four feature cards, each with a working destination.
-    for (const title of ['Generate', 'Review', 'Fix', 'Verify']) {
+    // Exactly two product features, each with a working destination.
+    for (const title of ['Generate', 'Review']) {
       expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
     }
+    expect(screen.queryByRole('heading', { name: 'Fix' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Verify' })).not.toBeInTheDocument();
 
     // Overall tiles render 0 cleanly for missing data. The summary request
     // resolves asynchronously, so wait for the loaded state instead of racing
@@ -140,11 +142,8 @@ describe('DashboardPage', () => {
       '/generate',
     );
     expect(screen.getByRole('link', { name: /Open review/i })).toHaveAttribute('href', '/review');
-    expect(screen.getByRole('link', { name: /Fix findings/i })).toHaveAttribute('href', '/fix');
-    expect(screen.getByRole('link', { name: /Run verification/i })).toHaveAttribute(
-      'href',
-      '/verify',
-    );
+    expect(screen.queryByRole('link', { name: /Fix findings/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Run verification/i })).not.toBeInTheDocument();
   });
 
   it('surfaces errors with a working Retry button', async () => {

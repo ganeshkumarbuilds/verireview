@@ -48,7 +48,7 @@ describe('landing page', () => {
   it('opens the homepage with login and get-started actions', () => {
     renderAt('/');
     expect(
-      screen.getByRole('heading', { name: 'Generate. Review. Fix. Verify.' }),
+      screen.getByRole('heading', { name: 'Generate. Review.' }),
     ).toBeInTheDocument();
     const getStarted = screen.getAllByRole('link', { name: 'Get started' });
     expect(getStarted.length).toBeGreaterThan(0);
@@ -67,7 +67,7 @@ describe('shell layout', () => {
   it('renders the brand, tagline, and workspace navigation for a signed-in user', () => {
     renderAt('/dashboard', true);
     expect(screen.getByText('VeriReview')).toBeInTheDocument();
-    expect(screen.getByText('Generate. Review. Fix. Verify.')).toBeInTheDocument();
+    expect(screen.getByText('Generate. Review.')).toBeInTheDocument();
     for (const label of ['Dashboard', 'Projects', 'History']) {
       expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
     }
@@ -94,7 +94,7 @@ describe('shell layout', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Logout' }));
     await waitFor(() =>
       expect(
-        screen.getByRole('heading', { name: 'Generate. Review. Fix. Verify.' }),
+        screen.getByRole('heading', { name: 'Generate. Review.' }),
       ).toBeInTheDocument(),
     );
   });
@@ -120,7 +120,7 @@ describe('route guards', () => {
 
 describe('placeholder pages', () => {
   it.each([
-    ['/', 'Generate. Review. Fix. Verify.', false],
+    ['/', 'Generate. Review.', false],
     ['/dashboard', 'Login', false],
     ['/dashboard', 'Dashboard', true],
     ['/projects', 'Projects', true],
@@ -130,8 +130,8 @@ describe('placeholder pages', () => {
     ['/verify', 'Login', false],
     ['/review', 'Review', true],
     ['/generate', 'Generate', true],
-    ['/fix', 'Fix', true],
-    ['/verify', 'Verify', true],
+    ['/fix', 'Review', true],
+    ['/verify', 'Review', true],
     ['/history', 'Login', false],
     ['/login', 'Login', false],
     ['/register', 'Register', false],

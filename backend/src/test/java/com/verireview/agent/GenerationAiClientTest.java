@@ -68,7 +68,8 @@ class GenerationAiClientTest {
         "A minimal todo API with tests",
         "PYTHON_FASTAPI", "NONE", "NONE", "NONE", java.util.List.of(),
         null, null, null, null, null,
-        "OPENROUTER", "sk-test-key", null, "test/model");
+        "OPENROUTER", "sk-test-key", null, "test/model",
+        null, null, null, java.util.Map.of());
   }
 
   @Test
