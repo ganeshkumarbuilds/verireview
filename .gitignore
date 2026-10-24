@@ -56,3 +56,5 @@ Thumbs.db
 .vscode/
 *.iml
 *.log
+tmp-*
+.mypy_cache/
