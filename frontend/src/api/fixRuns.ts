@@ -49,6 +49,22 @@ export async function startFixRun(
   );
 }
 
+export async function listFixRuns(
+  client: ApiClient,
+  token: string,
+  projectId: string,
+): Promise<FixRunDetailResponse[]> {
+  const result = await client.request<FixRunDetailResponse[] | { content: FixRunDetailResponse[] }>(
+    `/projects/${encodeURIComponent(projectId)}/fix-runs`,
+    { headers: bearer(token) },
+  );
+  if (Array.isArray(result)) return result;
+  if (result && Array.isArray((result as { content?: FixRunDetailResponse[] }).content)) {
+    return (result as { content: FixRunDetailResponse[] }).content;
+  }
+  return [];
+}
+
 export async function getFixRun(
   client: ApiClient,
   token: string,

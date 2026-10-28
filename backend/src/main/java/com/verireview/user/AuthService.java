@@ -14,6 +14,8 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
@@ -28,6 +30,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class AuthService {
 
   static final int MIN_PASSWORD_LENGTH = 8;
+  private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
   /**
    * Minimal v1 breached-password denylist (SECURITY_DESIGN §2). Compared
@@ -61,33 +64,57 @@ public class AuthService {
 
   @Transactional
   public TokenResponse register(RegisterRequest request) {
+    long started = System.nanoTime();
     String email = normalize(request.email());
     assertPasswordAcceptable(request.password());
+    long beforeLookup = System.nanoTime();
     if (users.findByEmail(email).isPresent()) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "Email is already registered");
     }
+    long lookupMs = elapsedMillis(beforeLookup);
     Role userRole = roles.findByName("USER")
         .orElseThrow(() -> new ResponseStatusException(
             HttpStatus.INTERNAL_SERVER_ERROR, "Role seed is missing"));
+    long beforeHash = System.nanoTime();
     User user = new User(email, passwords.encode(request.password()));
+    long hashMs = elapsedMillis(beforeHash);
     user.setDisplayName(request.displayName());
     user.getRoles().add(userRole);
     users.save(user);
     audits.record(user, "AUTH_REGISTER", "user", user.getId().toString());
-    return issuePair(user);
+    long beforeToken = System.nanoTime();
+    TokenResponse response = issuePair(user);
+    log.debug("register timing lookupMs={} passwordHashMs={} tokenMs={} totalMs={}",
+        lookupMs, elapsedMillis(beforeToken), elapsedMillis(started), elapsedMillis(started));
+    return response;
   }
 
   @Transactional
   public TokenResponse login(LoginRequest request) {
+    long started = System.nanoTime();
     String email = normalize(request.email());
+    long beforeLookup = System.nanoTime();
     User user = users.findWithRolesByEmail(email).orElse(null);
-    if (user == null || !user.isEnabled()
-        || !passwords.matches(request.password(), user.getPasswordHash())) {
+    long lookupMs = elapsedMillis(beforeLookup);
+    long beforePassword = System.nanoTime();
+    boolean passwordMatches = user != null && passwords.matches(request.password(), user.getPasswordHash());
+    long passwordMs = elapsedMillis(beforePassword);
+    if (user == null || !user.isEnabled() || !passwordMatches) {
       audits.record(null, "AUTH_LOGIN_FAILED", "user", email);
+      log.debug("login timing lookupMs={} passwordCheckMs={} tokenMs={} totalMs={}",
+          lookupMs, passwordMs, 0, elapsedMillis(started));
       throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
     }
     audits.record(user, "AUTH_LOGIN", "user", user.getId().toString());
-    return issuePair(user);
+    long beforeToken = System.nanoTime();
+    TokenResponse response = issuePair(user);
+    log.debug("login timing lookupMs={} passwordCheckMs={} tokenMs={} totalMs={}",
+        lookupMs, passwordMs, elapsedMillis(beforeToken), elapsedMillis(started));
+    return response;
+  }
+
+  private static long elapsedMillis(long started) {
+    return (System.nanoTime() - started) / 1_000_000;
   }
 
   /**

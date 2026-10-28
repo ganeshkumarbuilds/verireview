@@ -73,6 +73,14 @@ public class AiReviewService {
           reviewId.toString(), projectId.toString(), language,
           files, deterministic, "review-" + reviewId);
     }
+
+    public AiReviewRequest toRequest(
+        com.verireview.analysis.AnalysisJobService.ReviewCredentials credentials) {
+      return new AiReviewRequest(
+          reviewId.toString(), projectId.toString(), language,
+          files, deterministic, "review-" + reviewId,
+          credentials.provider(), credentials.model(), credentials.apiKey());
+    }
   }
 
   /** Outcome summary merged into the review notes by the runner. */

@@ -5,6 +5,9 @@ import com.verireview.common.PagedResponse;
 import com.verireview.review.dto.DashboardStatsResponse;
 import com.verireview.review.dto.FindingResponse;
 import com.verireview.review.dto.ReviewResponse;
+import com.verireview.review.dto.StartReviewRequest;
+import com.verireview.review.dto.RetryReviewRequest;
+import jakarta.validation.Valid;
 import com.verireview.security.VeriReviewUserDetails;
 import java.util.List;
 import java.util.UUID;
@@ -18,7 +21,10 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.MediaType;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
  * Deterministic analysis boundary (Phase 6). Triggering is async (202 with
@@ -33,25 +39,30 @@ public class ReviewController {
   private final ReviewService reviews;
   private final ReviewRepository reviewRepository;
   private final FindingRepository findingRepository;
+  private final ReviewEventStream events;
 
   public ReviewController(
       AnalysisJobService jobs,
       ReviewService reviews,
       ReviewRepository reviewRepository,
-      FindingRepository findingRepository) {
+      FindingRepository findingRepository,
+      ReviewEventStream events) {
     this.jobs = jobs;
     this.reviews = reviews;
     this.reviewRepository = reviewRepository;
     this.findingRepository = findingRepository;
+    this.events = events;
   }
 
   @PostMapping("/api/v1/projects/{id}/analysis")
   public ResponseEntity<ReviewResponse> analyze(
       @AuthenticationPrincipal VeriReviewUserDetails principal,
-      @PathVariable("id") UUID projectId) {
-    Review review = jobs.trigger(principal.getId(), projectId);
+      @PathVariable("id") UUID projectId,
+      @Valid @org.springframework.web.bind.annotation.RequestBody(required = false)
+          StartReviewRequest request) {
+    Review review = jobs.trigger(principal.getId(), projectId, request);
     return ResponseEntity.status(HttpStatus.ACCEPTED)
-        .body(ReviewService.toResponse(review));
+        .body(reviews.toResponse(review));
   }
 
   @GetMapping("/api/v1/projects/{id}/reviews")
@@ -68,6 +79,31 @@ public class ReviewController {
       @AuthenticationPrincipal VeriReviewUserDetails principal,
       @PathVariable("id") UUID reviewId) {
     return ResponseEntity.ok(reviews.get(principal.getId(), reviewId));
+  }
+
+  @PostMapping("/api/v1/reviews/{id}/retry")
+  public ResponseEntity<ReviewResponse> retry(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID reviewId,
+      @Valid @org.springframework.web.bind.annotation.RequestBody RetryReviewRequest request) {
+    return ResponseEntity.accepted().body(
+        reviews.retry(principal.getId(), reviewId, request));
+  }
+
+  @GetMapping(value = "/api/v1/reviews/{id}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  public SseEmitter events(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID reviewId) {
+    reviews.assertOwned(principal.getId(), reviewId);
+    return events.subscribe(reviewId);
+  }
+
+  @PostMapping("/api/v1/reviews/{id}/fix-preview")
+  public ResponseEntity<com.verireview.review.dto.ReviewFixPreviewResponse> fixPreview(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("id") UUID reviewId,
+      @RequestBody List<UUID> findingIds) {
+    return ResponseEntity.ok(reviews.previewFixFiles(principal.getId(), reviewId, findingIds));
   }
 
   @GetMapping("/api/v1/reviews/{id}/findings")

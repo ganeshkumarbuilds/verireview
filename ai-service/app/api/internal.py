@@ -32,21 +32,22 @@ from app.schemas.verification import VerifyRequest, VerifyResult
 router = APIRouter(prefix="/internal", tags=["internal"])
 
 
-def _provider() -> LLMProvider:
+def _provider(request: ReviewRequest | None = None) -> LLMProvider:
     settings = get_settings()
-    if settings.llm_enabled:
+    api_key = (request.api_key if request else None) or settings.openrouter_api_key
+    if settings.llm_enabled or (request is not None and (request.api_key or "").strip()):
         return OpenRouterProvider(
-            api_key=settings.openrouter_api_key,
+            api_key=api_key,
             base_url=settings.openrouter_base_url,
             timeout_seconds=settings.llm_timeout_seconds,
         )
     return NullProvider()
 
 
-def _config() -> ReviewAgentConfig:
+def _config(request: ReviewRequest | None = None) -> ReviewAgentConfig:
     settings = get_settings()
     return ReviewAgentConfig(
-        model=settings.openrouter_model,
+        model=(request.model or "").strip() if request and request.model else settings.openrouter_model,
         prompt_version=PROMPT_VERSION,
     )
 
@@ -105,7 +106,7 @@ def run_review(request: ReviewRequest) -> ReviewResult:
     """Validate a review invocation and run the Review Agent graph."""
     try:
         aligned = [align_key(hit) for hit in request.deterministic_findings]
-        graph = build_review_graph(provider=_provider(), config=_config())
+        graph = build_review_graph(provider=_provider(request), config=_config(request))
         final_state = graph.invoke(
             {
                 "review_id": request.review_id,

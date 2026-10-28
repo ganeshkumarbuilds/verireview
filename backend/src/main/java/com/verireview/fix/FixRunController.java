@@ -6,6 +6,7 @@ import com.verireview.fix.dto.FixRunDetailResponse;
 import com.verireview.fix.dto.StartFixRunRequest;
 import com.verireview.security.VeriReviewUserDetails;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -53,6 +54,14 @@ public class FixRunController {
       @PathVariable("projectId") UUID projectId,
       @Valid @RequestBody StartFixRunRequest request) {
     return ResponseEntity.ok(fixRuns.startFixRun(principal.getId(), projectId, request));
+  }
+
+  /** List all fix runs for a project. */
+  @GetMapping("/fix-runs")
+  public ResponseEntity<List<FixRunDetailResponse>> listFixRuns(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @PathVariable("projectId") UUID projectId) {
+    return ResponseEntity.ok(fixRuns.listFixRuns(principal.getId(), projectId));
   }
 
   /** Full detail of a fix run and its re-check (used to render the after-fix summary). */

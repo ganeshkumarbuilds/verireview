@@ -27,6 +27,8 @@ import com.verireview.project.ProjectRepository;
 import com.verireview.review.Finding;
 import com.verireview.review.FindingRepository;
 import com.verireview.review.FindingStatus;
+import com.verireview.review.Review;
+import com.verireview.review.ReviewRepository;
 import com.verireview.verification.VerificationRun;
 import com.verireview.verification.VerificationRunRepository;
 import com.verireview.verification.VerificationService;
@@ -79,6 +81,7 @@ public class FixRunService {
   private final ExecutionRunRepository executions;
   private final VerificationService verificationService;
   private final VerificationRunRepository verifications;
+  private final ReviewRepository reviews;
   private final TransactionTemplate tx;
 
   public FixRunService(
@@ -96,6 +99,7 @@ public class FixRunService {
       ExecutionRunRepository executions,
       VerificationService verificationService,
       VerificationRunRepository verifications,
+      ReviewRepository reviews,
       PlatformTransactionManager txManager) {
     this.projects = projects;
     this.findings = findings;
@@ -111,6 +115,7 @@ public class FixRunService {
     this.executions = executions;
     this.verificationService = verificationService;
     this.verifications = verifications;
+    this.reviews = reviews;
     this.tx = new TransactionTemplate(txManager);
   }
 
@@ -279,6 +284,22 @@ public class FixRunService {
     return detail;
   }
 
+  public List<FixRunDetailResponse> listFixRuns(UUID ownerId, UUID projectId) {
+    return tx.execute(status -> {
+      projects.findByIdAndOwnerIdAndDeletedAtIsNull(projectId, ownerId)
+          .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Project not found"));
+      List<CheckRun> runs = checkRuns.findByProjectIdAndFeatureOrderByCreatedAtDesc(projectId, CheckFeature.FIX);
+      List<FixRunDetailResponse> list = new ArrayList<>();
+      for (CheckRun run : runs) {
+        try {
+          list.add(buildDetail(ownerId, projectId, run.getId()));
+        } catch (Exception ignored) {
+        }
+      }
+      return list;
+    });
+  }
+
   // ------------------------------------------------------------------ helpers
 
   private Gate resolveGate(UUID ownerId, UUID projectId, List<UUID> findingIds) {
@@ -287,8 +308,21 @@ public class FixRunService {
     List<UUID> fixRequestIds = new ArrayList<>();
     List<UUID> resolvedFindingIds = new ArrayList<>();
     List<UUID> missing = new ArrayList<>();
+    Review selectedReview = null;
     for (UUID findingId : findingIds) {
       Finding finding = requireFindingInProject(findingId, projectId);
+      Review findingReview = reviews.findById(finding.getReview().getId())
+          .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Review not found"));
+      if (selectedReview == null) {
+        selectedReview = findingReview;
+        if (selectedReview.getFixRound() >= 5) {
+          throw new ResponseStatusException(
+              HttpStatus.CONFLICT, "Fix limit reached: a review can have at most 5 fix rounds.");
+        }
+      } else if (!selectedReview.getId().equals(findingReview.getId())) {
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT, "Selected findings must belong to the same review.");
+      }
       FixRequest approved = fixRequests
           .findByFindingIdAndStatusIn(findingId,
               List.of(FixRequestStatus.REQUESTED, FixRequestStatus.IN_PROGRESS))
@@ -309,6 +343,15 @@ public class FixRunService {
           HttpStatus.CONFLICT,
           "An approved fix request is required before a fix run can start. "
               + missing.size() + " selected finding(s) have no approved fix request.");
+    }
+    Review review = selectedReview;
+    if (review != null) {
+      if (review.getFixRound() >= 5) {
+        throw new ResponseStatusException(
+            HttpStatus.CONFLICT, "Fix limit reached: a review can have at most 5 fix rounds.");
+      }
+      review.setFixRound(review.getFixRound() + 1);
+      reviews.save(review);
     }
     return new Gate(projectId, fixRequestIds, resolvedFindingIds);
   }

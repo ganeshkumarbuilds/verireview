@@ -56,7 +56,9 @@ export function FindingsPanel({
 
   return (
     <Card
-      title={`Findings (${visibleFindings.length})`}
+      title={review.status === 'COMPLETED'
+        ? `Findings (${visibleFindings.length})`
+        : 'Findings (updating)'}
       subtitle={`Run ${review.status} · ${review.findingCount} reported by the backend. Open a finding to investigate it.`}
     >
       <ul aria-label="Review overview" className="mb-4 flex flex-wrap gap-2 text-sm">
@@ -69,6 +71,63 @@ export function FindingsPanel({
           </li>
         ))}
       </ul>
+
+      {(review.checks?.length ?? 0) > 0 && (
+        <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <p className="text-sm font-semibold text-slate-900">
+            Files analyzed: {review.filesAnalyzed}/{review.filesTotal}
+          </p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {(review.checks ?? []).map((check) => (
+              <div key={check.analyzer} className="rounded-lg border border-slate-200 bg-white p-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-slate-800">{check.analyzer}</span>
+                  <Badge tone={check.status === 'RAN' ? 'green' : check.status === 'FAILED' ? 'red' : 'amber'}>
+                    {check.status}
+                  </Badge>
+                </div>
+                {check.status === 'RAN' && (
+                  <p className="mt-1 text-slate-600">
+                    {check.filesAnalyzed}/{review.filesTotal} files · {check.findingCount} findings · {check.durationMs ?? 0} ms
+                  </p>
+                )}
+
+                {(review.files?.length ?? 0) > 0 && (
+                  <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3">
+                    <p className="text-sm font-semibold text-slate-900">
+                      File progress: {review.files.filter((file) => file.status === 'ANALYZED').length}/
+                      {review.files.length} analyzed
+                    </p>
+                    <ul aria-label="Analysis file progress" className="mt-2 max-h-48 space-y-1 overflow-auto text-xs">
+                      {review.files.map((file) => (
+                        <li key={file.path} className="flex flex-wrap justify-between gap-2">
+                          <span className="font-mono text-slate-700">{file.path}</span>
+                          <span className={file.status === 'SKIPPED' ? 'text-amber-700' : 'text-emerald-700'}>
+                            {file.status === 'SKIPPED' ? `Skipped: ${file.reason ?? 'not analyzed'}` : 'Analyzed'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {review.rating && (
+                  <div className="mb-4 flex flex-wrap gap-2 text-xs">
+                    <Badge tone="violet">Rating {review.rating.overall}/100</Badge>
+                    <span className="rounded-full bg-slate-100 px-3 py-1">Syntax {review.rating.syntax}</span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1">Logic {review.rating.logic}</span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1">Security {review.rating.security}</span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1">Style {review.rating.style}</span>
+                  </div>
+                )}
+                {check.status !== 'RAN' && check.reason && (
+                  <p className="mt-1 text-amber-800">{check.reason}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mb-4 grid gap-2 rounded-xl bg-indigo-50/50 p-3 sm:grid-cols-2 lg:grid-cols-4">
         <label className="flex min-w-0 items-center gap-2 text-sm">
@@ -147,12 +206,16 @@ export function FindingsPanel({
       ) : findings.length === 0 ? (
         <EmptyState
           title={
-            review.findingCount === 0 && review.status === 'COMPLETED'
+            review.status === 'NOT_ANALYZED'
+              ? 'Analysis not completed.'
+              : review.findingCount === 0 && review.status === 'COMPLETED'
               ? 'Clean review.'
               : 'No findings yet.'
           }
           body={
-            review.findingCount === 0 && review.status === 'COMPLETED'
+            review.status === 'NOT_ANALYZED'
+              ? review.error ?? 'No checks could run: sandbox unavailable.'
+              : review.findingCount === 0 && review.status === 'COMPLETED'
               ? 'No findings — this review is clean.'
               : review.findingCount > 0
                 ? `${review.findingCount} findings were reported but none were returned. Reload the review to see them.`

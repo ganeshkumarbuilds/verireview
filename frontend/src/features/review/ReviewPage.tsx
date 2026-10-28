@@ -13,6 +13,8 @@ import {
 } from '../../components/ui';
 import { formatRelativeTime } from '../../components/workflow';
 import { FindingsPanel } from './components/FindingsPanel';
+import { ReviewRunPipeline } from './components/ReviewRunPipeline';
+import { ReviewFixWorkflow } from './components/ReviewFixWorkflow';
 import { SourceIntake } from './components/SourceIntake';
 import { useReviewWorkspace } from './hooks/useReviewWorkspace';
 
@@ -43,10 +45,15 @@ export function ReviewPage() {
     selectedReview,
     activeReview,
     findings,
+    setFindingsNonce,
     visibleFindings,
     findingsLoading,
     starting,
     startAnalysis,
+    aiModel,
+    setAiModel,
+    aiApiKey,
+    setAiApiKey,
     error,
     reloadReviews,
     severityFilter,
@@ -60,6 +67,7 @@ export function ReviewPage() {
     clearFilters,
     analyzers,
     overviewStats,
+    retryStage,
   } = workspace;
 
   // Keep deep links shareable: /review?project=<id>.
@@ -166,6 +174,36 @@ export function ReviewPage() {
               · updated {formatRelativeTime(selectedProject.updatedAt)}
             </span>
           </div>
+          <div className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2">
+            <label className="text-sm">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                AI model (optional)
+              </span>
+              <input
+                aria-label="AI review model"
+                value={aiModel}
+                onChange={(event) => setAiModel(event.target.value)}
+                placeholder="openai/gpt-4o-mini"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+              />
+            </label>
+            <label className="text-sm">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-slate-500">
+                AI provider API key (optional)
+              </span>
+              <input
+                type="password"
+                aria-label="AI review provider API key"
+                value={aiApiKey}
+                onChange={(event) => setAiApiKey(event.target.value)}
+                placeholder="Used for this run only"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+              />
+              <span className="mt-1 block text-xs text-slate-500">
+                Leave blank to run only in-process checks.
+              </span>
+            </label>
+          </div>
 
           {reviewsLoading && reviews.length === 0 ? (
             <>
@@ -220,6 +258,23 @@ export function ReviewPage() {
             </p>
           )}
         </Card>
+      )}
+
+      {selectedReview && (
+        <ReviewRunPipeline review={selectedReview} onRetry={(stage) => void retryStage(stage)} />
+      )}
+
+      {selectedReview && (
+        <ReviewFixWorkflow
+          projectId={selectedProjectId ?? selectedReview.projectId}
+          review={selectedReview}
+          findings={findings}
+          onRunComplete={() => {
+            void reloadReviews();
+            setFindingsNonce((value) => value + 1);
+            setSelectedReviewId(selectedReview.id);
+          }}
+        />
       )}
 
       {selectedReview && (

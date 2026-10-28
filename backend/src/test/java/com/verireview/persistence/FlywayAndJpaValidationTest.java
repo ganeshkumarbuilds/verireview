@@ -10,7 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Validates that all Flyway migrations (1-26) apply cleanly on a blank database
+ * Validates that all Flyway migrations apply cleanly on a blank database
  * and that Hibernate JPA schema validation passes (ddl-auto=validate).
  * This test runs against a real PostgreSQL Testcontainer.
  * The fact that this SpringBootTest starts successfully proves JPA validation passed.
@@ -25,7 +25,7 @@ class FlywayAndJpaValidationTest extends AbstractPersistenceTest {
 
   @Test
   void allMigrationsApplyAndJpaValidates() {
-    // 1. Verify all 26 migrations applied successfully
+    // 1. Verify all migrations applied successfully
     var versions = jdbc.queryForList(
         "SELECT version FROM flyway_schema_history WHERE success = TRUE ORDER BY installed_rank",
         String.class);
@@ -33,7 +33,7 @@ class FlywayAndJpaValidationTest extends AbstractPersistenceTest {
     assertThat(versions).containsExactly(
         "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
         "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21",
-        "22", "23", "24", "25", "26");
+        "22", "23", "24", "25", "26", "27", "28", "29", "30", "31");
 
     // 2. Verify all expected tables exist (including V17/V18 tables)
     var tables = jdbc.queryForList(

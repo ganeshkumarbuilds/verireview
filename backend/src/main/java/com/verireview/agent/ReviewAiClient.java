@@ -123,6 +123,9 @@ public class ReviewAiClient {
       }
       root.put("deterministic_findings", hits);
       root.put("idempotency_key", request.idempotencyKey());
+      if (request.provider() != null) root.put("provider", request.provider());
+      if (request.model() != null) root.put("model", request.model());
+      if (request.apiKey() != null) root.put("api_key", request.apiKey());
       return objects.writeValueAsString(root);
     } catch (Exception e) {
       throw new IllegalStateException("Could not encode AI review request", e);

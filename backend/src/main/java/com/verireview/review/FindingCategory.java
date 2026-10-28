@@ -1,6 +1,8 @@
 package com.verireview.review;
 
 public enum FindingCategory {
+  SYNTAX,
+  LOGIC,
   BUG,
   SECURITY,
   CODE_QUALITY,

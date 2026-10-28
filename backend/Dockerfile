@@ -23,4 +23,4 @@ EXPOSE 10000
 
 # Low-CPU container JVM flags: SerialGC, tiered compilation stop at level 1,
 # 70% RAM, small stack, disable background preinitializer
-ENTRYPOINT ["sh", "-c", "java -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:MaxRAMPercentage=70 -Xss512k -Dspring.backgroundpreinitializer.ignore=true -XX:+ExitOnOutOfMemoryError -jar app.jar --server.port=${PORT:-10000}"]
+ENTRYPOINT ["sh", "-c", "java -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:MaxRAMPercentage=70 -Xss512k -XX:+UseContainerSupport -Dspring.backgroundpreinitializer.ignore=true -XX:+ExitOnOutOfMemoryError -jar app.jar --server.port=${PORT:-10000}"]

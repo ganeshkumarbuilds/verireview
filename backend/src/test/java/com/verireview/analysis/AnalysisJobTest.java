@@ -191,7 +191,7 @@ class AnalysisJobTest extends AbstractPersistenceTest {
   }
 
   @Test
-  void emptyShellCompletesWithZeroFindings() throws Exception {
+  void emptyShellIsNotAnalyzedWhenNoCheckCanRun() throws Exception {
     assumeDockerSandbox();
     String token = access(register());
     String name = "empty-" + UUID.randomUUID();
@@ -205,8 +205,10 @@ class AnalysisJobTest extends AbstractPersistenceTest {
         objects.readTree(created.getResponse().getContentAsString()).get("id").asText();
 
     JsonNode review = awaitCompleted(token, trigger(token, projectId));
-    assertThat(review.get("status").asString()).isEqualTo("COMPLETED");
+    assertThat(review.get("status").asString()).isEqualTo("NOT_ANALYZED");
     assertThat(review.get("findingCount").asInt()).isEqualTo(0);
+    assertThat(review.get("error").asString())
+        .isEqualTo("No checks could run: sandbox unavailable");
   }
 
   @Test
@@ -235,7 +237,9 @@ class AnalysisJobTest extends AbstractPersistenceTest {
           .andReturn();
       JsonNode review = objects.readTree(result.getResponse().getContentAsString());
       String status = review.get("status").asString();
-      if ("COMPLETED".equals(status) || "FAILED".equals(status)) {
+      if ("COMPLETED".equals(status)
+          || "NOT_ANALYZED".equals(status)
+          || "FAILED".equals(status)) {
         return review;
       }
       if (Instant.now().isAfter(deadline)) {

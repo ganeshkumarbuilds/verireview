@@ -121,6 +121,68 @@ describe('ReviewPage', () => {
     expect(screen.getByText('1 ai')).toBeInTheDocument();
   });
 
+  it('does not show a clean review when all checks were skipped', async () => {
+    const review = {
+      ...REVIEWS[0],
+      status: 'NOT_ANALYZED' as const,
+      findingCount: 0,
+      error: 'No checks could run: sandbox unavailable',
+      filesAnalyzed: 0,
+      filesTotal: 2,
+      checks: [
+        {
+          analyzer: 'checkstyle',
+          status: 'SKIPPED' as const,
+          reason: 'Docker sandbox is disabled in this environment',
+          durationMs: 0,
+          filesAnalyzed: 0,
+          findingCount: 0,
+        },
+      ],
+    };
+    renderReview('/review?project=p1', (url) => {
+      if (url.includes('/projects?')) return pageOf(PROJECTS);
+      if (url.includes('/findings')) return pageOf([]);
+      if (url.includes('/reviews')) return pageOf([review]);
+      return pageOf([]);
+    });
+
+    await waitFor(() => expect(screen.getByText('Analysis not completed.')).toBeInTheDocument());
+    expect(screen.queryByText('Clean review.')).not.toBeInTheDocument();
+    expect(screen.getByText('Files analyzed: 0/2')).toBeInTheDocument();
+    expect(screen.getByText('SKIPPED')).toBeInTheDocument();
+    expect(screen.getByText('Docker sandbox is disabled in this environment')).toBeInTheDocument();
+  });
+
+  it('shows a clean review only when a check actually ran', async () => {
+    const review = {
+      ...REVIEWS[0],
+      findingCount: 0,
+      filesAnalyzed: 2,
+      filesTotal: 2,
+      checks: [
+        {
+          analyzer: 'checkstyle',
+          status: 'RAN' as const,
+          reason: null,
+          durationMs: 12,
+          filesAnalyzed: 2,
+          findingCount: 0,
+        },
+      ],
+    };
+    renderReview('/review?project=p1', (url) => {
+      if (url.includes('/projects?')) return pageOf(PROJECTS);
+      if (url.includes('/findings')) return pageOf([]);
+      if (url.includes('/reviews')) return pageOf([review]);
+      return pageOf([]);
+    });
+
+    await waitFor(() => expect(screen.getByText('Clean review.')).toBeInTheDocument());
+    expect(screen.getByText('Files analyzed: 2/2')).toBeInTheDocument();
+    expect(screen.getByText('2/2 files · 0 findings · 12 ms')).toBeInTheDocument();
+  });
+
   it('links each finding to its detail page without inventing data', async () => {
     renderReview('/review?project=p1', fullHandler);
     await waitFor(() => expect(screen.getByText('LineLength')).toBeInTheDocument());

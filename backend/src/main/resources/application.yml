@@ -1,6 +1,8 @@
 spring:
   application:
     name: verireview
+  main:
+    application-startup: buffering
   # Local one-command boot (`.\mvnw.cmd spring-boot:run` from backend/):
   # values come from the repo-root .env when present (JWT key, datasource).
   # Missing .env is fine — safe defaults below apply and the app still fails
@@ -21,7 +23,8 @@ spring:
       connection-timeout: 30000
       initialization-fail-timeout: 60000
       idle-timeout: 600000
-      max-lifetime: 1800000
+      keepalive-time: 240000
+      max-lifetime: 270000
   jpa:
     # Flyway owns the schema. Hibernate only validates; it must never create
     # or drop tables (no create / create-drop anywhere, including tests).
@@ -126,7 +129,16 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,startup
   endpoint:
     health:
       show-details: always
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db
+      logging:
+        slow-indicator-threshold: 5s

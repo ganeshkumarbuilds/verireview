@@ -1,34 +1,44 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { useAuth } from '../auth/AuthContext';
+import { apiClient, useAuth } from '../auth/AuthContext';
 import { AuthLayout } from '../components/AuthLayout';
 import { EnvelopeIcon, LockIcon, PillField, UserIcon } from '../components/FieldIcons';
+import { useServerWarmup } from '../hooks/useServerWarmup';
 
 const pillInput =
   'w-full bg-transparent text-[15px] text-slate-900 placeholder:text-slate-500 focus:outline-none focus-visible:outline-none';
 
 export function RegisterPage() {
   const { register } = useAuth();
+  useServerWarmup(apiClient());
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [slow, setSlow] = useState(false);
+  const submitting = useRef(false);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
+    if (submitting.current) return;
     setError(null);
+    submitting.current = true;
     setBusy(true);
+    const slowTimer = window.setTimeout(() => setSlow(true), 3000);
     try {
       await register(email, password, displayName || undefined);
       navigate('/dashboard', { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Registration failed.');
     } finally {
+      clearTimeout(slowTimer);
+      setSlow(false);
       setBusy(false);
+      submitting.current = false;
     }
   };
 
@@ -46,6 +56,7 @@ export function RegisterPage() {
               name="displayName"
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
+              disabled={busy}
               autoComplete="nickname"
               placeholder="Display name"
               aria-label="Display name"
@@ -59,6 +70,7 @@ export function RegisterPage() {
               required
               value={email}
               onChange={(event) => setEmail(event.target.value)}
+              disabled={busy}
               autoComplete="email"
               placeholder="Email id"
               aria-label="Email"
@@ -73,6 +85,7 @@ export function RegisterPage() {
               minLength={8}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              disabled={busy}
               autoComplete="new-password"
               placeholder="Password (min 8 characters)"
               aria-label="Password"
@@ -89,8 +102,13 @@ export function RegisterPage() {
             disabled={busy}
             className="w-full rounded-full bg-indigo-600 py-3 text-lg font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-60"
           >
-            {busy ? 'Creating account…' : 'Register'}
+            {slow ? 'Waking up the server, this can take up to a minute...' : busy ? 'Creating account…' : 'Register'}
           </button>
+          {slow && (
+            <p className="text-center text-xs text-slate-500" role="status">
+              Please keep this page open while the server wakes up.
+            </p>
+          )}
         </form>
         <p className="mt-6 text-center text-[15px] text-indigo-950/60">
           Have an account?{' '}

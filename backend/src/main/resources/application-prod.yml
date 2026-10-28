@@ -49,7 +49,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,info,metrics,prometheus,startup
   endpoint:
     health:
       show-details: when-authorized

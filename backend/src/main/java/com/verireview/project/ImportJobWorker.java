@@ -57,11 +57,15 @@ public class ImportJobWorker {
     }
   }
 
-  @Transactional
   public void processZipJob(UUID jobId, UUID ownerId) {
     log.info("Job {} STARTED (ZIP import), ownerId={}", jobId, ownerId);
     ImportJob job = jobs.findByIdAndOwnerId(jobId, ownerId)
         .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+
+    if (job.getStatus() == ImportJobStatus.FAILED) {
+      log.info("Job {} was already cancelled or failed, skipping processing", jobId);
+      return;
+    }
 
     Instant start = Instant.now();
     Path stagedFile = null;
@@ -70,7 +74,7 @@ public class ImportJobWorker {
       job.setStatus(ImportJobStatus.EXTRACTING);
       job.setStartedAt(Instant.now());
       job.setCurrentStep("Extracting archive");
-      jobs.save(job);
+      job = jobs.save(job);
 
       // Read the staged file
       stagedFile = Path.of(job.getStagedFilePath());
@@ -87,7 +91,7 @@ public class ImportJobWorker {
       }
 
       job.setCurrentStep("Processing archive entries");
-      jobs.save(job);
+      job = jobs.save(job);
 
       // Create streaming MultipartFile wrapper
       class StagedMultipartFile implements org.springframework.web.multipart.MultipartFile {
@@ -120,7 +124,11 @@ public class ImportJobWorker {
         }
 
         @Override public void transferTo(java.io.File dest) throws IOException, IllegalStateException {
-          Files.copy(path, dest.toPath());
+          Files.copy(path, dest.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+
+        @Override public void transferTo(java.nio.file.Path dest) throws IOException, IllegalStateException {
+          Files.copy(path, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
       }
 
@@ -174,11 +182,15 @@ public class ImportJobWorker {
     }
   }
 
-  @Transactional
   public void processGitHubJob(UUID jobId, UUID ownerId) {
     log.info("Job {} STARTED (GitHub import), ownerId={}", jobId, ownerId);
     ImportJob job = jobs.findByIdAndOwnerId(jobId, ownerId)
         .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+
+    if (job.getStatus() == ImportJobStatus.FAILED) {
+      log.info("Job {} was already cancelled or failed, skipping processing", jobId);
+      return;
+    }
 
     Instant start = Instant.now();
     try {

@@ -12,5 +12,19 @@ public record AiReviewRequest(
     String language,
     List<AiFileSnapshot> files,
     List<AiDeterministicFinding> deterministicFindings,
-    String idempotencyKey) {
+    String idempotencyKey,
+    String provider,
+    String model,
+    String apiKey) {
+
+  public AiReviewRequest(
+      String reviewId,
+      String projectId,
+      String language,
+      List<AiFileSnapshot> files,
+      List<AiDeterministicFinding> deterministicFindings,
+      String idempotencyKey) {
+    this(reviewId, projectId, language, files, deterministicFindings, idempotencyKey,
+        null, null, null);
+  }
 }

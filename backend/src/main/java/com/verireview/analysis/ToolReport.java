@@ -7,7 +7,8 @@ public record ToolReport(
     String analyzer,
     ToolStatus status,
     String detail,
-    List<NormalizedFinding> findings) {
+    List<NormalizedFinding> findings,
+    long durationMs) {
 
   public enum ToolStatus {
     RAN,
@@ -20,14 +21,18 @@ public record ToolReport(
   }
 
   public static ToolReport ran(String analyzer, List<NormalizedFinding> findings) {
-    return new ToolReport(analyzer, ToolStatus.RAN, null, findings);
+    return new ToolReport(analyzer, ToolStatus.RAN, null, findings, 0);
   }
 
   public static ToolReport skipped(String analyzer, ToolStatus status, String detail) {
-    return new ToolReport(analyzer, status, detail, List.of());
+    return new ToolReport(analyzer, status, detail, List.of(), 0);
   }
 
   public static ToolReport failed(String analyzer, String detail) {
-    return new ToolReport(analyzer, ToolStatus.FAILED, detail, List.of());
+    return new ToolReport(analyzer, ToolStatus.FAILED, detail, List.of(), 0);
+  }
+
+  public ToolReport withDuration(long duration) {
+    return new ToolReport(analyzer, status, detail, findings, duration);
   }
 }

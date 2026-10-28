@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError } from '../../../api/client';
-import { isTerminal, listFindings, listReviews, triggerAnalysis } from '../../../api/analysis';
+import { isTerminal, listFindings, listReviews, retryReview, streamReviewEvents, triggerAnalysis } from '../../../api/analysis';
 import type { FindingResponse, ProjectResponse, ReviewResponse } from '../../../api/types';
 import { apiClient, useAuth } from '../../../auth/AuthContext';
 import { useProjectList } from '../../../hooks/useProjectList';
@@ -30,7 +30,10 @@ export function useReviewWorkspace(initialProjectId: string | null) {
   const [findingsLoading, setFindingsLoading] = useState(false);
   const [findingsNonce, setFindingsNonce] = useState(0);
   const [starting, setStarting] = useState(false);
+  const [aiModel, setAiModel] = useState('');
+  const [aiApiKey, setAiApiKey] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [retryingStage, setRetryingStage] = useState<string | null>(null);
 
   const [severityFilter, setSeverityFilter] = useState('ALL');
   const [analyzerFilter, setAnalyzerFilter] = useState('ALL');
@@ -113,6 +116,26 @@ export function useReviewWorkspace(initialProjectId: string | null) {
   }, [activeReview, reloadReviews, token]);
 
   useEffect(() => {
+    if (!activeReview || !token) return undefined;
+    const controller = new AbortController();
+    const refresh = () => {
+      if (!document.hidden) {
+        void reloadReviews();
+        setFindingsNonce((value) => value + 1);
+      }
+    };
+    void streamReviewEvents(apiClient(), token, activeReview.id, refresh, controller.signal).catch(() => undefined);
+    const timer = window.setInterval(refresh, POLL_MS);
+    const onVisibility = () => { if (!document.hidden) refresh(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [activeReview, reloadReviews, token]);
+
+  useEffect(() => {
     if (activeReview) setSelectedReviewId(activeReview.id);
   }, [activeReview]);
 
@@ -132,13 +155,35 @@ export function useReviewWorkspace(initialProjectId: string | null) {
     setStarting(true);
     setError(null);
     try {
-      const review = await triggerAnalysis(apiClient(), token, selectedProjectId);
+      const review = await triggerAnalysis(apiClient(), token, selectedProjectId, {
+        model: aiModel,
+        apiKey: aiApiKey,
+      });
       setSelectedReviewId(review.id);
       await reloadReviews();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not start the analysis.');
     } finally {
       setStarting(false);
+    }
+  };
+
+  const retryStage = async (stage: 'analyze' | 'review' | 'rating') => {
+    if (!token || !selectedReviewId || retryingStage) return;
+    setRetryingStage(stage);
+    setError(null);
+    try {
+      const review = await retryReview(apiClient(), token, selectedReviewId, {
+        stage,
+        model: aiModel,
+        apiKey: aiApiKey,
+      });
+      setSelectedReviewId(review.id);
+      await reloadReviews();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not retry this stage.');
+    } finally {
+      setRetryingStage(null);
     }
   };
 
@@ -222,7 +267,13 @@ export function useReviewWorkspace(initialProjectId: string | null) {
     findingsNonce,
     setFindingsNonce,
     starting,
+    aiModel,
+    setAiModel,
+    aiApiKey,
+    setAiApiKey,
     startAnalysis,
+    retryStage,
+    retryingStage,
     error,
     reloadReviews,
     severityFilter,

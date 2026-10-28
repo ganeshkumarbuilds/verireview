@@ -58,12 +58,16 @@ public class SecurityConfig {
                 .permitAll()
                 .requestMatchers(
                     "/actuator/health",
+                    "/actuator/health/liveness",
                     "/api/v1/health",
                     "/api/v1/auth/register",
                     "/api/v1/auth/login",
                     "/api/v1/auth/refresh",
                     "/api/v1/auth/password-reset/request",
-                    "/api/v1/projects/import/limits")
+                    "/api/v1/projects/import/limits",
+                    "/v3/api-docs/**",
+                    "/swagger-ui/**",
+                    "/swagger-ui.html")
                 .permitAll()
                 .requestMatchers("/api/v1/admin/**", "/api/v1/users/**")
                 .hasRole("ADMIN")

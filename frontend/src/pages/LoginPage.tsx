@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
@@ -7,12 +7,15 @@ import { loginServerErrorMessage, loginValidationError } from '../api/authErrors
 import { apiClient, useAuth } from '../auth/AuthContext';
 import { AuthLayout } from '../components/AuthLayout';
 import { EnvelopeIcon, LockIcon, PillField } from '../components/FieldIcons';
+import { useServerWarmup } from '../hooks/useServerWarmup';
 
 const pillInput =
   'w-full bg-transparent text-[15px] text-slate-900 placeholder:text-slate-500 focus:outline-none focus-visible:outline-none';
 
 export function LoginPage() {
   const { login } = useAuth();
+  const client = apiClient();
+  useServerWarmup(client);
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -23,16 +26,21 @@ export function LoginPage() {
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [slow, setSlow] = useState(false);
+  const submitting = useRef(false);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
+    if (submitting.current) return;
     const validation = loginValidationError(email, password);
     if (validation) {
       setError(validation);
       return;
     }
     setError(null);
+    submitting.current = true;
     setBusy(true);
+    const slowTimer = window.setTimeout(() => setSlow(true), 3000);
     try {
       await login(email.trim(), password);
       navigate('/dashboard', { replace: true });
@@ -41,7 +49,10 @@ export function LoginPage() {
       // rendered as friendly copy — never rethrown, never logged.
       setError(loginServerErrorMessage(err));
     } finally {
+      clearTimeout(slowTimer);
+      setSlow(false);
       setBusy(false);
+      submitting.current = false;
     }
   };
 
@@ -70,6 +81,7 @@ export function LoginPage() {
               name="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
+              disabled={busy}
               autoComplete="email"
               placeholder="Email id"
               aria-label="Email"
@@ -82,6 +94,7 @@ export function LoginPage() {
               name="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
+              disabled={busy}
               autoComplete="current-password"
               placeholder="Password"
               aria-label="Password"
@@ -139,7 +152,7 @@ export function LoginPage() {
                     <button
                       type="button"
                       onClick={() => void handleReset()}
-                      disabled={resetBusy}
+                      disabled={resetBusy || busy}
                       className="w-full rounded-full bg-indigo-600 py-2 text-[15px] font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-60"
                     >
                       {resetBusy ? 'Sending…' : 'Send reset link'}
@@ -159,8 +172,13 @@ export function LoginPage() {
             disabled={busy}
             className="w-full rounded-full bg-indigo-600 py-3 text-lg font-medium text-white shadow-sm shadow-indigo-200 hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-2 disabled:opacity-60"
           >
-            {busy ? 'Signing in…' : 'Login'}
+            {slow ? 'Waking up the server, this can take up to a minute...' : busy ? 'Signing in…' : 'Login'}
           </button>
+          {slow && (
+            <p className="text-center text-xs text-slate-500" role="status">
+              Please keep this page open while the server wakes up.
+            </p>
+          )}
         </form>
         <p className="mt-6 text-center text-[15px] text-indigo-950/60">
           Don&apos;t have an account?{' '}

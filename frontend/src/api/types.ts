@@ -53,7 +53,16 @@ export interface FileContentResponse {
   content: string;
 }
 
-export type ReviewStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+export type ReviewStatus = 'QUEUED' | 'RUNNING' | 'NOT_ANALYZED' | 'COMPLETED' | 'FAILED';
+
+export interface AnalysisCheckResponse {
+  analyzer: string;
+  status: 'RAN' | 'SKIPPED' | 'FAILED';
+  reason: string | null;
+  durationMs: number | null;
+  filesAnalyzed: number;
+  findingCount: number;
+}
 
 export interface ReviewResponse {
   id: string;
@@ -63,8 +72,29 @@ export interface ReviewResponse {
   finishedAt: string | null;
   durationMs: number | null;
   findingCount: number;
+  fixRound?: number;
   error: string | null;
+  filesAnalyzed: number;
+  filesTotal: number;
+  checks: AnalysisCheckResponse[];
+  files: AnalysisFileResponse[];
+  rating: {
+    overall: number;
+    syntax: number;
+    logic: number;
+    security: number;
+    style: number;
+  };
+  activity: Array<{ message: string; at: string }>;
   createdAt: string;
+}
+
+export interface AnalysisFileResponse {
+  path: string;
+  status: 'ANALYZED' | 'SKIPPED';
+  reason: string | null;
+  sizeBytes: number;
+  findingCount: number;
 }
 
 export interface FindingResponse {
@@ -278,6 +308,11 @@ export interface FixRunDetailResponse {
   sandboxSkipped: boolean;
   startedAt: string | null;
   finishedAt: string | null;
+}
+
+export interface ReviewFixPreviewResponse {
+  files: string[];
+  findingCount: number;
 }
 
 /** Legacy envelope shape (kept for forward-compat parsing only). */

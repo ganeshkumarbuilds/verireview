@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { apiClient } from '../auth/AuthContext';
+import { useServerWarmup } from '../hooks/useServerWarmup';
 
 const NAV_LINKS = [
   { href: '#features', label: 'Features' },
@@ -70,6 +72,7 @@ const ARCHITECTURE = [
 
 export function HomePage() {
   const [menuOpen, setMenuOpen] = useState(false);
+  useServerWarmup(apiClient());
 
   return (
     <div className="min-h-full bg-gradient-to-b from-indigo-50 via-white to-indigo-50 text-slate-900">

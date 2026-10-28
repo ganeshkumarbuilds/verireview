@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../auth/AuthContext';
@@ -7,6 +7,7 @@ import { LoginPage } from './LoginPage';
 afterEach(() => {
   vi.unstubAllGlobals();
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 describe('LoginPage', () => {
@@ -42,7 +43,7 @@ describe('LoginPage', () => {
     await waitFor(() =>
       expect(calls.some((call) => call.url.endsWith('/auth/login'))).toBe(true),
     );
-    expect(calls[0]?.body).toContain('dev@example.com');
+    expect(calls.find((call) => call.url.endsWith('/auth/login'))?.body).toContain('dev@example.com');
   });
 
   it('requests a password reset from the forgot-password panel', async () => {    const calls: string[] = [];
@@ -266,6 +267,62 @@ describe('LoginPage auth error UX', () => {
     } finally {
       logSpy.mockRestore();
       errSpy.mockRestore();
+    }
+  });
+
+  it('retries one transient 503 without submitting twice', async () => {
+    let loginAttempts = 0;
+    renderLogin(async (url: string | URL | Request) => {
+      if (String(url).endsWith('/auth/login')) {
+        loginAttempts += 1;
+        if (loginAttempts === 1) {
+          return new Response(null, { status: 503 });
+        }
+        return new Response(
+          JSON.stringify({ accessToken: 'a', refreshToken: 'r', tokenType: 'Bearer', expiresIn: 900 }),
+          { status: 200 },
+        );
+      }
+      return okProfile();
+    });
+    fill('dev@example.com', 'secret-1');
+    const loginButton = screen.getByRole('button', { name: 'Login' });
+    fireEvent.click(loginButton);
+    fireEvent.click(loginButton);
+    await waitFor(() => expect(loginAttempts).toBe(2));
+    expect(screen.queryByText('Something went wrong. Please try again.')).not.toBeInTheDocument();
+  });
+
+  it('shows the server wake-up message after three seconds', async () => {
+    vi.useFakeTimers();
+    let resolveLogin: ((response: Response) => void) | undefined;
+    try {
+      renderLogin(async (url: string | URL | Request) => {
+        if (String(url).endsWith('/auth/login')) {
+          return new Promise<Response>((resolve) => {
+            resolveLogin = resolve;
+          });
+        }
+        return okProfile();
+      });
+      fill('dev@example.com', 'secret-1');
+      submit();
+      await act(async () => {
+        vi.advanceTimersByTime(3000);
+      });
+      expect(screen.getByText('Waking up the server, this can take up to a minute...')).toBeInTheDocument();
+      resolveLogin?.(
+        new Response(
+          JSON.stringify({ accessToken: 'a', refreshToken: 'r', tokenType: 'Bearer', expiresIn: 900 }),
+          { status: 200 },
+        ),
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

@@ -34,6 +34,10 @@ export interface ApiClientOptions {
   onUnauthorized?: () => void;
 }
 
+export interface ApiRequestOptions {
+  timeoutMs?: number;
+}
+
 const DEFAULT_BASE_URL = 'http://localhost:8080/api/v1';
 const ENV_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
@@ -73,18 +77,48 @@ export class ApiClient {
   }
 
   /** JSON request; throws ApiError on non-2xx. */
-  async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  async request<T>(
+    path: string,
+    init: RequestInit = {},
+    options: ApiRequestOptions = {},
+  ): Promise<T> {
     const headers = new Headers(init.headers);
     const isForm = init.body instanceof FormData;
     if (!isForm && !headers.has('Content-Type')) {
       headers.set('Content-Type', 'application/json');
     }
     const fetchImpl = this.fetchImpl ?? fetch;
-    const response = await fetchImpl(this.buildUrl(path), { ...init, headers });
-    if (response.status === 401) {
-      this.onUnauthorized?.();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let controller: AbortController | undefined;
+    if (options.timeoutMs !== undefined) {
+      controller = new AbortController();
+      timeout = setTimeout(() => controller?.abort(), options.timeoutMs);
     }
-    return parseBody<T>(response);
+    try {
+      const response = await fetchImpl(this.buildUrl(path), {
+        ...init,
+        headers,
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+      if (response.status === 401) {
+        this.onUnauthorized?.();
+      }
+      return parseBody<T>(response);
+    } finally {
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  async liveness(): Promise<void> {
+    const livenessUrl = this.baseUrl.replace(/\/api\/v1$/, '') + '/actuator/health/liveness';
+    const fetchImpl = this.fetchImpl ?? fetch;
+    try {
+      await fetchImpl(livenessUrl, { method: 'GET' });
+    } catch {
+      // Warm-up is best effort; the auth request reports the real error.
+    }
   }
 }
 

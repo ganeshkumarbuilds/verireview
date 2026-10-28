@@ -1,4 +1,4 @@
-import type { ApiClient } from './client';
+import { ApiError, type ApiClient } from './client';
 import { bearer } from './client';
 import type { TokenResponse, UserResponse } from './types';
 
@@ -8,7 +8,7 @@ export async function login(
   email: string,
   password: string,
 ): Promise<TokenResponse> {
-  return client.request<TokenResponse>('/auth/login', {
+  return authRequest(client, '/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
@@ -20,10 +20,30 @@ export async function register(
   password: string,
   displayName?: string,
 ): Promise<TokenResponse> {
-  return client.request<TokenResponse>('/auth/register', {
+  return authRequest(client, '/auth/register', {
     method: 'POST',
     body: JSON.stringify({ email, password, displayName }),
   });
+}
+
+async function authRequest(
+  client: ApiClient,
+  path: string,
+  init: RequestInit,
+): Promise<TokenResponse> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await client.request<TokenResponse>(path, init, { timeoutMs: 90_000 });
+    } catch (error) {
+      const retryable =
+        !(error instanceof ApiError) ||
+        [502, 503, 504].includes(error.status);
+      if (!retryable || attempt === 1) {
+        throw error;
+      }
+    }
+  }
+  throw new Error('Authentication request failed.');
 }
 
 export async function me(client: ApiClient, token: string): Promise<UserResponse> {

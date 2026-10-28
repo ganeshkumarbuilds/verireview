@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 
 
 class Category(str, Enum):
+    SYNTAX = "SYNTAX"
+    LOGIC = "LOGIC"
     BUG = "BUG"
     SECURITY = "SECURITY"
     CODE_QUALITY = "CODE_QUALITY"
@@ -66,6 +68,9 @@ class ReviewRequest(BaseModel):
         default_factory=list, max_length=2000
     )
     idempotency_key: str | None = Field(default=None, max_length=100)
+    provider: str | None = Field(default=None, max_length=50)
+    model: str | None = Field(default=None, max_length=200)
+    api_key: str | None = Field(default=None, max_length=2000)
 
 
 class ProposedFinding(BaseModel):

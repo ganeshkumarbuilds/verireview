@@ -168,54 +168,39 @@ public class GitHubIngestionService {
 
   private String shallowClone(Path targetDir, String url) {
     try {
-      try (Git git = Git.cloneRepository()
-          .setURI(url)
-          .setDirectory(targetDir.toFile())
-          .setDepth(1)
-          .setBranch("main")
-          .setTimeout(30)
-          .call()) {
-        try (Repository repo = git.getRepository();
-             RevWalk walk = new RevWalk(repo)) {
-          ObjectId head = repo.resolve("HEAD");
-          if (head == null) {
-            throw GitHubImportException.noCommits(url);
-          }
-          RevCommit commit = walk.parseCommit(head);
-          return commit.getName();
-        }
-      }
-    } catch (GitAPIException e) {
-      Throwable cause = e.getCause();
-      if (cause instanceof org.eclipse.jgit.errors.MissingObjectException
-          || cause instanceof org.eclipse.jgit.errors.NotSupportedException) {
+      return doClone(targetDir, url, null);
+    } catch (Exception e1) {
+      try {
+        return doClone(targetDir, url, "main");
+      } catch (Exception e2) {
         try {
-          try (Git git = Git.cloneRepository()
-              .setURI(url)
-              .setDirectory(targetDir.toFile())
-              .setDepth(1)
-              .setBranch("master")
-              .setTimeout(30)
-              .call()) {
-            try (Repository repo = git.getRepository();
-                 RevWalk walk = new RevWalk(repo)) {
-              ObjectId head = repo.resolve("HEAD");
-              if (head == null) {
-                throw GitHubImportException.noCommits(url);
-              }
-              RevCommit commit = walk.parseCommit(head);
-              return commit.getName();
-            }
-          }
-        } catch (GitAPIException e2) {
-          throw GitHubImportException.cloneFailed(url, e2.getMessage());
-        } catch (IOException e2) {
-          throw GitHubImportException.cloneFailed(url, e2.getMessage());
+          return doClone(targetDir, url, "master");
+        } catch (Exception e3) {
+          throw GitHubImportException.cloneFailed(url, e1.getMessage());
         }
       }
-      throw GitHubImportException.cloneFailed(url, e.getMessage());
-    } catch (IOException e) {
-      throw GitHubImportException.cloneFailed(url, e.getMessage());
+    }
+  }
+
+  private String doClone(Path targetDir, String url, String branch) throws GitAPIException, IOException {
+    var cmd = Git.cloneRepository()
+        .setURI(url)
+        .setDirectory(targetDir.toFile())
+        .setDepth(1)
+        .setTimeout(30);
+    if (branch != null) {
+      cmd.setBranch(branch);
+    }
+    try (Git git = cmd.call()) {
+      try (Repository repo = git.getRepository();
+           RevWalk walk = new RevWalk(repo)) {
+        ObjectId head = repo.resolve("HEAD");
+        if (head == null) {
+          throw GitHubImportException.noCommits(url);
+        }
+        RevCommit commit = walk.parseCommit(head);
+        return commit.getName();
+      }
     }
   }
 

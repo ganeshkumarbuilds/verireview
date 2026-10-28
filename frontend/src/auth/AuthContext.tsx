@@ -108,11 +108,11 @@ export function AuthProvider({
   const login = useCallback(
     async (email: string, password: string) => {
       const tokens = await apiLogin(client, email, password);
-      const profile = await apiMe(client, tokens.accessToken);
+      persistSession(tokens.accessToken, tokens.refreshToken);
       setToken(tokens.accessToken);
       setRefreshToken(tokens.refreshToken);
+      const profile = await apiMe(client, tokens.accessToken);
       setUser(profile);
-      persistSession(tokens.accessToken, tokens.refreshToken);
     },
     [client],
   );
@@ -120,11 +120,11 @@ export function AuthProvider({
   const register = useCallback(
     async (email: string, password: string, displayName?: string) => {
       const tokens = await apiRegister(client, email, password, displayName);
-      const profile = await apiMe(client, tokens.accessToken);
+      persistSession(tokens.accessToken, tokens.refreshToken);
       setToken(tokens.accessToken);
       setRefreshToken(tokens.refreshToken);
+      const profile = await apiMe(client, tokens.accessToken);
       setUser(profile);
-      persistSession(tokens.accessToken, tokens.refreshToken);
     },
     [client],
   );

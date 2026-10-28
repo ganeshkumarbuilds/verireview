@@ -62,6 +62,15 @@ class ActuatorHealthAndAuthTest {
   }
 
   @Test
+  void actuatorLivenessIsPublicAndDoesNotRequireDatabase() {
+    ResponseEntity<String> response =
+        restTemplate.getForEntity(baseUrl() + "/actuator/health/liveness", String.class);
+
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(response.getBody()).contains("\"status\":\"UP\"");
+  }
+
+  @Test
   void protectedEndpointRequiresAuthentication() {
     // Protected endpoint should return 401 without token
     try {

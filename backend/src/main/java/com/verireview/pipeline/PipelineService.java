@@ -118,6 +118,9 @@ public class PipelineService {
       case QUEUED -> stage("analyze", "Analyze", "WAITING", null, null, null, detail, null, null);
       case RUNNING -> stage("analyze", "Analyze", "RUNNING",
           review.getStartedAt(), null, null, detail, null, null);
+      case NOT_ANALYZED -> stage("analyze", "Analyze", "SKIPPED",
+          review.getStartedAt(), review.getFinishedAt(), review.getDurationMs(),
+          detail, sanitize(review.getError()), null);
       case COMPLETED -> stage("analyze", "Analyze", "COMPLETED",
           review.getStartedAt(), review.getFinishedAt(), review.getDurationMs(), detail, null, null);
       case FAILED -> {
@@ -143,6 +146,11 @@ public class PipelineService {
     if (review.getStatus() == ReviewStatus.RUNNING || review.getStatus() == ReviewStatus.QUEUED) {
       return stage("review", "Review", "RUNNING",
           review.getStartedAt(), null, null, "Reviewing findings", null, null);
+    }
+    if (review.getStatus() == ReviewStatus.NOT_ANALYZED) {
+      return stage("review", "Review", "SKIPPED",
+          review.getStartedAt(), review.getFinishedAt(), review.getDurationMs(),
+          "Review was not analyzed", sanitize(review.getError()), null);
     }
     if (review.getStatus() == ReviewStatus.FAILED) {
       return stage("review", "Review", "FAILED",

@@ -40,6 +40,9 @@ public class Review extends BaseEntity {
   @Column(name = "finding_count", nullable = false)
   private int findingCount;
 
+  @Column(name = "fix_round", nullable = false)
+  private int fixRound;
+
   @Column(name = "error", columnDefinition = "TEXT")
   private String error;
 
@@ -100,6 +103,14 @@ public class Review extends BaseEntity {
 
   public void setFindingCount(int findingCount) {
     this.findingCount = findingCount;
+  }
+
+  public int getFixRound() {
+    return fixRound;
+  }
+
+  public void setFixRound(int fixRound) {
+    this.fixRound = fixRound;
   }
 
   public String getError() {
