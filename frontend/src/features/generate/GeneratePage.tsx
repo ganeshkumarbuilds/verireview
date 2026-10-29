@@ -1724,7 +1724,10 @@ export function GeneratePage() {
                   <h3 className="break-all font-mono text-xs font-semibold text-slate-800">{file}</h3>
                   <ul className="mt-2 space-y-2">
                     {findingsForFile.map((finding) => (
-                      <li key={finding.id} className="rounded-lg bg-slate-50 p-3">
+                      <li
+                        key={finding.id || `${file}:${finding.line ?? 'unknown'}:${finding.title}`}
+                        className="rounded-lg bg-slate-50 p-3"
+                      >
                         <div className="flex flex-wrap items-center gap-2">
                           {['OPEN', 'FIX_REQUESTED', 'FIX_PROPOSED'].includes(finding.status ?? 'OPEN')
                             && generation.status === 'AWAITING_FIX_APPROVAL'
