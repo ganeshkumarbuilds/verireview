@@ -4,6 +4,7 @@ import { Navigate } from 'react-router-dom';
 import { ApiClient, clearSessionAndRedirect } from '../api/client';
 import { login as apiLogin, logout as apiLogout, me as apiMe, register as apiRegister, refreshToken as apiRefreshToken } from '../api/auth';
 import type { UserResponse } from '../api/types';
+import { clearGenerateDrafts } from '../features/generate/draftStorage';
 
 /** localStorage keys for the persisted session (ADR-010). */
 const ACCESS_TOKEN_KEY = 'verireview.accessToken';
@@ -119,6 +120,7 @@ export function AuthProvider({
 
   const register = useCallback(
     async (email: string, password: string, displayName?: string) => {
+      clearGenerateDrafts();
       const tokens = await apiRegister(client, email, password, displayName);
       persistSession(tokens.accessToken, tokens.refreshToken);
       setToken(tokens.accessToken);
@@ -135,12 +137,22 @@ export function AuthProvider({
         await apiLogout(client, token, refreshToken);
       }
     } finally {
+      clearGenerateDrafts();
       clearStoredSession();
       setToken(null);
       setRefreshToken(null);
       setUser(null);
     }
   }, [client, token, refreshToken]);
+
+  const previousUserId = useRef<string | null>(initial?.user?.id ?? null);
+  useEffect(() => {
+    const currentUserId = user?.id ?? null;
+    if (previousUserId.current !== null && previousUserId.current !== currentUserId) {
+      clearGenerateDrafts();
+    }
+    previousUserId.current = currentUserId;
+  }, [user?.id]);
 
   const refresh = useCallback(async () => {
     if (!refreshToken) {

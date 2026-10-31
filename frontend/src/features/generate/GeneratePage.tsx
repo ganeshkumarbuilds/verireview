@@ -69,6 +69,13 @@ import {
   textareaClass,
 } from '../../components/ui';
 import { FeaturePage } from '../../components/FeaturePage';
+import {
+  clearGenerateDrafts,
+  GENERATE_DRAFT_VERSION,
+  readGenerateDraft,
+  writeGenerateDraft,
+  type GenerateDraft,
+} from './draftStorage';
 
 const POLL_MS = 3000;
 const MIN_IDEA = 20;
@@ -375,11 +382,13 @@ function generationTone(
 }
 
 export function GeneratePage() {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [step, setStep] = useState(1);
+  const [draftCandidate, setDraftCandidate] = useState<GenerateDraft | null>(null);
+  const [draftResolved, setDraftResolved] = useState(false);
   const [name, setName] = useState('');
   const [idea, setIdea] = useState('');
   const [extraInfo, setExtraInfo] = useState('');
@@ -401,6 +410,7 @@ export function GeneratePage() {
   const [questionsError, setQuestionsError] = useState<string | null>(null);
   const [questionErrors, setQuestionErrors] = useState<string[]>([]);
   const questionControlRefs = useRef<Record<string, HTMLElement | null>>({});
+  const skipNextDraftSave = useRef(false);
 
   const [dbHost, setDbHost] = useState('');
   const [dbPort, setDbPort] = useState('');
@@ -490,41 +500,45 @@ export function GeneratePage() {
   }, [token]);
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem('verireview.generate.wizard');
-      if (!saved) return;
-      const state = JSON.parse(saved) as {
-        name?: string; idea?: string; extraInfo?: string; generationEngine?: 'TEMPLATE' | 'AI';
-        backend?: GenerationBackend; frontend?: GenerationFrontend; languageRuntime?: string;
-        backendCustom?: string; frontendCustom?: string;
-        answers?: Record<string, { value: string; skipped: boolean }>;
-      };
-      setName(state.name ?? '');
-      setIdea(state.idea ?? '');
-      setExtraInfo(state.extraInfo ?? '');
-      setGenerationEngine(state.generationEngine ?? '');
-      setBackend(state.backend ?? '');
-      setFrontend(state.frontend ?? '');
-      setLanguageRuntime(state.languageRuntime ?? '');
-      setBackendCustom(state.backendCustom ?? '');
-      setFrontendCustom(state.frontendCustom ?? '');
-      setAnswers(state.answers ?? {});
-    } catch {
-      window.localStorage.removeItem('verireview.generate.wizard');
+    if (!user?.id) {
+      setDraftCandidate(null);
+      setDraftResolved(false);
+      return;
     }
-  }, []);
+    try {
+      setDraftCandidate(readGenerateDraft(user.id));
+    } catch {
+      setDraftCandidate(null);
+    } finally {
+      setDraftResolved(true);
+    }
+  }, [user?.id]);
 
   useEffect(() => {
+    if (!user?.id || !draftResolved || draftCandidate) return;
+    if (skipNextDraftSave.current) {
+      skipNextDraftSave.current = false;
+      return;
+    }
     const safeAnswers = Object.fromEntries(
       Object.entries(answers).filter(([id]) => ![
         'generation.apiKey', 'database.connection',
       ].includes(id)),
     );
-    window.localStorage.setItem('verireview.generate.wizard', JSON.stringify({
+    if (!name.trim() && !idea.trim() && !extraInfo.trim()
+        && !generationEngine && !backend && !frontend && !languageRuntime.trim()
+        && !backendCustom.trim() && !frontendCustom.trim()
+        && Object.keys(safeAnswers).length === 0) {
+      return;
+    }
+    writeGenerateDraft({
+      version: GENERATE_DRAFT_VERSION,
+      userId: user.id,
       name, idea, extraInfo, generationEngine, backend, frontend, languageRuntime,
       backendCustom, frontendCustom, answers: safeAnswers,
-    }));
+    });
   }, [
+    user?.id, draftResolved, draftCandidate,
     name, idea, extraInfo, generationEngine, backend, frontend, languageRuntime,
     backendCustom, frontendCustom, answers,
   ]);
@@ -768,6 +782,12 @@ export function GeneratePage() {
     if (step === 1) {
       if (!name.trim()) {
         setError('Project name is required.');
+        document.getElementById('name')?.focus();
+        return;
+      }
+      if (name.length > 60 || /[\r\n]/.test(name)) {
+        setError('Project name must be 60 characters or fewer and stay on one line.');
+        document.getElementById('name')?.focus();
         return;
       }
       if (idea.trim().length < MIN_IDEA) {
@@ -780,6 +800,7 @@ export function GeneratePage() {
     if (step === 2) {
       if (!generationEngine) {
         setError('Choose a generation engine first.');
+        document.querySelector<HTMLElement>('[role="radio"]')?.focus();
         return;
       }
       setStep(3);
@@ -788,6 +809,7 @@ export function GeneratePage() {
     if (step === 3) {
       if (!backend || !frontend) {
         setError('Choose a backend and a frontend. Use None when one side does not apply.');
+        document.getElementById(!frontend ? 'select-frontend' : 'select-backend')?.focus();
         return;
       }
       if (backend === 'NONE' && frontend === 'NONE') {
@@ -796,6 +818,7 @@ export function GeneratePage() {
       }
       if (!languageRuntime.trim()) {
         setError('Language/runtime is required. Type the version you intend to use.');
+        document.getElementById('language-runtime')?.focus();
         return;
       }
       if (backend === 'OTHER' && !backendCustom.trim()) {
@@ -823,6 +846,18 @@ export function GeneratePage() {
       return;
     }
     if (step === 4) {
+      if (questionsLoading) {
+        setError('Questions are still loading. Please wait, then try again.');
+        return;
+      }
+      if (questionsError) {
+        setError('Questions could not be loaded. Retry the request before continuing.');
+        return;
+      }
+      if (questions.length === 0) {
+        setError('No questions are available yet. Retry loading the questions before continuing.');
+        return;
+      }
       const missing = questions.filter((question) => {
         const answer = answers[question.id];
         const blank = !answer || (!answer.skipped && !answer.value.trim());
@@ -1275,11 +1310,35 @@ export function GeneratePage() {
     setDbName('');
     setDbUser('');
     setDbPassword('');
+    setDraftCandidate(null);
+    setDraftResolved(true);
     if (searchParams.has('genId')) {
       const next = new URLSearchParams(searchParams);
       next.delete('genId');
       setSearchParams(next, { replace: true });
     }
+  }
+
+  function applyDraft(draft: GenerateDraft): void {
+    setName(draft.name);
+    setIdea(draft.idea);
+    setExtraInfo(draft.extraInfo);
+    setGenerationEngine(draft.generationEngine);
+    setBackend(draft.backend as GenerationBackend | '');
+    setFrontend(draft.frontend as GenerationFrontend | '');
+    setLanguageRuntime(draft.languageRuntime);
+    setBackendCustom(draft.backendCustom);
+    setFrontendCustom(draft.frontendCustom);
+    setAnswers(draft.answers);
+    setDraftCandidate(null);
+    setDraftResolved(true);
+  }
+
+  function startOver(): void {
+    if (!window.confirm('Start over and clear this saved wizard draft?')) return;
+    clearGenerateDrafts();
+    skipNextDraftSave.current = true;
+    reset();
   }
 
   const stages = pipelineStages(generation);
@@ -1293,14 +1352,24 @@ export function GeneratePage() {
       steps={STEPS}
       current={step >= 6 ? STEPS.length - 1 : step - 1}
       actions={
-        <Link to="/projects" className={secondaryButtonClass}>
-          Projects
-        </Link>
+        <div className="flex flex-wrap justify-end gap-2">
+          {step <= 5 && (
+            <button type="button" className={secondaryButtonClass} onClick={startOver}>
+              Start over
+            </button>
+          )}
+          <Link to="/projects" className={secondaryButtonClass}>
+            Projects
+          </Link>
+        </div>
       }
     >
       {error && (
         <div>
-          <ErrorAlert message={error} />
+          <ErrorAlert
+            message={error}
+            onRetry={step === 3 ? () => void next() : undefined}
+          />
           {error.includes('Switch to the AI engine') && (
             <button type="button" className={`${secondaryButtonClass} mt-2`}
               onClick={() => { chooseEngine('AI'); setError(null); }}>
@@ -1312,6 +1381,24 @@ export function GeneratePage() {
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
         <div className="min-w-0 transition-opacity duration-200 motion-reduce:transition-none">
+      {draftCandidate && step === 1 && (
+        <Panel className="mb-5 space-y-3 border-indigo-200 bg-indigo-50">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Continue where you left off?</h2>
+            <p className="mt-1 text-sm text-slate-700">
+              A saved wizard draft is available for this account.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={primaryButtonClass} onClick={() => applyDraft(draftCandidate)}>
+              Continue where you left off
+            </button>
+            <button type="button" className={secondaryButtonClass} onClick={startOver}>
+              Start fresh
+            </button>
+          </div>
+        </Panel>
+      )}
       {step === 1 && (
         <Panel className="space-y-5">
           <div>
@@ -1327,11 +1414,17 @@ export function GeneratePage() {
             <input
               id="name"
               className={inputClass}
+              aria-invalid={name.length > 60 || /[\r\n]/.test(name)}
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="task-tracker"
               required
             />
+            {(name.length > 60 || /[\r\n]/.test(name)) && (
+              <p className="mt-1 text-sm text-red-700">
+                Project name must be 60 characters or fewer and stay on one line.
+              </p>
+            )}
           </div>
           <div>
             <label htmlFor="idea" className="mb-1 block text-sm font-medium text-slate-700">
@@ -1406,7 +1499,7 @@ export function GeneratePage() {
           <div className="flex justify-between">
             <button type="button" className={secondaryButtonClass} onClick={() => setStep(1)}>Back</button>
             <button type="button" className={primaryButtonClass} onClick={next}
-              disabled={!generationEngine}>Choose stack</button>
+            >Choose stack</button>
           </div>
         </Panel>
       )}
@@ -1684,7 +1777,6 @@ export function GeneratePage() {
               type="button"
               className={primaryButtonClass}
               onClick={next}
-              disabled={questionsLoading || Boolean(questionsError) || questions.length === 0}
             >
               Review plan
             </button>
@@ -1838,7 +1930,7 @@ export function GeneratePage() {
                 type="button"
                 className={primaryButtonClass}
                 onClick={() => void generate()}
-                disabled={creating || previewLoading || !planPreview}
+                disabled={creating}
               >
                 {creating ? 'Starting…' : 'Approve and generate'}
               </button>

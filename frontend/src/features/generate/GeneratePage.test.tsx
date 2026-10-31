@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../../auth/AuthContext';
 import { GeneratePage } from './GeneratePage';
+import { draftKey, GENERATE_DRAFT_VERSION } from './draftStorage';
 
 const IDEA = 'A task tracker where teams create projects and assign tasks.';
 
@@ -358,7 +359,9 @@ describe('GeneratePage — four-step explicit wizard', () => {
   });
 
   it('restores non-secret wizard progress without storing API keys or DB URLs', () => {
-    window.localStorage.setItem('verireview.generate.wizard', JSON.stringify({
+    window.localStorage.setItem(draftKey('user-a'), JSON.stringify({
+      version: GENERATE_DRAFT_VERSION,
+      userId: 'user-a',
       name: 'restored-project',
       idea: IDEA,
       extraInfo: 'restored',
@@ -366,12 +369,67 @@ describe('GeneratePage — four-step explicit wizard', () => {
       backend: 'JAVA_SPRING_BOOT',
       frontend: 'REACT_TYPESCRIPT',
       languageRuntime: 'Java 21',
+      backendCustom: '',
+      frontendCustom: '',
       answers: { 'generation.model': { value: 'template', skipped: false } },
     }));
-    renderGenerate(handlerWithQuestions());
+    render(
+      <MemoryRouter initialEntries={['/generate']}>
+        <AuthProvider initial={{
+          token: 'tok',
+          refreshToken: null,
+          user: {
+            id: 'user-a',
+            email: 'a@example.com',
+            displayName: null,
+            roles: [],
+            enabled: true,
+            createdAt: '2026-01-01T00:00:00Z',
+          },
+        }}>
+          <GeneratePage />
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Continue where you left off?')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue where you left off' }));
     expect(screen.getByLabelText(/Project name/)).toHaveValue('restored-project');
-    expect(window.localStorage.getItem('verireview.generate.wizard')).not.toContain('apiKey');
-    expect(window.localStorage.getItem('verireview.generate.wizard')).not.toContain('database.connection');
+    expect(window.localStorage.getItem(draftKey('user-a'))).not.toContain('apiKey');
+    expect(window.localStorage.getItem(draftKey('user-a'))).not.toContain('database.connection');
+  });
+
+  it('does not show another user’s draft and discards invalid drafts', () => {
+    window.localStorage.setItem(draftKey('user-a'), JSON.stringify({
+      version: GENERATE_DRAFT_VERSION,
+      userId: 'user-a',
+      name: 'private-draft',
+    }));
+    window.localStorage.setItem(draftKey('user-b'), JSON.stringify({
+      version: GENERATE_DRAFT_VERSION - 1,
+      userId: 'user-b',
+      name: 'old-draft',
+    }));
+    render(
+      <MemoryRouter initialEntries={['/generate']}>
+        <AuthProvider initial={{
+          token: 'tok',
+          refreshToken: null,
+          user: {
+            id: 'user-b',
+            email: 'b@example.com',
+            displayName: null,
+            roles: [],
+            enabled: true,
+            createdAt: '2026-01-01T00:00:00Z',
+          },
+        }}>
+          <GeneratePage />
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText('Continue where you left off?')).not.toBeInTheDocument();
+    expect(window.localStorage.getItem(draftKey('user-b'))).toBeNull();
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('');
   });
 
   it('step 1 requires a project name and a meaningful task description', () => {
@@ -389,6 +447,25 @@ describe('GeneratePage — four-step explicit wizard', () => {
     fireEvent.change(screen.getByLabelText(/Task description/), { target: { value: IDEA } });
     fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
     expect(screen.getByRole('heading', { name: 'Generation engine' })).toBeInTheDocument();
+  });
+
+  it('shows an inline error and focuses an invalid project name', () => {
+    renderGenerate(() => pageOf([]));
+    fireEvent.change(screen.getByLabelText(/Project name/), {
+      target: { value: `${'x'.repeat(61)}` },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
+    expect(screen.getAllByText(/60 characters or fewer/).length).toBeGreaterThan(0);
+    expect(screen.getByLabelText(/Project name/)).toHaveFocus();
+  });
+
+  it('confirms Start over and clears the current draft and fields', () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderGenerate(() => pageOf([]));
+    fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: 'demo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('');
+    expect(window.confirm).toHaveBeenCalled();
   });
 
   it('step 2 starts empty, shows suggestions without applying them, and supports Other', () => {
