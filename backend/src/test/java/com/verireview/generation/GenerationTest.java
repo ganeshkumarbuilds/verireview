@@ -29,6 +29,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.zip.ZipInputStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -189,8 +192,8 @@ class GenerationTest extends AbstractPersistenceTest {
     assertThat(settled.get("status").asText()).isEqualTo("REVIEWED");
     assertThat(settled.get("projectId").isNull()).isTrue();
     assertThat(settled.get("iteration").asInt()).isEqualTo(1);
-    assertThat(settled.get("artifact").get("fileCount").asInt()).isEqualTo(1);
-    assertThat(settled.get("plan").get("fileCount").asInt()).isEqualTo(1);
+    assertThat(settled.get("artifact").get("fileCount").asInt()).isEqualTo(9);
+    assertThat(settled.get("plan").get("fileCount").asInt()).isEqualTo(9);
     assertThat(settled.get("plan").get("architecture").asText()).isEqualTo("Single-module app");
 
     // Actual file contents land on disk in the isolated workspace.
@@ -453,6 +456,18 @@ class GenerationTest extends AbstractPersistenceTest {
     assertThat(zip.length).isGreaterThan(0);
     assertThat(zip[0]).isEqualTo((byte) 'P');
     assertThat(zip[1]).isEqualTo((byte) 'K');
+    Map<String, String> archiveFiles = new HashMap<>();
+    try (ZipInputStream input = new ZipInputStream(new java.io.ByteArrayInputStream(zip))) {
+      java.util.zip.ZipEntry entry;
+      while ((entry = input.getNextEntry()) != null) {
+        archiveFiles.put(entry.getName(), new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+      }
+    }
+    assertThat(archiveFiles).containsKeys(
+        "README.md", ".gitignore", ".env.example", "Dockerfile",
+        "docker-compose.yml", "LICENSE", "manifest.json", "scripts/run.sh", "scripts/test.sh");
+    assertThat(archiveFiles.get(".env.example")).doesNotContain("s3cr3t", "postgres.example.com");
+    assertThat(archiveFiles.get("manifest.json")).contains("README.md", "Dockerfile", "docker-compose.yml");
 
     // Hermetic: drop the workspace only after the download consumed it.
     storage.deleteQuietly(

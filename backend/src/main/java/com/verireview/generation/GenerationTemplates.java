@@ -105,7 +105,21 @@ public final class GenerationTemplates {
           ? known
           : customTemplate(planned.path(), planned.purpose()));
     }
-    return List.copyOf(selected);
+    java.util.Map<String, AiGenerationFilesResult.GeneratedFile> completed = new java.util.LinkedHashMap<>();
+    selected.forEach(file -> completed.put(file.path(), file));
+    GenerationProjectScaffold.fallbackFiles(backend, frontend, database, templateEnvExample(database))
+        .forEach(file -> completed.put(file.path(), file));
+    return List.copyOf(completed.values());
+  }
+
+  private static String templateEnvExample(GenerationDatabase database) {
+    StringBuilder env = new StringBuilder(
+        "# Copy to .env and provide values locally. Never commit real credentials.\nPORT=\n");
+    if (database != GenerationDatabase.NONE) {
+      env.append("DATABASE_URL=\nDATABASE_HOST=\nDATABASE_PORT=\nDATABASE_NAME=\n")
+          .append("DATABASE_USERNAME=\nDATABASE_PASSWORD=\nDATABASE_SSL_MODE=\n");
+    }
+    return env.toString();
   }
 
   private static AiGenerationFilesResult.GeneratedFile customTemplate(String path, String purpose) {

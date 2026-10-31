@@ -4,6 +4,7 @@ import com.verireview.generation.dto.GenerationAnswerRequest;
 import com.verireview.generation.dto.GenerationQuestion;
 import com.verireview.generation.dto.GenerationQuestionType;
 import com.verireview.generation.dto.GenerationQuestionsRequest;
+import com.verireview.generation.dto.GenerationWizardCatalogResponse;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -47,6 +48,41 @@ public final class GenerationWizardCatalog {
 
   public static boolean isSecret(String questionId) {
     return SECRET_IDS.contains(questionId);
+  }
+
+  public static GenerationWizardCatalogResponse catalog() {
+    return new GenerationWizardCatalogResponse(List.of(
+        new GenerationWizardCatalogResponse.Engine(
+            "TEMPLATE",
+            "Template",
+            "Fast, no AI key, Spring Boot + React only.",
+            List.of(GenerationBackend.JAVA_SPRING_BOOT),
+            List.of(GenerationFrontend.REACT_TYPESCRIPT, GenerationFrontend.NONE)),
+        new GenerationWizardCatalogResponse.Engine(
+            "AI",
+            "AI",
+            "Any stack, needs your AI key.",
+            List.of(GenerationBackend.values()),
+            List.of(GenerationFrontend.values()))));
+  }
+
+  public static void validateStack(String engine, GenerationBackend backend,
+      GenerationFrontend frontend) {
+    String normalized = engine == null ? "" : engine.trim().toUpperCase(Locale.ROOT);
+    boolean template = "TEMPLATE".equals(normalized);
+    boolean ai = "AI".equals(normalized) || "OPENROUTER".equals(normalized)
+        || "CUSTOM".equals(normalized);
+    if (!template && !ai) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+          "Choose a supported generation engine.");
+    }
+    if (template && (backend != GenerationBackend.JAVA_SPRING_BOOT
+        || (frontend != GenerationFrontend.REACT_TYPESCRIPT
+            && frontend != GenerationFrontend.NONE))) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+          "Template generation supports Spring Boot with React or no frontend. "
+              + "Switch to the AI engine to use another stack.");
+    }
   }
 
   /** Every question is derived from the explicit steps 1–2 choices. */
@@ -303,14 +339,7 @@ public final class GenerationWizardCatalog {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "Authentication requires a backend");
     }
-    if ("TEMPLATE".equals(engine)
-        && (project.backend() != GenerationBackend.JAVA_SPRING_BOOT
-            || (project.frontend() != GenerationFrontend.REACT_TYPESCRIPT
-                && project.frontend() != GenerationFrontend.NONE))) {
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST,
-          "Template generation supports Spring Boot with React or no frontend");
-    }
+    validateStack(engine, project.backend(), project.frontend());
     boolean aiFeatures = "YES".equalsIgnoreCase(values.get(AI_FEATURES));
     if (aiFeatures && "TEMPLATE".equals(engine)) {
       throw new ResponseStatusException(

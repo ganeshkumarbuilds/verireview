@@ -569,6 +569,7 @@ public class GenerationRunner {
               ? GenerationTemplates.plan(snapshot.id().toString(), snapshot.backend(),
                   snapshot.frontend(), snapshot.database())
               : planFiles(snapshot, secrets);
+      result = addRequiredProjectFiles(result, snapshot);
       validatePlan(result);
       UUID planId = approvedPlan != null
           ? generations.planId(generationId, iteration)
@@ -608,6 +609,13 @@ public class GenerationRunner {
       List<AiGenerationFilesResult.GeneratedFile> generated = template
           ? GenerationTemplates.files(snapshot.backend(), snapshot.frontend(), snapshot.database(), plan)
           : generateFiles(snapshot, secrets, plan);
+      generated = GenerationProjectScaffold.complete(
+          generated,
+          snapshot.backend(),
+          snapshot.frontend(),
+          snapshot.database(),
+          envExample(snapshot));
+      assertNoEmbeddedConnectionDetails(generated, snapshot);
       validateGeneratedFiles(generated, plan);
       List<ValidatedFile> validated = review(generated, secrets);
       Path workspace = writeWorkspace(generationId, iteration, validated);
@@ -640,6 +648,41 @@ public class GenerationRunner {
       throw new GenerationException(
           "Generated files did not match the approved file list. Please review the plan and retry.");
     }
+  }
+
+  private AiGenerationPlanResult addRequiredProjectFiles(
+      AiGenerationPlanResult result, GenerationService.GenerationSnapshot snapshot) {
+    Map<String, AiGenerationPlanResult.PlannedFile> files = new LinkedHashMap<>();
+    for (AiGenerationPlanResult.PlannedFile file : result.files()) {
+      files.put(file.path(), file);
+    }
+    for (AiGenerationPlanResult.PlannedFile file : GenerationProjectScaffold.requiredPlan(
+        snapshot.backend(), snapshot.frontend(), snapshot.database())) {
+      files.putIfAbsent(file.path(), file);
+    }
+    AiGenerationPlanResult.PlanSections sections = result.sections() == null
+        ? AiGenerationPlanResult.PlanSections.empty() : result.sections();
+    return new AiGenerationPlanResult(
+        result.generationId(), List.copyOf(files.values()), result.notes(), sections);
+  }
+
+  private String envExample(GenerationService.GenerationSnapshot snapshot) {
+    StringBuilder env = new StringBuilder(
+        "# Copy to .env and provide values locally. Never commit real credentials.\n");
+    env.append("PORT=\n");
+    if (snapshot.database() != GenerationDatabase.NONE) {
+      env.append("DATABASE_URL=\n")
+          .append("DATABASE_HOST=\n")
+          .append("DATABASE_PORT=\n")
+          .append("DATABASE_NAME=\n")
+          .append("DATABASE_USERNAME=\n")
+          .append("DATABASE_PASSWORD=\n")
+          .append("DATABASE_SSL_MODE=\n");
+    }
+    if (snapshot.aiProvider() != GenerationAiProvider.NONE) {
+      env.append("AI_API_KEY=\nAI_PROVIDER=\nAI_MODEL=\nAI_BASE_URL=\n");
+    }
+    return env.toString();
   }
 
   private static long millisSince(long startedNanos) {
@@ -784,6 +827,15 @@ public class GenerationRunner {
     if (secret != null && !secret.isBlank() && content.contains(secret)) {
       throw new GenerationException(
           "Generated file embeds credentials (" + path + "); secrets must use environment variables");
+    }
+  }
+
+  private void assertNoEmbeddedConnectionDetails(
+      List<AiGenerationFilesResult.GeneratedFile> generated,
+      GenerationService.GenerationSnapshot snapshot) {
+    for (AiGenerationFilesResult.GeneratedFile file : generated) {
+      assertNoEmbeddedSecret(file.content(), file.path(), snapshot.dbHost());
+      assertNoEmbeddedSecret(file.content(), file.path(), snapshot.aiBaseUrl());
     }
   }
 
@@ -1073,6 +1125,7 @@ public class GenerationRunner {
 
       List<GenerationStaticAnalyzer.StaticFinding> staticFindings =
           staticAnalyzer.analyze(readGeneratedFiles(workspace));
+      staticFindings = mergeContractFindings(staticFindings, readGeneratedFiles(workspace), snapshot);
       List<com.verireview.agent.dto.AiDeterministicFinding> deterministic =
           staticFindings.stream()
               .map(finding -> new com.verireview.agent.dto.AiDeterministicFinding(
@@ -1194,6 +1247,7 @@ public class GenerationRunner {
       List<com.verireview.agent.dto.AiFileSnapshot> files = readWorkspaceFiles(workspace);
       List<GenerationStaticAnalyzer.StaticFinding> staticFindings =
           staticAnalyzer.analyze(readGeneratedFiles(workspace));
+      staticFindings = mergeContractFindings(staticFindings, readGeneratedFiles(workspace), snapshot);
       List<com.verireview.agent.dto.AiDeterministicFinding> deterministic =
           staticFindings.stream()
               .map(finding -> new com.verireview.agent.dto.AiDeterministicFinding(
@@ -1320,11 +1374,13 @@ public class GenerationRunner {
     if (!Files.isDirectory(workspace)) {
       return List.of();
     }
+
     try (var paths = Files.walk(workspace)) {
       for (Path file : paths.filter(Files::isRegularFile).toList()) {
         if (Files.isSymbolicLink(file)) {
           continue;
         }
+
         String relativePath = workspace.relativize(file).toString().replace('\\', '/');
         String content = Files.readString(file);
         if (content.indexOf('\0') < 0 && !content.isBlank()) {
@@ -1355,10 +1411,21 @@ public class GenerationRunner {
               relative, content, languageOf(relative, null)));
         }
       }
+
       return List.copyOf(files);
     } catch (Exception e) {
       throw new GenerationException("Static checks could not read generated files", e);
     }
+  }
+
+  private List<GenerationStaticAnalyzer.StaticFinding> mergeContractFindings(
+      List<GenerationStaticAnalyzer.StaticFinding> syntaxFindings,
+      List<AiGenerationFilesResult.GeneratedFile> files,
+      GenerationService.GenerationSnapshot snapshot) {
+    List<GenerationStaticAnalyzer.StaticFinding> all = new ArrayList<>(syntaxFindings);
+    all.addAll(staticAnalyzer.analyzeProjectContract(
+        files, snapshot.backend(), snapshot.frontend(), snapshot.database()));
+    return List.copyOf(all);
   }
 
   /**

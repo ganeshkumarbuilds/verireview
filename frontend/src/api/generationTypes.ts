@@ -124,6 +124,18 @@ export interface GenerationWizardPlanInput {
   answers: GenerationAnswer[];
 }
 
+export interface GenerationWizardCatalogEngine {
+  id: 'TEMPLATE' | 'AI';
+  label: string;
+  description: string;
+  supportedBackends: GenerationBackend[];
+  supportedFrontends: GenerationFrontend[];
+}
+
+export interface GenerationWizardCatalog {
+  engines: GenerationWizardCatalogEngine[];
+}
+
 export interface UpdateGenerationInput {
   name?: string;
   requirement?: string;

@@ -1,12 +1,17 @@
 package com.verireview.generation;
 
 import com.verireview.agent.dto.AiGenerationFilesResult;
+import com.verireview.generation.GenerationBackend;
+import com.verireview.generation.GenerationDatabase;
+import com.verireview.generation.GenerationFrontend;
 import com.verireview.review.FindingSeverity;
 import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.tools.Diagnostic;
@@ -59,6 +64,66 @@ public class GenerationStaticAnalyzer {
       checkSourceRules(path, content, extension, findings);
     }
     return List.copyOf(findings);
+  }
+
+  public List<StaticFinding> analyzeProjectContract(
+      List<AiGenerationFilesResult.GeneratedFile> files,
+      GenerationBackend backend,
+      GenerationFrontend frontend,
+      GenerationDatabase database) {
+    Map<String, String> byPath = new LinkedHashMap<>();
+    files.forEach(file -> byPath.put(file.path(), file.content()));
+    List<StaticFinding> findings = new ArrayList<>();
+    for (String required : List.of(
+        "README.md", ".gitignore", ".env.example", "Dockerfile", "docker-compose.yml", "LICENSE")) {
+      if (!byPath.containsKey(required)) {
+        findings.add(contractFinding(required, 1, "Required project file is missing."));
+      }
+    }
+    if (backend != GenerationBackend.NONE || frontend != GenerationFrontend.NONE) {
+      for (String script : List.of("scripts/run.sh", "scripts/test.sh")) {
+        if (!byPath.containsKey(script)) {
+          findings.add(contractFinding(script, 1, "The selected stack requires the standard helper script."));
+        }
+      }
+    }
+    String readme = byPath.get("README.md");
+    if (readme != null) {
+      for (String section : List.of("install", "run", "test", "build", "environment", "structure", "troubleshoot")) {
+        if (!readme.toLowerCase(Locale.ROOT).contains(section)) {
+          findings.add(contractFinding("README.md", 1,
+              "README is missing the " + section + " instructions required by the generated-project contract."));
+        }
+      }
+    }
+    String dockerfile = byPath.get("Dockerfile");
+    if (dockerfile != null) {
+      if (!dockerfile.contains("USER ")) {
+        findings.add(contractFinding("Dockerfile", 1,
+            "Dockerfile does not declare a non-root USER."));
+      }
+      if (!dockerfile.toUpperCase(Locale.ROOT).contains("HEALTHCHECK")) {
+        findings.add(contractFinding("Dockerfile", 1,
+            "Dockerfile does not declare a HEALTHCHECK."));
+      }
+    }
+    String compose = byPath.get("docker-compose.yml");
+    if (compose != null) {
+      if (!compose.contains("env_file") && !compose.contains("${")) {
+        findings.add(contractFinding("docker-compose.yml", 1,
+            "Compose does not use environment variables for application configuration."));
+      }
+      if (database != GenerationDatabase.NONE && !compose.contains("database:")) {
+        findings.add(contractFinding("docker-compose.yml", 1,
+            "A database was selected but docker-compose.yml has no database service."));
+      }
+    }
+    return List.copyOf(findings);
+  }
+
+  private static StaticFinding contractFinding(String file, int line, String explanation) {
+    return new StaticFinding(
+        file, line, "style", FindingSeverity.MEDIUM, "Project contract mismatch", explanation);
   }
 
   private void parseJava(String path, String content, List<StaticFinding> findings) {

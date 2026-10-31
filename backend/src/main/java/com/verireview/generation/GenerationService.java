@@ -50,7 +50,6 @@ import com.verireview.verification.VerificationVerdict;
 import com.verireview.verification.BuildStatus;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -2597,26 +2596,32 @@ public class GenerationService {
   private byte[] buildZip(Path workspace, Generation generation) throws IOException {
     try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
          ZipOutputStream zos = new ZipOutputStream(baos)) {
+      List<String> manifestFiles = new ArrayList<>();
+      try (var paths = Files.walk(workspace)) {
+        for (Path file : paths.filter(Files::isRegularFile).sorted().toList()) {
+          String relativePath = workspace.relativize(file).toString().replace('\\', '/');
+          if (".env.example".equals(relativePath)) {
+            continue;
+          }
+          ZipEntry entry = new ZipEntry(relativePath);
+          zos.putNextEntry(entry);
+          Files.copy(file, zos);
+          zos.closeEntry();
+          manifestFiles.add(relativePath);
+        }
+      }
 
-      Files.walk(workspace)
-          .filter(Files::isRegularFile)
-          .forEach(file -> {
-            try {
-              String relativePath = workspace.relativize(file).toString();
-              ZipEntry entry = new ZipEntry(relativePath);
-              zos.putNextEntry(entry);
-              Files.copy(file, zos);
-              zos.closeEntry();
-            } catch (IOException e) {
-              throw new UncheckedIOException(e);
-            }
-          });
-
-      // Add .env.example with placeholders
       String envExample = buildEnvExample(generation);
       ZipEntry envEntry = new ZipEntry(".env.example");
       zos.putNextEntry(envEntry);
       zos.write(envExample.getBytes(StandardCharsets.UTF_8));
+      zos.closeEntry();
+      manifestFiles.add(".env.example");
+
+      manifestFiles.sort(String::compareTo);
+      ZipEntry manifestEntry = new ZipEntry("manifest.json");
+      zos.putNextEntry(manifestEntry);
+      zos.write(manifestJson(manifestFiles).getBytes(StandardCharsets.UTF_8));
       zos.closeEntry();
 
       zos.finish();
@@ -2624,32 +2629,43 @@ public class GenerationService {
     }
   }
 
+  private String manifestJson(List<String> files) {
+    StringBuilder json = new StringBuilder("{\n  \"files\": [\n");
+    for (int i = 0; i < files.size(); i++) {
+      if (i > 0) {
+        json.append(",\n");
+      }
+      json.append("    \"").append(files.get(i).replace("\\", "\\\\").replace("\"", "\\\""))
+          .append("\"");
+    }
+    return json.append("\n  ]\n}\n").toString();
+  }
+
   private String buildEnvExample(Generation generation) {
     StringBuilder sb = new StringBuilder();
     sb.append("# VeriReview generated project - environment configuration\n");
     sb.append("# Copy this file to .env and fill in your actual values\n");
     sb.append("# NEVER commit .env with real credentials to version control\n\n");
+    sb.append("PORT=\n");
 
     if (generation.getDatabaseType() != GenerationDatabase.NONE) {
       sb.append("# Database configuration\n");
       sb.append("DATABASE_URL=\n");
-      sb.append("DATABASE_HOST=").append(generation.getDbHost() != null ? generation.getDbHost() : "").append("\n");
-      sb.append("DATABASE_PORT=").append(generation.getDbPort() != null ? generation.getDbPort() : "").append("\n");
-      sb.append("DATABASE_NAME=").append(generation.getDbName() != null ? generation.getDbName() : "").append("\n");
-      sb.append("DATABASE_USERNAME=").append(generation.getDbUsername() != null ? generation.getDbUsername() : "").append("\n");
+      sb.append("DATABASE_HOST=\n");
+      sb.append("DATABASE_PORT=\n");
+      sb.append("DATABASE_NAME=\n");
+      sb.append("DATABASE_USERNAME=\n");
       sb.append("DATABASE_PASSWORD=\n");
-      if (generation.getDbSslMode() != null) {
-        sb.append("DATABASE_SSL_MODE=").append(generation.getDbSslMode()).append("\n");
-      }
+      sb.append("DATABASE_SSL_MODE=\n");
       sb.append("\n");
     }
 
-    sb.append("# AI configuration\n");
-    sb.append("AI_API_KEY=\n");
-    sb.append("AI_PROVIDER=").append(generation.getAiProvider().name()).append("\n");
-    sb.append("AI_MODEL=").append(generation.getAiModel()).append("\n");
-    if (generation.getAiBaseUrl() != null) {
-      sb.append("AI_BASE_URL=").append(generation.getAiBaseUrl()).append("\n");
+    if (generation.getAiProvider() != GenerationAiProvider.NONE) {
+      sb.append("# AI configuration\n");
+      sb.append("AI_API_KEY=\n");
+      sb.append("AI_PROVIDER=\n");
+      sb.append("AI_MODEL=\n");
+      sb.append("AI_BASE_URL=\n");
     }
 
     return sb.toString();

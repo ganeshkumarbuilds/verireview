@@ -6,6 +6,7 @@ import type {
   GenerationFileView,
   GenerationFixPreviewResponse,
   GenerationQuestion,
+  GenerationWizardCatalog,
   GenerationQuestionsInput,
   GenerationResponse,
   GenerationWizardPlanInput,
@@ -289,6 +290,27 @@ export async function getGenerationQuestions(
   input: GenerationQuestionsInput,
 ): Promise<GenerationQuestion[]> {
   return client.request<GenerationQuestion[]>('/generate/questions', {
+    method: 'POST',
+    headers: bearer(token),
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getGenerationWizardCatalog(
+  client: ApiClient,
+  token: string,
+): Promise<GenerationWizardCatalog> {
+  return client.request<GenerationWizardCatalog>('/generate/catalog', {
+    headers: bearer(token),
+  });
+}
+
+export async function validateGenerationWizardStack(
+  client: ApiClient,
+  token: string,
+  input: { engine: string; backend: GenerationQuestionsInput['backend']; frontend: GenerationQuestionsInput['frontend'] },
+): Promise<void> {
+  await client.request<void>('/generate/validate-stack', {
     method: 'POST',
     headers: bearer(token),
     body: JSON.stringify(input),

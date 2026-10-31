@@ -215,6 +215,8 @@ function answerBasics(name = 'task-tracker') {
   fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: name } });
   fireEvent.change(screen.getByLabelText(/Task description/), { target: { value: IDEA } });
   fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
+  fireEvent.click(screen.getByRole('radio', { name: /Template/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
 }
 
 function chooseStack() {
@@ -251,6 +253,26 @@ function handlerWithQuestions(extra?: (url: string, init?: RequestInit) => Respo
     }
     if (url.endsWith('/generate/questions')) {
       return new Response(JSON.stringify(questionSet()), { status: 200 });
+    }
+    if (url.endsWith('/generate/catalog')) {
+      return new Response(JSON.stringify({
+        engines: [
+          {
+            id: 'TEMPLATE',
+            label: 'Template',
+            description: 'Fast, no AI key, Spring Boot + React only.',
+            supportedBackends: ['JAVA_SPRING_BOOT'],
+            supportedFrontends: ['REACT_TYPESCRIPT', 'NONE'],
+          },
+          {
+            id: 'AI',
+            label: 'AI',
+            description: 'Any stack, needs your AI key.',
+            supportedBackends: ['JAVA_SPRING_BOOT', 'PYTHON_FASTAPI', 'NODEJS', 'OTHER', 'NONE'],
+            supportedFrontends: ['REACT_TYPESCRIPT', 'NEXTJS', 'VUE', 'OTHER', 'NONE'],
+          },
+        ],
+      }), { status: 200 });
     }
     if (url.endsWith('/generate/plan')) {
       return new Response(JSON.stringify(planPreview()), { status: 200 });
@@ -320,6 +342,38 @@ afterEach(() => {
 });
 
 describe('GeneratePage — four-step explicit wizard', () => {
+  it('disables stacks unsupported by Template and explains an engine change', () => {
+    renderGenerate(handlerWithQuestions());
+    answerBasics();
+    expect(screen.getByRole('option', { name: /Next\.js/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(screen.getAllByRole('radio').find((radio) => radio.textContent?.startsWith('AI'))!);
+    fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
+    fireEvent.change(screen.getByLabelText('Backend'), { target: { value: 'JAVA_SPRING_BOOT' } });
+    fireEvent.change(screen.getByLabelText('Frontend'), { target: { value: 'NEXTJS' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(screen.getAllByRole('radio').find((radio) => radio.textContent?.startsWith('Template'))!);
+    expect(screen.getAllByRole('status').find((status) =>
+      status.textContent?.includes('cleared because this engine does not support'))).toBeTruthy();
+  });
+
+  it('restores non-secret wizard progress without storing API keys or DB URLs', () => {
+    window.localStorage.setItem('verireview.generate.wizard', JSON.stringify({
+      name: 'restored-project',
+      idea: IDEA,
+      extraInfo: 'restored',
+      generationEngine: 'TEMPLATE',
+      backend: 'JAVA_SPRING_BOOT',
+      frontend: 'REACT_TYPESCRIPT',
+      languageRuntime: 'Java 21',
+      answers: { 'generation.model': { value: 'template', skipped: false } },
+    }));
+    renderGenerate(handlerWithQuestions());
+    expect(screen.getByLabelText(/Project name/)).toHaveValue('restored-project');
+    expect(window.localStorage.getItem('verireview.generate.wizard')).not.toContain('apiKey');
+    expect(window.localStorage.getItem('verireview.generate.wizard')).not.toContain('database.connection');
+  });
+
   it('step 1 requires a project name and a meaningful task description', () => {
     renderGenerate(() => pageOf([]));
 
@@ -334,7 +388,7 @@ describe('GeneratePage — four-step explicit wizard', () => {
 
     fireEvent.change(screen.getByLabelText(/Task description/), { target: { value: IDEA } });
     fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
-    expect(screen.getByRole('heading', { name: 'Stack' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Generation engine' })).toBeInTheDocument();
   });
 
   it('step 2 starts empty, shows suggestions without applying them, and supports Other', () => {

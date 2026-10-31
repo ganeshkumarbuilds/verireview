@@ -4,12 +4,15 @@ import com.verireview.generation.dto.GenerationPlanRequest;
 import com.verireview.generation.dto.GenerationQuestion;
 import com.verireview.generation.dto.GenerationQuestionsRequest;
 import com.verireview.generation.dto.PlanPreviewResponse;
+import com.verireview.generation.dto.GenerationWizardCatalogResponse;
+import com.verireview.generation.dto.GenerationWizardStackValidationRequest;
 import com.verireview.security.VeriReviewUserDetails;
 import jakarta.validation.Valid;
 import java.util.List;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -27,6 +30,21 @@ public class GenerateWizardController {
 
   public GenerateWizardController(GenerationWizardService wizard) {
     this.wizard = wizard;
+  }
+
+  @GetMapping("/catalog")
+  public ResponseEntity<GenerationWizardCatalogResponse> catalog(
+      @AuthenticationPrincipal VeriReviewUserDetails principal) {
+    return ResponseEntity.ok(GenerationWizardCatalog.catalog());
+  }
+
+  @PostMapping("/validate-stack")
+  public ResponseEntity<Void> validateStack(
+      @AuthenticationPrincipal VeriReviewUserDetails principal,
+      @Valid @RequestBody GenerationWizardStackValidationRequest request) {
+    GenerationWizardCatalog.validateStack(
+        request.engine(), request.backend(), request.frontend());
+    return ResponseEntity.noContent().build();
   }
 
   @PostMapping("/questions")
