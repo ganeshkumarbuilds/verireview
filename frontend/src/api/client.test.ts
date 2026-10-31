@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiClient, ApiError, parseBody } from './client';
 
 describe('ApiClient', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('joins paths onto the base URL', () => {
     const client = new ApiClient({ baseUrl: 'http://localhost:8080/api/v1/' });
     expect(client.buildUrl('/projects')).toBe('http://localhost:8080/api/v1/projects');
@@ -48,5 +52,19 @@ describe('ApiClient', () => {
     });
     await client.request('/projects/import/zip', { method: 'POST', body: new FormData() });
     expect(new Headers(sent?.headers).get('Content-Type')).toBeNull();
+  });
+
+  it('uses a fire-and-forget no-cors request and never throws for liveness', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error('offline'));
+    const client = new ApiClient({
+      baseUrl: 'https://api.example.test/api/v1',
+      fetchImpl,
+    });
+
+    await expect(client.liveness()).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.example.test/actuator/health/liveness',
+      { mode: 'no-cors', keepalive: true },
+    );
   });
 });

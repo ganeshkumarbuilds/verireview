@@ -399,6 +399,8 @@ export function GeneratePage() {
   const [answers, setAnswers] = useState<Record<string, { value: string; skipped: boolean }>>({});
   const [questionsLoading, setQuestionsLoading] = useState(false);
   const [questionsError, setQuestionsError] = useState<string | null>(null);
+  const [questionErrors, setQuestionErrors] = useState<string[]>([]);
+  const questionControlRefs = useRef<Record<string, HTMLElement | null>>({});
 
   const [dbHost, setDbHost] = useState('');
   const [dbPort, setDbPort] = useState('');
@@ -456,6 +458,14 @@ export function GeneratePage() {
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, []);
+
+  useEffect(() => {
+    if (step !== 4 || questionErrors.length === 0) return;
+    const firstId = questionErrors[0];
+    const control = questionControlRefs.current[firstId]
+      ?? document.getElementById('db-host');
+    window.setTimeout(() => control?.focus(), 0);
+  }, [step, questionErrors]);
 
   useEffect(() => {
     if (!token) return;
@@ -685,6 +695,7 @@ export function GeneratePage() {
     let cancelled = false;
     setPreviewLoading(true);
     setPreviewError(null);
+    setPlanPreview(null);
     previewWizardPlan(apiClient(), token, {
       project: buildQuestionsInput(),
       answers: answersPayload(),
@@ -817,6 +828,9 @@ export function GeneratePage() {
         const blank = !answer || (!answer.skipped && !answer.value.trim());
         return question.required && (blank || (answer?.skipped && !question.allowSkip));
       });
+      const blockingQuestionIds = missing
+        .filter((question) => questions.some((item) => item.id === question.id))
+        .map((question) => question.id);
       const engine = answers['generation.engine']?.value;
       if (engine && engine !== 'TEMPLATE') {
         if (!answers['generation.model']?.value.trim()) {
@@ -830,9 +844,12 @@ export function GeneratePage() {
         }
       }
       if (missing.length > 0) {
+        setQuestionErrors(blockingQuestionIds);
+        questionControlRefs.current[blockingQuestionIds[0]]?.focus();
         setError(`Answer these questions first: ${missing.map((item) => item.prompt).join('; ')}`);
         return;
       }
+      setQuestionErrors([]);
       const databaseType = answers['database.type'];
       const connection = answers['database.connection'];
       if (databaseType && !databaseType.skipped && databaseType.value !== 'NONE'
@@ -840,6 +857,9 @@ export function GeneratePage() {
         const port = Number(dbPort);
         if (!dbHost.trim() || !dbPort.trim() || !dbName.trim() || !dbUser.trim()
             || !Number.isInteger(port) || port < 1 || port > 65535) {
+          setQuestionErrors((current) => current.includes('database.connection')
+            ? current
+            : [...current, 'database.connection']);
           setError(
             'Enter database host, port, name and username, or choose Ask me later for the connection.',
           );
@@ -887,10 +907,17 @@ export function GeneratePage() {
 
   function setAnswerValue(questionId: string, value: string) {
     setAnswers((current) => ({ ...current, [questionId]: { value, skipped: false } }));
+    setQuestionErrors((current) => current.filter((id) => id !== questionId));
   }
 
   function skipAnswer(questionId: string) {
+    const question = questions.find((item) => item.id === questionId);
+    if (!question?.allowSkip) {
+      setQuestionErrors((current) => current.includes(questionId) ? current : [...current, questionId]);
+      return;
+    }
     setAnswers((current) => ({ ...current, [questionId]: { value: '', skipped: true } }));
+    setQuestionErrors((current) => current.filter((id) => id !== questionId));
   }
 
   function answersPayload(): GenerationAnswer[] {
@@ -1492,6 +1519,12 @@ export function GeneratePage() {
             </p>
             {questionsLoading && <LoadingState label="Preparing questions…" />}
             {questionsError && <ErrorAlert message={questionsError} />}
+            {questionErrors.length > 0 && (
+              <p role="status" aria-live="assertive" className="text-sm font-semibold text-red-700">
+                {questionErrors.length} question{questionErrors.length === 1 ? '' : 's'} need
+                {questionErrors.length === 1 ? 's' : ''} an answer
+              </p>
+            )}
           </Panel>
 
           {!questionsLoading && !questionsError && questions.map((question) => {
@@ -1575,6 +1608,8 @@ export function GeneratePage() {
                   <select
                     aria-label={question.prompt}
                     className={selectClass}
+                    ref={(element) => { questionControlRefs.current[question.id] = element; }}
+                    aria-invalid={questionErrors.includes(question.id)}
                     value={skipped ? '' : answer?.value ?? ''}
                     onChange={(event) => setAnswerValue(question.id, event.target.value)}
                     disabled={skipped}
@@ -1590,7 +1625,11 @@ export function GeneratePage() {
                       <button
                         key={value}
                         type="button"
+                        ref={value === 'YES'
+                          ? (element) => { questionControlRefs.current[question.id] = element; }
+                          : undefined}
                         aria-pressed={!skipped && answer?.value === value}
+                        aria-invalid={questionErrors.includes(question.id)}
                         className={!skipped && answer?.value === value
                           ? primaryButtonClass : secondaryButtonClass}
                         onClick={() => setAnswerValue(question.id, value)}
@@ -1606,6 +1645,8 @@ export function GeneratePage() {
                       type={question.secret ? 'password' : 'text'}
                       autoComplete="off"
                       className={inputClass}
+                      ref={(element) => { questionControlRefs.current[question.id] = element; }}
+                      aria-invalid={questionErrors.includes(question.id)}
                       value={skipped ? '' : answer?.value ?? ''}
                       onChange={(event) => setAnswerValue(question.id, event.target.value)}
                       disabled={skipped}
@@ -1620,6 +1661,12 @@ export function GeneratePage() {
                       </p>
                     )}
                   </div>
+                )}
+                {questionErrors.includes(question.id) && (
+                  <p className="text-sm font-medium text-red-700">
+                    This question is required. Choose an answer or pick 'Ask me later'.
+                    {!question.allowSkip && ' Ask me later is not available for this question.'}
+                  </p>
                 )}
                 {skipped && (
                   <p className="text-xs font-medium text-amber-700">
@@ -1662,7 +1709,12 @@ export function GeneratePage() {
             </div>
 
             {previewLoading && <LoadingState label="Building the plan…" />}
-            {previewError && <ErrorAlert message={previewError} />}
+            {previewError && (
+              <ErrorAlert
+                message={previewError}
+                onRetry={() => setPreviewTick((value) => value + 1)}
+              />
+            )}
 
             {planPreview && !previewLoading && (
               <div className="space-y-4">

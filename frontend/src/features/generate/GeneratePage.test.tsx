@@ -416,10 +416,56 @@ describe('GeneratePage — four-step explicit wizard', () => {
     await screen.findByLabelText('Which database should the project use?');
     fireEvent.click(screen.getByRole('button', { name: 'Review plan' }));
     expect(screen.getByText(/Answer these questions first/)).toBeInTheDocument();
+    expect(screen.getByText('5 questions need an answer')).toBeInTheDocument();
+    expect(screen.getAllByText(/This question is required/)).toHaveLength(5);
+    expect(screen.getByLabelText('Which database should the project use?')).toHaveFocus();
 
     await answerQuestions();
     fireEvent.click(screen.getByRole('button', { name: 'Review plan' }));
     expect(await screen.findByLabelText('Planned file path 1')).toHaveValue('src/main/java/app/Application.java');
+  });
+
+  it('allows a backend-approved required question to be skipped', async () => {
+    renderGenerate(handlerWithQuestions());
+    answerBasics();
+    chooseStack();
+
+    await screen.findByLabelText('Where will this deploy?');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Ask me later' })[3]);
+    fireEvent.change(screen.getByLabelText('Which database should the project use?'), {
+      target: { value: 'NONE' },
+    });
+    fireEvent.change(screen.getByLabelText('How should users authenticate?'), {
+      target: { value: 'NONE' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'No' }));
+    fireEvent.change(screen.getByLabelText('Which generation engine should write the code?'), {
+      target: { value: 'TEMPLATE' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Review plan' }));
+    expect(await screen.findByLabelText('Planned file path 1')).toBeInTheDocument();
+  });
+
+  it('shows a retry when the plan preview fails', async () => {
+    let previewAttempts = 0;
+    renderGenerate(handlerWithQuestions((url) => {
+      if (url.endsWith('/generate/plan')) {
+        previewAttempts += 1;
+        return previewAttempts === 1
+          ? new Response(JSON.stringify({ message: 'temporary failure' }), { status: 503 })
+          : new Response(JSON.stringify(planPreview()), { status: 200 });
+      }
+      return undefined;
+    }));
+    answerBasics();
+    chooseStack();
+    await answerQuestions();
+    fireEvent.click(screen.getByRole('button', { name: 'Review plan' }));
+
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByLabelText('Planned file path 1')).toBeInTheDocument();
+    expect(previewAttempts).toBe(2);
   });
 
   it('requires connection details or an explicit Ask me later for a chosen database', async () => {

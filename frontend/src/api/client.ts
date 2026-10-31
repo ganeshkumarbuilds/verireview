@@ -115,7 +115,7 @@ export class ApiClient {
     const livenessUrl = this.baseUrl.replace(/\/api\/v1$/, '') + '/actuator/health/liveness';
     const fetchImpl = this.fetchImpl ?? fetch;
     try {
-      await fetchImpl(livenessUrl, { method: 'GET' });
+      await fetchImpl(livenessUrl, { mode: 'no-cors', keepalive: true });
     } catch {
       // Warm-up is best effort; the auth request reports the real error.
     }
