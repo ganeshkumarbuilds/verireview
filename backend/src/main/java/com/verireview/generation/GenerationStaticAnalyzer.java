@@ -61,6 +61,11 @@ public class GenerationStaticAnalyzer {
         default -> {
         }
       }
+      if ("py".equals(extension)) {
+        checkPythonIndentation(path, content, findings);
+      } else if ("jsx".equals(extension) || "tsx".equals(extension)) {
+        checkJsxTags(path, content, findings);
+      }
       checkSourceRules(path, content, extension, findings);
     }
     return List.copyOf(findings);
@@ -238,6 +243,258 @@ public class GenerationStaticAnalyzer {
     if (!stack.isEmpty() || single || doub || template) {
       addSyntax(path, line, "Source has an unclosed delimiter or string.", findings);
     }
+  }
+
+  private void checkPythonIndentation(
+      String path, String content, List<StaticFinding> findings) {
+    String[] lines = content.split("\\R", -1);
+    List<Integer> indents = new ArrayList<>(List.of(0));
+    int pendingBlockIndent = -1;
+    int pendingBlockLine = -1;
+
+    for (int index = 0; index < lines.length; index++) {
+      String raw = lines[index];
+      String code = pythonCodeWithoutComment(raw);
+      if (code.isBlank()) {
+        continue;
+      }
+      int line = index + 1;
+      int indent = indentationWidth(raw);
+
+      if (pendingBlockIndent >= 0) {
+        if (indent <= pendingBlockIndent) {
+          addSyntax(path, line, "Expected an indented block after line "
+              + pendingBlockLine + ".", findings);
+          pendingBlockIndent = -1;
+        } else {
+          indents.add(indent);
+          pendingBlockIndent = -1;
+        }
+      }
+
+      int current = indents.get(indents.size() - 1);
+      if (indent > current) {
+        if (indents.size() == 1) {
+          addSyntax(path, line, "Unexpected indent.", findings);
+        } else if (pendingBlockIndent < 0 && !indents.contains(indent)) {
+          addSyntax(path, line, "Unexpected indent.", findings);
+        }
+        if (!indents.contains(indent)) {
+          indents.add(indent);
+        }
+      } else if (indent < current) {
+        while (indents.size() > 1 && indent < indents.get(indents.size() - 1)) {
+          indents.remove(indents.size() - 1);
+        }
+        if (indent != indents.get(indents.size() - 1)) {
+          addSyntax(path, line, "Inconsistent dedent.", findings);
+          indents.add(indent);
+        }
+      }
+
+      if (code.trim().endsWith(":")) {
+        pendingBlockIndent = indent;
+        pendingBlockLine = line;
+      }
+    }
+
+    if (pendingBlockIndent >= 0) {
+      addSyntax(path, lines.length, "Expected an indented block after line "
+          + pendingBlockLine + ".", findings);
+    }
+  }
+
+  private void checkJsxTags(
+      String path, String content, List<StaticFinding> findings) {
+    List<JsxTag> tags = new ArrayList<>();
+    int line = 1;
+    for (int i = 0; i < content.length(); i++) {
+      char current = content.charAt(i);
+      if (current == '\n') {
+        line++;
+        continue;
+      }
+      if (current == '/' && i + 1 < content.length() && content.charAt(i + 1) == '/') {
+        i = skipToLineEnd(content, i + 2);
+        continue;
+      }
+      if (current == '/' && i + 1 < content.length() && content.charAt(i + 1) == '*') {
+        i = skipBlockComment(content, i + 2, line);
+        line += countNewlines(content, i + 1, Math.min(content.length(), i + 1));
+        continue;
+      }
+      if (current == '\'' || current == '"' || current == '`') {
+        i = skipQuoted(content, i, current);
+        continue;
+      }
+      if (current == '{' && !tags.isEmpty()) {
+        i = skipJsxExpression(content, i, line);
+        continue;
+      }
+      if (current != '<' || !isLikelyJsxOpen(content, i)) {
+        continue;
+      }
+
+      boolean closing = i + 1 < content.length() && content.charAt(i + 1) == '/';
+      int nameStart = closing ? i + 2 : i + 1;
+      String name;
+      if (nameStart < content.length() && content.charAt(nameStart) == '>') {
+        name = "";
+      } else {
+        int nameEnd = nameStart;
+        while (nameEnd < content.length() && isJsxNameChar(content.charAt(nameEnd))) {
+          nameEnd++;
+        }
+        if (nameEnd == nameStart) {
+          continue;
+        }
+        if (!closing && nameEnd < content.length() && content.charAt(nameEnd) == ',') {
+          continue;
+        }
+        name = content.substring(nameStart, nameEnd);
+      }
+      int tagEnd = skipTag(content, closing ? nameStart : nameStart, line);
+      if (tagEnd < 0) {
+        addSyntax(path, line, "JSX tag is not closed.", findings);
+        return;
+      }
+      boolean selfClosing = !closing && content.charAt(tagEnd - 1) == '/';
+      if (closing) {
+        if (tags.isEmpty() || !tags.get(tags.size() - 1).name().equals(name)) {
+          String expected = tags.isEmpty() ? "none" : tags.get(tags.size() - 1).name();
+          addSyntax(path, line, "JSX closing tag does not match opening tag <"
+              + expected + ">.", findings);
+          return;
+        }
+        tags.remove(tags.size() - 1);
+      } else if (!selfClosing) {
+        tags.add(new JsxTag(name, line));
+      }
+      i = tagEnd;
+    }
+    if (!tags.isEmpty()) {
+      JsxTag tag = tags.get(tags.size() - 1);
+      addSyntax(path, tag.line(), "JSX tag <" + tag.name() + "> is not closed.", findings);
+    }
+  }
+
+  private static String pythonCodeWithoutComment(String line) {
+    boolean single = false;
+    boolean doub = false;
+    boolean escaped = false;
+    for (int i = 0; i < line.length(); i++) {
+      char current = line.charAt(i);
+      if (escaped) {
+        escaped = false;
+      } else if ((single || doub) && current == '\\') {
+        escaped = true;
+      } else if (!doub && current == '\'') {
+        single = !single;
+      } else if (!single && current == '"') {
+        doub = !doub;
+      } else if (!single && !doub && current == '#') {
+        return line.substring(0, i);
+      }
+    }
+    return line;
+  }
+
+  private static int indentationWidth(String line) {
+    int width = 0;
+    for (int i = 0; i < line.length(); i++) {
+      if (line.charAt(i) == ' ') {
+        width++;
+      } else if (line.charAt(i) == '\t') {
+        width = ((width / 8) + 1) * 8;
+      } else {
+        break;
+      }
+    }
+    return width;
+  }
+
+  private static boolean isLikelyJsxOpen(String content, int index) {
+    if (index + 1 >= content.length()) return false;
+    char next = content.charAt(index + 1);
+    if (next == '/' || next == '>') return true;
+    if (!Character.isLetter(next)) return false;
+    int previous = index - 1;
+    while (previous >= 0 && Character.isWhitespace(content.charAt(previous))) previous--;
+    if (previous < 0) return true;
+    char before = content.charAt(previous);
+    if ("=({[,;:>}".indexOf(before) >= 0) return true;
+    int wordEnd = previous + 1;
+    while (previous >= 0 && Character.isLetter(content.charAt(previous))) previous--;
+    String word = content.substring(previous + 1, wordEnd);
+    return "return".equals(word) || "yield".equals(word);
+  }
+
+  private static int skipTag(String content, int start, int line) {
+    char quote = 0;
+    int braces = 0;
+    for (int i = start; i < content.length(); i++) {
+      char current = content.charAt(i);
+      if (quote != 0) {
+        if (current == '\\') i++;
+        else if (current == quote) quote = 0;
+      } else if (current == '\'' || current == '"') {
+        quote = current;
+      } else if (current == '{') {
+        braces++;
+      } else if (current == '}' && braces > 0) {
+        braces--;
+      } else if (current == '>' && braces == 0) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private static int skipJsxExpression(String content, int start, int line) {
+    int depth = 1;
+    for (int i = start + 1; i < content.length(); i++) {
+      char current = content.charAt(i);
+      if (current == '\'' || current == '"' || current == '`') {
+        i = skipQuoted(content, i, current);
+      } else if (current == '{') {
+        depth++;
+      } else if (current == '}' && --depth == 0) {
+        return i;
+      }
+    }
+    return content.length() - 1;
+  }
+
+  private static int skipQuoted(String content, int start, char quote) {
+    for (int i = start + 1; i < content.length(); i++) {
+      if (content.charAt(i) == '\\') i++;
+      else if (content.charAt(i) == quote) return i;
+    }
+    return content.length() - 1;
+  }
+
+  private static int skipToLineEnd(String content, int start) {
+    int end = content.indexOf('\n', start);
+    return end < 0 ? content.length() - 1 : end - 1;
+  }
+
+  private static int skipBlockComment(String content, int start, int line) {
+    int end = content.indexOf("*/", start);
+    return end < 0 ? content.length() - 1 : end + 1;
+  }
+
+  private static int countNewlines(String content, int start, int end) {
+    int count = 0;
+    for (int i = start; i < end; i++) if (content.charAt(i) == '\n') count++;
+    return count;
+  }
+
+  private static boolean isJsxNameChar(char value) {
+    return Character.isLetterOrDigit(value) || value == '_' || value == '-'
+        || value == ':' || value == '.';
+  }
+
+  private record JsxTag(String name, int line) {
   }
 
   private void checkSourceRules(

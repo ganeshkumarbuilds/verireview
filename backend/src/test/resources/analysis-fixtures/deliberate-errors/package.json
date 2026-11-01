@@ -1,0 +1,1 @@
+{"name":"broken-project","scripts":{"test":"node test.js" "build":"node build.js"}}
