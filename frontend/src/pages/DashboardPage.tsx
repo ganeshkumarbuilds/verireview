@@ -64,12 +64,12 @@ function FeatureCard({ icon: Icon, title, description, href, label }: Feature) {
   );
 }
 
-function StatTile({ label, value }: { label: string; value: number }) {
+function StatTile({ label, value }: { label: string; value: number | null }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
       <p className="mt-2 text-3xl font-bold tabular-nums tracking-tight text-slate-900">
-        {value.toLocaleString()}
+        {value === null ? '—' : value.toLocaleString()}
       </p>
     </div>
   );
@@ -120,9 +120,9 @@ export function DashboardPage() {
   }, [reload]);
 
   // Null-safe everywhere: missing data reads as 0 / empty.
-  const totalFilesVerified = summary?.totalFilesVerified ?? 0;
-  const totalIssuesFound = summary?.totalIssuesFound ?? 0;
-  const totalIssuesFixed = summary?.totalIssuesFixed ?? 0;
+  const totalFilesVerified = summary?.totalFilesVerified ?? null;
+  const totalIssuesFound = summary?.totalIssuesFound ?? null;
+  const totalIssuesFixed = summary?.totalIssuesFixed ?? null;
   const projects = summary?.projects ?? [];
 
   return (

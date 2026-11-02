@@ -46,8 +46,12 @@ async function authRequest(
   throw new Error('Authentication request failed.');
 }
 
-export async function me(client: ApiClient, token: string): Promise<UserResponse> {
-  return client.request<UserResponse>('/auth/me', { headers: bearer(token) });
+export async function me(
+  client: ApiClient,
+  token: string,
+  timeoutMs = 30_000,
+): Promise<UserResponse> {
+  return client.request<UserResponse>('/auth/me', { headers: bearer(token) }, { timeoutMs });
 }
 
 export async function logout(client: ApiClient, token: string, refreshToken: string): Promise<void> {

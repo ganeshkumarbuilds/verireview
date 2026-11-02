@@ -30,6 +30,9 @@ export function loginValidationError(email: string, password: string): string | 
 export function loginServerErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     switch (err.status) {
+      case 0:
+      case 408:
+        return 'Unable to connect to VeriReview. Please try again.';
       case 400:
       case 401:
         // Deliberately identical: unregistered email and wrong password

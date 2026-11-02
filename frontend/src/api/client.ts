@@ -59,6 +59,7 @@ export class ApiClient {
   readonly baseUrl: string;
   private readonly fetchImpl?: typeof fetch;
   private readonly onUnauthorized?: () => void;
+  private readonly controllers = new Set<AbortController>();
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = (
@@ -90,9 +91,10 @@ export class ApiClient {
     const fetchImpl = this.fetchImpl ?? fetch;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined;
-    if (options.timeoutMs !== undefined) {
+    if (options.timeoutMs !== undefined || init.signal === undefined) {
       controller = new AbortController();
-      timeout = setTimeout(() => controller?.abort(), options.timeoutMs);
+      this.controllers.add(controller);
+      timeout = setTimeout(() => controller?.abort(), options.timeoutMs ?? 30_000);
     }
     try {
       const response = await fetchImpl(this.buildUrl(path), {
@@ -100,15 +102,29 @@ export class ApiClient {
         headers,
         ...(controller ? { signal: controller.signal } : {}),
       });
-      if (response.status === 401) {
+      if (response.status === 401 && headers.has('Authorization')) {
         this.onUnauthorized?.();
       }
       return parseBody<T>(response);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new ApiError(408, 'REQUEST_TIMEOUT', 'The request timed out. Please retry.');
+      }
+      if (error instanceof TypeError) {
+        throw new ApiError(0, 'NETWORK_ERROR', 'Unable to reach VeriReview. Please retry.');
+      }
+      throw error;
     } finally {
+      if (controller) this.controllers.delete(controller);
       if (timeout !== undefined) {
         clearTimeout(timeout);
       }
     }
+  }
+
+  cancelInFlight(): void {
+    for (const controller of this.controllers) controller.abort();
+    this.controllers.clear();
   }
 
   async liveness(): Promise<void> {

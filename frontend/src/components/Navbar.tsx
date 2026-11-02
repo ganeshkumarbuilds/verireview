@@ -25,7 +25,7 @@ const mobileLinkClass = ({ isActive }: { isActive: boolean }): string =>
 
 /** Top navigation bar: brand, bold workspace links, and profile/logout. */
 export function Navbar() {
-  const { token, user, logout } = useAuth();
+  const { status, token, user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -49,7 +49,7 @@ export function Navbar() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [menuOpen, profileOpen]);
 
-  const displayName = user?.displayName ?? user?.email ?? 'Account';
+  const displayName = user?.displayName ?? user?.email ?? '';
   const initials = displayName.slice(0, 2).toUpperCase();
 
   const handleLogout = async () => {
@@ -80,7 +80,7 @@ export function Navbar() {
             Generate. Review.
           </p>
         </div>
-        {token && (
+        {status === 'authenticated' && token && (
           <nav
             aria-label="Primary"
             className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-1 lg:flex"
@@ -93,7 +93,7 @@ export function Navbar() {
           </nav>
         )}
         <div className="ml-auto hidden items-center gap-2 lg:flex">
-          {token ? (
+          {status === 'authenticated' && token ? (
             <>
               <div
                 className="relative"
@@ -117,7 +117,9 @@ export function Navbar() {
                   >
                     {initials}
                   </span>
-                  <span className="truncate text-sm font-bold text-indigo-950">{displayName}</span>
+                  <span className="truncate text-sm font-bold text-indigo-950">
+                    {displayName || <span className="inline-block h-4 w-20 animate-pulse rounded bg-indigo-200" />}
+                  </span>
                 </button>
                 {profileOpen && (
                   <div
@@ -170,7 +172,7 @@ export function Navbar() {
           aria-label="Mobile"
           className="border-t border-indigo-100 bg-white px-4 py-2 lg:hidden"
         >
-          {token &&
+          {status === 'authenticated' && token &&
             NAV_LINKS.map((link) => (
               <NavLink
                 key={link.to}
@@ -183,7 +185,7 @@ export function Navbar() {
               </NavLink>
             ))}
           <div className="mt-1 border-t border-indigo-100 py-2">
-            {token ? (
+            {status === 'authenticated' && token ? (
               <div className="space-y-2">
                 <p className="truncate px-3 text-sm text-slate-600">
                   <span className="font-bold text-indigo-950">{displayName}</span>

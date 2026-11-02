@@ -107,13 +107,15 @@ describe('route guards', () => {
   });
 
   it.each(['/login', '/register'])(
-    'redirects a signed-in visitor away from %s to the dashboard',
+    'shows the explicit already-signed-in choice on %s',
     async (path) => {
       renderAt(path, true);
       await waitFor(() =>
-        expect(screen.getByRole('heading', { name: 'Dashboard' })).toBeInTheDocument(),
+        expect(screen.getByRole('heading', { name: "You're already signed in" })).toBeInTheDocument(),
       );
       expect(screen.queryByRole('form', { name: 'Login form' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Continue to dashboard' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Switch account' })).toBeInTheDocument();
     },
   );
 });
@@ -135,7 +137,6 @@ describe('placeholder pages', () => {
     ['/history', 'Login', false],
     ['/login', 'Login', false],
     ['/register', 'Register', false],
-    ['/register', 'Dashboard', true],
     ['/no-such-route', 'Page not found', false],
   ])('renders %s', (path, heading, authenticated) => {
     renderAt(path, authenticated as boolean);

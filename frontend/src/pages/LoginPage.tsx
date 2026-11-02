@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { requestPasswordReset } from '../api/auth';
 import { loginServerErrorMessage, loginValidationError } from '../api/authErrors';
@@ -13,7 +13,7 @@ const pillInput =
   'w-full bg-transparent text-[15px] text-slate-900 placeholder:text-slate-500 focus:outline-none focus-visible:outline-none';
 
 export function LoginPage() {
-  const { login } = useAuth();
+  const { login, logout, status, user, notice, dismissNotice } = useAuth();
   const client = apiClient();
   useServerWarmup(client);
   const navigate = useNavigate();
@@ -28,6 +28,27 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [slow, setSlow] = useState(false);
   const submitting = useRef(false);
+  const location = useLocation();
+
+  if (status === 'authenticated') {
+    const displayName = user?.displayName ?? user?.email ?? 'your account';
+    return (
+      <AuthLayout>
+        <div className="rounded-3xl border border-indigo-100 bg-white px-6 py-10 text-center shadow-md shadow-indigo-100 sm:px-12">
+          <h1 className="text-3xl font-bold tracking-tight text-indigo-950">You&apos;re already signed in</h1>
+          <p className="mt-3 text-sm text-slate-600">Signed in as <strong>{displayName}</strong>.</p>
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            <button type="button" onClick={() => navigate('/dashboard', { replace: true })} className="flex-1 rounded-full bg-indigo-600 py-3 text-sm font-semibold text-white">
+              Continue to dashboard
+            </button>
+            <button type="button" onClick={() => void logout()} className="flex-1 rounded-full border border-indigo-200 bg-white py-3 text-sm font-semibold text-indigo-700">
+              Switch account
+            </button>
+          </div>
+        </div>
+      </AuthLayout>
+    );
+  }
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -43,7 +64,8 @@ export function LoginPage() {
     const slowTimer = window.setTimeout(() => setSlow(true), 3000);
     try {
       await login(email.trim(), password);
-      navigate('/dashboard', { replace: true });
+      const from = (location.state as { from?: string } | null)?.from ?? '/dashboard';
+      navigate(from, { replace: true });
     } catch (err) {
       // Expected auth failures (401/403/429/5xx/offline) land here and are
       // rendered as friendly copy — never rethrown, never logged.
@@ -71,6 +93,12 @@ export function LoginPage() {
 
   return (
     <AuthLayout>
+      {notice && (
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="alert">
+          <span>{notice}</span>
+          <button type="button" onClick={dismissNotice} className="font-semibold underline">Dismiss</button>
+        </div>
+      )}
       <div className="rounded-3xl border border-indigo-100 bg-white px-6 py-10 shadow-md shadow-indigo-100 sm:px-12">
         <h1 className="text-center text-4xl font-bold tracking-tight text-indigo-950">Login</h1>
         <p className="mt-2 text-center text-[15px] text-indigo-950/60">Please sign in to continue</p>

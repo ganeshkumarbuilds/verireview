@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { apiClient, useAuth } from '../auth/AuthContext';
 import { AuthLayout } from '../components/AuthLayout';
@@ -11,7 +11,7 @@ const pillInput =
   'w-full bg-transparent text-[15px] text-slate-900 placeholder:text-slate-500 focus:outline-none focus-visible:outline-none';
 
 export function RegisterPage() {
-  const { register } = useAuth();
+  const { register, logout, status, user } = useAuth();
   useServerWarmup(apiClient());
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
@@ -21,6 +21,27 @@ export function RegisterPage() {
   const [busy, setBusy] = useState(false);
   const [slow, setSlow] = useState(false);
   const submitting = useRef(false);
+  const location = useLocation();
+
+  if (status === 'authenticated') {
+    const displayName = user?.displayName ?? user?.email ?? 'your account';
+    return (
+      <AuthLayout>
+        <div className="rounded-3xl border border-indigo-100 bg-white px-6 py-10 text-center shadow-md shadow-indigo-100 sm:px-12">
+          <h1 className="text-3xl font-bold tracking-tight text-indigo-950">You&apos;re already signed in</h1>
+          <p className="mt-3 text-sm text-slate-600">Signed in as <strong>{displayName}</strong>.</p>
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            <button type="button" onClick={() => navigate('/dashboard', { replace: true })} className="flex-1 rounded-full bg-indigo-600 py-3 text-sm font-semibold text-white">
+              Continue to dashboard
+            </button>
+            <button type="button" onClick={() => void logout()} className="flex-1 rounded-full border border-indigo-200 bg-white py-3 text-sm font-semibold text-indigo-700">
+              Switch account
+            </button>
+          </div>
+        </div>
+      </AuthLayout>
+    );
+  }
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -31,7 +52,8 @@ export function RegisterPage() {
     const slowTimer = window.setTimeout(() => setSlow(true), 3000);
     try {
       await register(email, password, displayName || undefined);
-      navigate('/dashboard', { replace: true });
+      const from = (location.state as { from?: string } | null)?.from ?? '/dashboard';
+      navigate(from, { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Registration failed.');
     } finally {
