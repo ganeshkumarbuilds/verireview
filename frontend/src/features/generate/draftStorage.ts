@@ -7,7 +7,6 @@ export type GenerateDraft = {
   name: string;
   idea: string;
   extraInfo: string;
-  generationEngine: 'TEMPLATE' | 'AI' | '';
   backend: string;
   frontend: string;
   languageRuntime: string;
@@ -64,7 +63,6 @@ export function readGenerateDraft(userId: string): GenerateDraft | null {
       || !isSingleLine(draft.languageRuntime)
       || !isSingleLine(draft.backendCustom)
       || !isSingleLine(draft.frontendCustom)
-      || !isSingleLine(draft.generationEngine)
       || !isSingleLine(draft.backend)
       || !isSingleLine(draft.frontend)
       || !isAnswerMap(draft.answers)

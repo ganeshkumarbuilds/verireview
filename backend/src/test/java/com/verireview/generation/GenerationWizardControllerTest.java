@@ -41,9 +41,6 @@ class GenerationWizardControllerTest extends AbstractPersistenceTest {
        {"questionId":"database.connection","value":"","skipped":true},
        {"questionId":"auth.method","value":"NONE","skipped":false},
        {"questionId":"ai.features","value":"NO","skipped":false},
-       {"questionId":"generation.engine","value":"OPENROUTER","skipped":false},
-       {"questionId":"generation.model","value":"openai/test-model","skipped":false},
-       {"questionId":"generation.apiKey","value":"sk-must-never-be-stored","skipped":false},
        {"questionId":"deployment.target","value":"LOCAL","skipped":false}]
       """;
 
@@ -74,10 +71,8 @@ class GenerationWizardControllerTest extends AbstractPersistenceTest {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$[?(@.id == 'database.type')]").isNotEmpty())
         .andExpect(jsonPath("$[?(@.id == 'auth.method')]").isNotEmpty())
-        .andExpect(jsonPath("$[?(@.id == 'generation.engine')]").isNotEmpty())
         .andExpect(jsonPath("$[?(@.id == 'deployment.target')]").isNotEmpty())
-        .andExpect(jsonPath("$[?(@.id == 'generation.apiKey')].secret")
-            .value(org.hamcrest.Matchers.contains(true)));
+        .andExpect(jsonPath("$[?(@.id == 'generation.engine')]").doesNotExist());
   }
 
   @Test
@@ -107,9 +102,7 @@ class GenerationWizardControllerTest extends AbstractPersistenceTest {
             .content("{\"project\":" + PROJECT + ",\"answers\":[]}"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.error.message").value(
-            org.hamcrest.Matchers.containsString(GenerationWizardCatalog.DATABASE_TYPE)))
-        .andExpect(jsonPath("$.error.message").value(
-            org.hamcrest.Matchers.containsString(GenerationWizardCatalog.ENGINE)));
+            org.hamcrest.Matchers.containsString(GenerationWizardCatalog.DATABASE_TYPE)));
 
     mockMvc.perform(get("/api/v1/generations")
             .header("Authorization", "Bearer " + token))

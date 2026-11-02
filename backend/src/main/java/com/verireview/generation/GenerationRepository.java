@@ -15,4 +15,7 @@ public interface GenerationRepository extends JpaRepository<Generation, UUID> {
   Page<Generation> findByOwnerIdOrderByCreatedAtDesc(UUID ownerId, Pageable pageable);
 
   Optional<Generation> findFirstByProjectIdOrderByCreatedAtDesc(UUID projectId);
+
+  long countByOwnerIdAndAiProviderAndCreatedAtGreaterThanEqual(
+      UUID ownerId, GenerationAiProvider provider, java.time.Instant createdAt);
 }

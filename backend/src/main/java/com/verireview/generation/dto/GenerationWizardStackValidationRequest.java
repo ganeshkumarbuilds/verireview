@@ -6,7 +6,6 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
 public record GenerationWizardStackValidationRequest(
-    @NotBlank String engine,
     @NotNull GenerationBackend backend,
     @NotNull GenerationFrontend frontend) {
 }

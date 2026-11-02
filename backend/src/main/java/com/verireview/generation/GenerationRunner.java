@@ -34,6 +34,7 @@ import com.verireview.review.ReviewStatus;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.io.IOException;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -604,6 +605,7 @@ public class GenerationRunner {
         String.valueOf(iteration), String.valueOf(plan.size()));
     UUID executionId = generations.startAgentExecution(
         generationId, AgentType.CODING, snapshot.aiModel(), promptVersion, hash);
+    generations.updateAgentProgress(executionId, "Preparing files", 0, plan.size());
     long startedNanos = System.nanoTime();
     try {
       List<AiGenerationFilesResult.GeneratedFile> generated = template
@@ -618,7 +620,22 @@ public class GenerationRunner {
       assertNoEmbeddedConnectionDetails(generated, snapshot);
       validateGeneratedFiles(generated, plan);
       List<ValidatedFile> validated = review(generated, secrets);
-      Path workspace = writeWorkspace(generationId, iteration, validated);
+      Path workspace = storage.generationWorkspaceDir(generationId, iteration);
+      storage.deleteQuietly(workspace);
+      try {
+        Files.createDirectories(workspace);
+        int written = 0;
+        for (ValidatedFile file : validated) {
+          Path target = storage.resolveJailed(workspace, file.path());
+          Files.createDirectories(target.getParent());
+          Files.writeString(target, file.content(), StandardCharsets.UTF_8);
+          written++;
+          generations.updateAgentProgress(
+              executionId, "Writing " + file.path(), written, plan.size());
+        }
+      } catch (IOException e) {
+        throw new GenerationException("Could not write generated files", e);
+      }
       long totalChars = validated.stream().mapToLong(file -> file.content().length()).sum();
       UUID artifactId = generations.recordArtifact(generationId, iteration,
           validated.size(), totalChars, manifestSha(validated), workspace.toString());

@@ -3,14 +3,9 @@ import type { ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   CheckCircle2,
-  Circle,
-  CircleAlert,
-  CircleX,
-  Clock3,
   Code2,
   Eye,
   FileCode2,
-  LoaderCircle,
   ShieldCheck,
 } from 'lucide-react';
 import { ApiError } from '../../api/client';
@@ -22,8 +17,6 @@ import {
   getGeneration,
   getGenerationFile,
   getGenerationQuestions,
-  getGenerationWizardCatalog,
-  validateGenerationWizardStack,
   isTerminalGeneration,
   listGenerationFiles,
   listRestructures,
@@ -52,7 +45,6 @@ import type {
   GenerationQuestion,
   GenerationQuestionsInput,
   GenerationResponse,
-  GenerationWizardCatalog,
   PlanPreviewResponse,
   RestructurePreset,
   RestructureView,
@@ -68,6 +60,7 @@ import {
   selectClass,
   textareaClass,
 } from '../../components/ui';
+import { AgentPipeline, type AgentStep } from '../../components/AgentPipeline';
 import { FeaturePage } from '../../components/FeaturePage';
 import {
   clearGenerateDrafts,
@@ -79,7 +72,7 @@ import {
 
 const POLL_MS = 3000;
 const MIN_IDEA = 20;
-const STEPS = ['Project', 'Engine', 'Stack', 'Questions', 'Review plan'] as const;
+const STEPS = ['Project', 'Stack', 'Questions', 'Review plan'] as const;
 
 const BACKEND_LABELS: Record<GenerationBackend, string> = {
   JAVA_SPRING_BOOT: 'Spring Boot',
@@ -101,25 +94,6 @@ const INTEGRATION_VALUES: GenerationIntegration[] = [
   'STRIPE', 'RAZORPAY', 'EMAIL', 'FILE_STORAGE_S3',
   'AI_LLM', 'MAPS', 'ANALYTICS', 'DOCKER_CI',
 ];
-
-const ENGINE_FALLBACK: GenerationWizardCatalog = {
-  engines: [
-    {
-      id: 'TEMPLATE',
-      label: 'Template',
-      description: 'Fast, no AI key, Spring Boot + React only.',
-      supportedBackends: ['JAVA_SPRING_BOOT'],
-      supportedFrontends: ['REACT_TYPESCRIPT', 'NONE'],
-    },
-    {
-      id: 'AI',
-      label: 'AI',
-      description: 'Any stack, needs your AI key.',
-      supportedBackends: ['JAVA_SPRING_BOOT', 'PYTHON_FASTAPI', 'NODEJS', 'OTHER', 'NONE'],
-      supportedFrontends: ['REACT_TYPESCRIPT', 'NEXTJS', 'VUE', 'OTHER', 'NONE'],
-    },
-  ],
-};
 
 const PRESETS: { value: RestructurePreset; label: string; note: string }[] = [
   { value: 'MVC', label: 'MVC', note: 'controllers · services · repositories · models' },
@@ -145,47 +119,6 @@ function stepStateFromAgent(step: string | undefined): StageState {
     default:
       return 'waiting';
   }
-}
-
-function buildState(state: StageState) {
-  const tone =
-    state === 'done'
-      ? 'green'
-      : state === 'failed'
-        ? 'red'
-        : state === 'running'
-          ? 'blue'
-          : state === 'skipped'
-            ? 'amber'
-            : 'gray';
-  const label =
-    state === 'done'
-      ? 'Done'
-      : state === 'failed'
-        ? 'Failed'
-        : state === 'running'
-          ? 'Running'
-          : state === 'skipped'
-            ? 'Skipped'
-            : 'Waiting';
-  return { tone: tone as 'green' | 'red' | 'blue' | 'amber' | 'gray', label };
-}
-
-function stageIcon(state: StageState) {
-  if (state === 'running') return LoaderCircle;
-  if (state === 'done') return CheckCircle2;
-  if (state === 'failed') return CircleX;
-  if (state === 'skipped') return CircleAlert;
-  return Circle;
-}
-
-function elapsedLabel(startedAt: string | null, finishedAt: string | null, now: number): string {
-  if (!startedAt) return 'Not started';
-  const end = finishedAt ? Date.parse(finishedAt) : now;
-  const start = Date.parse(startedAt);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return 'Elapsed unavailable';
-  const seconds = Math.max(0, Math.floor((end - start) / 1000));
-  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
 }
 
 function codeLanguage(path: string): string {
@@ -224,7 +157,7 @@ function latestAgent(generation: GenerationResponse | null, type: string) {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 }
 
-function pipelineStages(generation: GenerationResponse | null): {
+function pipelineStages(generation: GenerationResponse | null): ({
   key: string;
   label: string;
   role: string;
@@ -233,9 +166,13 @@ function pipelineStages(generation: GenerationResponse | null): {
   startedAt: string | null;
   finishedAt: string | null;
   activityLog: string | null;
+  currentActivity: string | null;
+  error: string | null;
+  filesWritten?: number | null;
+  filesPlanned?: number | null;
   executionId: string | null;
   roundNumber: number;
-}[] {
+})[] {
   const execution: ExecutionView | null = generation?.execution ?? null;
   const verified = latestAgent(generation, 'VERIFIED');
   const verifyState: StageState = execution?.notVerified ||
@@ -270,6 +207,8 @@ function pipelineStages(generation: GenerationResponse | null): {
       startedAt: planning?.createdAt ?? null,
       finishedAt: planning?.finishedAt ?? null,
       activityLog: planning?.activityLog ?? null,
+      currentActivity: planning?.currentActivity ?? null,
+      error: planning?.error ?? null,
       executionId: planning?.id ?? null,
       roundNumber: planning?.roundNumber ?? generation?.iteration ?? 1,
     },
@@ -282,6 +221,10 @@ function pipelineStages(generation: GenerationResponse | null): {
       startedAt: coding?.createdAt ?? null,
       finishedAt: coding?.finishedAt ?? null,
       activityLog: coding?.activityLog ?? null,
+      currentActivity: coding?.currentActivity ?? null,
+      error: coding?.error ?? null,
+      filesWritten: coding?.filesWritten ?? null,
+      filesPlanned: coding?.filesPlanned ?? null,
       executionId: coding?.id ?? null,
       roundNumber: coding?.roundNumber ?? generation?.iteration ?? 1,
     },
@@ -294,6 +237,8 @@ function pipelineStages(generation: GenerationResponse | null): {
       startedAt: review?.createdAt ?? null,
       finishedAt: review?.finishedAt ?? null,
       activityLog: review?.activityLog ?? null,
+      currentActivity: review?.currentActivity ?? null,
+      error: review?.error ?? null,
       executionId: review?.id ?? null,
       roundNumber: review?.roundNumber ?? generation?.iteration ?? 1,
     },
@@ -313,6 +258,8 @@ function pipelineStages(generation: GenerationResponse | null): {
       startedAt: verified?.createdAt ?? execution?.createdAt ?? null,
       finishedAt: verified?.finishedAt ?? null,
       activityLog: verified?.activityLog ?? execution?.command ?? null,
+      currentActivity: verified?.currentActivity ?? null,
+      error: verified?.error ?? null,
       executionId: verified?.id ?? null,
       roundNumber: verified?.roundNumber ?? generation?.iteration ?? 1,
     },
@@ -325,6 +272,8 @@ function pipelineStages(generation: GenerationResponse | null): {
       startedAt: rating?.createdAt ?? null,
       finishedAt: rating?.finishedAt ?? null,
       activityLog: rating?.activityLog ?? null,
+      currentActivity: rating?.currentActivity ?? null,
+      error: rating?.error ?? null,
       executionId: rating?.id ?? null,
       roundNumber: rating?.roundNumber ?? generation?.iteration ?? 1,
     },
@@ -392,11 +341,6 @@ export function GeneratePage() {
   const [name, setName] = useState('');
   const [idea, setIdea] = useState('');
   const [extraInfo, setExtraInfo] = useState('');
-  const [generationEngine, setGenerationEngine] = useState<'TEMPLATE' | 'AI' | ''>('');
-  const [wizardCatalog, setWizardCatalog] = useState<GenerationWizardCatalog | null>(null);
-  const [catalogLoading, setCatalogLoading] = useState(false);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [wizardChangeNotice, setWizardChangeNotice] = useState<string | null>(null);
   const [backend, setBackend] = useState<GenerationBackend | ''>('');
   const [frontend, setFrontend] = useState<GenerationFrontend | ''>('');
   const [languageRuntime, setLanguageRuntime] = useState('');
@@ -417,6 +361,7 @@ export function GeneratePage() {
   const [dbName, setDbName] = useState('');
   const [dbUser, setDbUser] = useState('');
   const [dbPassword, setDbPassword] = useState('');
+  const [aiApiKey, setAiApiKey] = useState('');
 
   const [planPreview, setPlanPreview] = useState<PlanPreviewResponse | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -470,34 +415,12 @@ export function GeneratePage() {
   }, []);
 
   useEffect(() => {
-    if (step !== 4 || questionErrors.length === 0) return;
+    if (step !== 3 || questionErrors.length === 0) return;
     const firstId = questionErrors[0];
     const control = questionControlRefs.current[firstId]
       ?? document.getElementById('db-host');
     window.setTimeout(() => control?.focus(), 0);
   }, [step, questionErrors]);
-
-  useEffect(() => {
-    if (!token) return;
-    let cancelled = false;
-    setCatalogLoading(true);
-    getGenerationWizardCatalog(apiClient(), token)
-      .then((catalog) => {
-        if (!cancelled) {
-          setWizardCatalog(catalog);
-          setCatalogError(null);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setCatalogError('Generation options could not be loaded. Retry to continue.');
-      })
-      .finally(() => {
-        if (!cancelled) setCatalogLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
 
   useEffect(() => {
     if (!user?.id) {
@@ -526,7 +449,7 @@ export function GeneratePage() {
       ].includes(id)),
     );
     if (!name.trim() && !idea.trim() && !extraInfo.trim()
-        && !generationEngine && !backend && !frontend && !languageRuntime.trim()
+        && !backend && !frontend && !languageRuntime.trim()
         && !backendCustom.trim() && !frontendCustom.trim()
         && Object.keys(safeAnswers).length === 0) {
       return;
@@ -534,12 +457,12 @@ export function GeneratePage() {
     writeGenerateDraft({
       version: GENERATE_DRAFT_VERSION,
       userId: user.id,
-      name, idea, extraInfo, generationEngine, backend, frontend, languageRuntime,
+      name, idea, extraInfo, backend, frontend, languageRuntime,
       backendCustom, frontendCustom, answers: safeAnswers,
     });
   }, [
     user?.id, draftResolved, draftCandidate,
-    name, idea, extraInfo, generationEngine, backend, frontend, languageRuntime,
+    name, idea, extraInfo, backend, frontend, languageRuntime,
     backendCustom, frontendCustom, answers,
   ]);
 
@@ -613,7 +536,7 @@ export function GeneratePage() {
         setLanguageRuntime(loaded.languageRuntime ?? '');
         setBackendCustom(loaded.backendCustom ?? '');
         setFrontendCustom(loaded.frontendCustom ?? '');
-        setStep(6);
+        setStep(5);
       })
       .catch(() => {
         if (!cancelled) setError('That generation could not be loaded.');
@@ -683,7 +606,7 @@ export function GeneratePage() {
   // Step 3: ask the backend for questions derived from steps 1–2. The
   // frontend never invents a question or a default answer.
   useEffect(() => {
-    if (!token || step !== 4) return;
+    if (!token || step !== 3) return;
     let cancelled = false;
     setQuestionsLoading(true);
     setQuestionsError(null);
@@ -705,7 +628,7 @@ export function GeneratePage() {
 
   // Step 4: plan built only from the explicit answers. A 400 names missing ids.
   useEffect(() => {
-    if (!token || step !== 5) return;
+    if (!token || step !== 4) return;
     let cancelled = false;
     setPreviewLoading(true);
     setPreviewError(null);
@@ -778,7 +701,6 @@ export function GeneratePage() {
 
   async function next() {
     setError(null);
-    setWizardChangeNotice(null);
     if (step === 1) {
       if (!name.trim()) {
         setError('Project name is required.');
@@ -798,15 +720,6 @@ export function GeneratePage() {
       return;
     }
     if (step === 2) {
-      if (!generationEngine) {
-        setError('Choose a generation engine first.');
-        document.querySelector<HTMLElement>('[role="radio"]')?.focus();
-        return;
-      }
-      setStep(3);
-      return;
-    }
-    if (step === 3) {
       if (!backend || !frontend) {
         setError('Choose a backend and a frontend. Use None when one side does not apply.');
         document.getElementById(!frontend ? 'select-frontend' : 'select-backend')?.focus();
@@ -829,23 +742,10 @@ export function GeneratePage() {
         setError('Describe the custom frontend.');
         return;
       }
-      if (!token) return;
-      try {
-        await validateGenerationWizardStack(apiClient(), token, {
-          engine: generationEngine,
-          backend: backend as GenerationBackend,
-          frontend: frontend as GenerationFrontend,
-        });
-      } catch {
-        setError(generationEngine === 'TEMPLATE'
-          ? 'This stack is not available for Template. Switch to the AI engine.'
-          : 'This stack is not available for the selected generation engine.');
-        return;
-      }
-      setStep(4);
+      setStep(3);
       return;
     }
-    if (step === 4) {
+    if (step === 3) {
       if (questionsLoading) {
         setError('Questions are still loading. Please wait, then try again.');
         return;
@@ -866,18 +766,6 @@ export function GeneratePage() {
       const blockingQuestionIds = missing
         .filter((question) => questions.some((item) => item.id === question.id))
         .map((question) => question.id);
-      const engine = answers['generation.engine']?.value;
-      if (engine && engine !== 'TEMPLATE') {
-        if (!answers['generation.model']?.value.trim()) {
-          missing.push({ ...questions[0], id: 'generation.model', prompt: 'Which generation model?' });
-        }
-        if (!answers['generation.apiKey']?.value.trim()) {
-          missing.push({ ...questions[0], id: 'generation.apiKey', prompt: 'Generation engine API key' });
-        }
-        if (engine === 'CUSTOM' && !answers['generation.baseUrl']?.value.trim()) {
-          missing.push({ ...questions[0], id: 'generation.baseUrl', prompt: 'Custom base URL' });
-        }
-      }
       if (missing.length > 0) {
         setQuestionErrors(blockingQuestionIds);
         questionControlRefs.current[blockingQuestionIds[0]]?.focus();
@@ -901,43 +789,9 @@ export function GeneratePage() {
           return;
         }
       }
-      setStep(5);
+      setStep(4);
       setPreviewTick((value) => value + 1);
     }
-  }
-
-  function chooseEngine(engine: 'TEMPLATE' | 'AI') {
-    setGenerationEngine(engine);
-    setWizardChangeNotice(null);
-    const supported = (wizardCatalog ?? ENGINE_FALLBACK).engines.find((item) => item.id === engine);
-    if (backend && frontend && supported
-        && (!supported.supportedBackends.includes(backend)
-          || !supported.supportedFrontends.includes(frontend))) {
-      setBackend('');
-      setFrontend('');
-      setBackendCustom('');
-      setFrontendCustom('');
-      setWizardChangeNotice(
-        'The engine changed, so your previous backend and frontend were cleared because this engine does not support them.',
-      );
-    }
-    if (engine === 'TEMPLATE') {
-      setAnswers((current) => {
-        const nextAnswers = { ...current };
-        for (const id of ['generation.model', 'generation.apiKey', 'generation.baseUrl']) {
-          delete nextAnswers[id];
-        }
-        return nextAnswers;
-      });
-    }
-  }
-
-  function supportsStack(value: GenerationBackend | GenerationFrontend, kind: 'backend' | 'frontend') {
-    if (!generationEngine) return false;
-    const engine = (wizardCatalog ?? ENGINE_FALLBACK).engines.find((item) => item.id === generationEngine);
-    return kind === 'backend'
-      ? Boolean(engine?.supportedBackends.includes(value as GenerationBackend))
-      : Boolean(engine?.supportedFrontends.includes(value as GenerationFrontend));
   }
 
   function setAnswerValue(questionId: string, value: string) {
@@ -956,15 +810,7 @@ export function GeneratePage() {
   }
 
   function answersPayload(): GenerationAnswer[] {
-    const engine = answers['generation.engine']?.value;
-    return questions
-      .filter((question) => !(
-        engine === 'TEMPLATE'
-        && (question.id === 'generation.model'
-          || question.id === 'generation.apiKey'
-          || question.id === 'generation.baseUrl')
-      ))
-      .map((question) => {
+    return questions.map((question) => {
         if (question.id === 'database.connection') {
           const connection = answers[question.id];
           const text = databaseConnectionText();
@@ -1039,17 +885,15 @@ export function GeneratePage() {
   }
 
   function resolvedAiConfig(): CreateGenerationInput['aiConfig'] {
-    const engine = answers['generation.engine']?.value;
-    if (!engine || engine === 'TEMPLATE') {
+    const template = backend === 'JAVA_SPRING_BOOT'
+      && (frontend === 'REACT_TYPESCRIPT' || frontend === 'NONE');
+    if (template) {
       return { provider: 'NONE', model: 'template' };
     }
     return {
-      provider: engine === 'CUSTOM' ? 'CUSTOM' : 'OPENROUTER',
-      model: answers['generation.model']?.value.trim() ?? '',
-      apiKey: answers['generation.apiKey']?.value ?? '',
-      ...(engine === 'CUSTOM'
-        ? { baseUrl: answers['generation.baseUrl']?.value.trim() ?? '' }
-        : {}),
+      provider: 'OPENROUTER',
+      model: 'platform-default',
+      ...(aiApiKey.trim() ? { apiKey: aiApiKey } : {}),
     };
   }
 
@@ -1104,18 +948,10 @@ export function GeneratePage() {
     try {
       const created = await createGeneration(apiClient(), token, buildInput());
       setGeneration(created);
-      setStep(6);
+      setStep(5);
       // Secrets were sent once. Drop them from component state after dispatch.
-      setAnswers((current) => {
-        const next = { ...current };
-        for (const [id, answer] of Object.entries(next)) {
-          if (id === 'generation.apiKey') {
-            next[id] = { ...answer, value: '' };
-          }
-        }
-        return next;
-      });
       setDbPassword('');
+      setAiApiKey('');
     } catch (e) {
       setError(messageOf(e));
     } finally {
@@ -1310,6 +1146,7 @@ export function GeneratePage() {
     setDbName('');
     setDbUser('');
     setDbPassword('');
+    setAiApiKey('');
     setDraftCandidate(null);
     setDraftResolved(true);
     if (searchParams.has('genId')) {
@@ -1323,7 +1160,6 @@ export function GeneratePage() {
     setName(draft.name);
     setIdea(draft.idea);
     setExtraInfo(draft.extraInfo);
-    setGenerationEngine(draft.generationEngine);
     setBackend(draft.backend as GenerationBackend | '');
     setFrontend(draft.frontend as GenerationFrontend | '');
     setLanguageRuntime(draft.languageRuntime);
@@ -1350,10 +1186,10 @@ export function GeneratePage() {
       title="Generate"
       description="Choose the project and stack, answer the backend's questions, review the plan, then approve generation."
       steps={STEPS}
-      current={step >= 6 ? STEPS.length - 1 : step - 1}
+      current={step >= 5 ? STEPS.length - 1 : step - 1}
       actions={
         <div className="flex flex-wrap justify-end gap-2">
-          {step <= 5 && (
+          {step <= 4 && (
             <button type="button" className={secondaryButtonClass} onClick={startOver}>
               Start over
             </button>
@@ -1370,12 +1206,6 @@ export function GeneratePage() {
             message={error}
             onRetry={step === 3 ? () => void next() : undefined}
           />
-          {error.includes('Switch to the AI engine') && (
-            <button type="button" className={`${secondaryButtonClass} mt-2`}
-              onClick={() => { chooseEngine('AI'); setError(null); }}>
-              Switch to the AI engine
-            </button>
-          )}
         </div>
       )}
 
@@ -1465,48 +1295,6 @@ export function GeneratePage() {
       {step === 2 && (
         <Panel className="space-y-5">
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">Generation engine</h2>
-            <p className="mt-1 text-sm text-slate-600">
-              Choose the engine first. Your choice controls which stack options are available.
-            </p>
-          </div>
-          {catalogLoading && <LoadingState label="Loading generation options…" />}
-          {catalogError && <ErrorAlert message={catalogError} />}
-          <div className="grid gap-4 sm:grid-cols-2" role="radiogroup" aria-label="Generation engine">
-            {(wizardCatalog ?? ENGINE_FALLBACK).engines.map((engine) => (
-              <button
-                key={engine.id}
-                type="button"
-                role="radio"
-                aria-checked={generationEngine === engine.id}
-                className={`rounded-xl border p-4 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-600 ${
-                  generationEngine === engine.id
-                    ? 'border-indigo-600 bg-indigo-50 ring-2 ring-indigo-200'
-                    : 'border-slate-200 bg-white hover:border-indigo-300'
-                }`}
-                onClick={() => chooseEngine(engine.id)}
-              >
-                <span className="block font-semibold text-slate-900">{engine.label}</span>
-                <span className="mt-1 block text-sm text-slate-600">{engine.description}</span>
-              </button>
-            ))}
-          </div>
-          {wizardChangeNotice && (
-            <p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
-              {wizardChangeNotice}
-            </p>
-          )}
-          <div className="flex justify-between">
-            <button type="button" className={secondaryButtonClass} onClick={() => setStep(1)}>Back</button>
-            <button type="button" className={primaryButtonClass} onClick={next}
-            >Choose stack</button>
-          </div>
-        </Panel>
-      )}
-
-      {step === 3 && (
-        <Panel className="space-y-5">
-          <div>
             <h2 className="text-lg font-semibold text-slate-900">Stack</h2>
             <p className="mt-1 text-sm text-slate-600">
               Choose each part explicitly. Database, auth, AI, deployment, and
@@ -1517,17 +1305,13 @@ export function GeneratePage() {
             <Select label="Frontend" value={frontend} onChange={(value) => setFrontend(value as GenerationFrontend)}>
               <option value="">Select frontend…</option>
               {Object.entries(FRONTEND_LABELS).map(([value, label]) => (
-                <option key={value} value={value} disabled={!supportsStack(value as GenerationFrontend, 'frontend')}>
-                  {label}{!supportsStack(value as GenerationFrontend, 'frontend') ? ' — unavailable for this engine' : ''}
-                </option>
+                <option key={value} value={value}>{label}</option>
               ))}
             </Select>
             <Select label="Backend" value={backend} onChange={(value) => setBackend(value as GenerationBackend)}>
               <option value="">Select backend…</option>
               {Object.entries(BACKEND_LABELS).map(([value, label]) => (
-                <option key={value} value={value} disabled={!supportsStack(value as GenerationBackend, 'backend')}>
-                  {label}{!supportsStack(value as GenerationBackend, 'backend') ? ' — unavailable for this engine' : ''}
-                </option>
+                <option key={value} value={value}>{label}</option>
               ))}
             </Select>
             {frontend === 'OTHER' && (
@@ -1595,13 +1379,13 @@ export function GeneratePage() {
             <p className="text-sm text-amber-700">Pick at least a frontend or a backend.</p>
           )}
           <div className="flex justify-between">
-            <button type="button" className={secondaryButtonClass} onClick={() => setStep(2)}>Back</button>
+            <button type="button" className={secondaryButtonClass} onClick={() => setStep(1)}>Back</button>
             <button type="button" className={primaryButtonClass} onClick={next}>Answer questions</button>
           </div>
         </Panel>
       )}
 
-      {step === 4 && (
+      {step === 3 && (
         <div className="space-y-5">
           <Panel className="space-y-3">
             <h2 className="text-lg font-semibold text-slate-900">Questions</h2>
@@ -1610,6 +1394,25 @@ export function GeneratePage() {
               are no preselected answers. Required questions block the plan;
               optional questions can be skipped explicitly.
             </p>
+            {backend && frontend && backend !== 'JAVA_SPRING_BOOT'
+              || backend === 'JAVA_SPRING_BOOT' && frontend !== 'REACT_TYPESCRIPT' && frontend !== 'NONE' ? (
+              <div className="mb-5 rounded-lg border border-indigo-200 bg-indigo-50 p-4">
+                <label htmlFor="generation-ai-key" className="block text-sm font-semibold text-indigo-950">
+                  AI key (optional)
+                </label>
+                <p className="mt-1 text-sm text-indigo-900">
+                  Used only for this run. Leave blank to use the platform key, if configured.
+                </p>
+                <input
+                  id="generation-ai-key"
+                  type="password"
+                  autoComplete="off"
+                  className={`${inputClass} mt-3`}
+                  value={aiApiKey}
+                  onChange={(event) => setAiApiKey(event.target.value)}
+                />
+              </div>
+            ) : null}
             {questionsLoading && <LoadingState label="Preparing questions…" />}
             {questionsError && <ErrorAlert message={questionsError} />}
             {questionErrors.length > 0 && (
@@ -1623,14 +1426,6 @@ export function GeneratePage() {
           {!questionsLoading && !questionsError && questions.map((question) => {
             const answer = answers[question.id];
             const skipped = Boolean(answer?.skipped);
-            const engine = answers['generation.engine']?.value;
-            const hiddenByTemplate = engine === 'TEMPLATE'
-              && (question.id === 'generation.model'
-                || question.id === 'generation.apiKey'
-                || question.id === 'generation.baseUrl');
-            if (hiddenByTemplate) {
-              return null;
-            }
             const dbType = answers['database.type']?.value;
             const dbQuestionDisabled = question.id === 'database.connection'
               && (!dbType || dbType === 'NONE'
@@ -1772,7 +1567,7 @@ export function GeneratePage() {
           })}
 
           <div className="flex justify-between">
-            <button type="button" className={secondaryButtonClass} onClick={() => setStep(3)}>Back</button>
+            <button type="button" className={secondaryButtonClass} onClick={() => setStep(2)}>Back</button>
             <button
               type="button"
               className={primaryButtonClass}
@@ -1784,7 +1579,7 @@ export function GeneratePage() {
         </div>
       )}
 
-      {step === 5 && (
+      {step === 4 && (
         <div className="space-y-6">
           <Panel className="space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1883,10 +1678,10 @@ export function GeneratePage() {
                   </div>
                 )}
                 <div className="flex flex-wrap gap-2">
-                  <button type="button" className={secondaryButtonClass} onClick={() => setStep(3)}>
+                  <button type="button" className={secondaryButtonClass} onClick={() => setStep(2)}>
                     Edit stack
                   </button>
-                  <button type="button" className={secondaryButtonClass} onClick={() => setStep(4)}>
+                  <button type="button" className={secondaryButtonClass} onClick={() => setStep(3)}>
                     Edit answers
                   </button>
                 </div>
@@ -1925,7 +1720,7 @@ export function GeneratePage() {
               Review afterwards.
             </p>
             <div className="flex flex-wrap justify-between gap-3">
-              <button type="button" className={secondaryButtonClass} onClick={() => setStep(4)}>Back</button>
+              <button type="button" className={secondaryButtonClass} onClick={() => setStep(3)}>Back</button>
               <button
                 type="button"
                 className={primaryButtonClass}
@@ -1939,7 +1734,7 @@ export function GeneratePage() {
         </div>
       )}
 
-      {step === 6 && (
+      {step === 5 && (
         <div className="space-y-6">
           <Panel className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1954,59 +1749,35 @@ export function GeneratePage() {
               </Badge>
             </div>
 
-            <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              {stages.map((stage, index) => {
-                const display = buildState(stage.state);
-                const Icon = stageIcon(stage.state);
-                return (
-                  <li key={stage.key} className={`rounded-xl border p-3 transition-all duration-200 motion-reduce:transition-none ${
-                    stage.state === 'running' ? 'border-indigo-300 bg-indigo-50/40 shadow-sm' : 'border-slate-200'
-                  }`}>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                        <Icon className={`h-4 w-4 ${stage.state === 'running' ? 'animate-spin' : ''}`} aria-hidden="true" />
-                        {index + 1}. {stage.label}
-                        {stage.key === 'verify' && <span className="sr-only">3. Verifying</span>}
-                      </span>
-                      <Badge tone={display.tone}>
-                        {display.label}
-                        {stage.key === 'verify' && stage.state === 'skipped' && (
-                          <span className="sr-only">Not verified</span>
-                        )}
-                      </Badge>
-                    </div>
-                    <p className="mt-1 text-[11px] text-slate-500">Round {stage.roundNumber}</p>
-                    <p className="mt-2 text-xs font-medium text-slate-700">{stage.role}</p>
-                    <p className="mt-2 text-xs leading-5 text-slate-600">{stage.detail}</p>
-                    <p className="mt-2 flex items-center gap-1 text-[11px] text-slate-500">
-                      <Clock3 className="h-3 w-3" aria-hidden="true" />
-                      {elapsedLabel(stage.startedAt, stage.finishedAt, clock)}
-                    </p>
-                    {stage.activityLog && (
-                      <ul className="mt-2 max-h-20 space-y-1 overflow-auto rounded-lg bg-slate-50 p-2 text-[11px] text-slate-600" aria-label={`${stage.label} activity log`}>
-                        {stage.activityLog.split(/\r?\n/).filter(Boolean).map((activity, activityIndex) => (
-                          <li key={`${stage.key}-activity-${activityIndex}`} className="break-words">
-                            <span className="mr-1 text-indigo-400">›</span>{activity}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {stage.state === 'failed' && stage.executionId && (
-                      <button
-                        type="button"
-                        className={`${secondaryButtonClass} mt-3 w-full`}
-                        onClick={() => {
-                          setRetryExecutionId(stage.executionId);
-                          setRetryError(null);
-                        }}
-                      >
-                        Retry {stage.label}
-                      </button>
-                    )}
-                  </li>
-                );
-              })}
-            </ol>
+            <AgentPipeline
+              now={clock}
+              steps={stages.map((stage): AgentStep => ({
+                key: stage.key,
+                label: stage.label,
+                state: stage.state === 'done' ? 'completed' : stage.state,
+                startedAt: stage.startedAt,
+                finishedAt: stage.finishedAt,
+                currentActivity: stage.currentActivity,
+                activityLog: stage.activityLog,
+                error: stage.error ?? (stage.state === 'failed' ? stage.detail : null),
+                filesWritten: stage.filesWritten,
+                filesPlanned: stage.filesPlanned,
+                detail: (
+                  <>
+                    <span>{stage.role}</span>
+                    {stage.state !== 'failed' && <span className="mt-1 block">{stage.detail}</span>}
+                    <span className="mt-1 block">Round {stage.roundNumber}</span>
+                  </>
+                ),
+              }))}
+              onRetry={(step) => {
+                const stage = stages.find((item) => item.key === step.key);
+                if (stage?.executionId) {
+                  setRetryExecutionId(stage.executionId);
+                  setRetryError(null);
+                }
+              }}
+            />
 
             {generation?.verificationLevel === 'SANDBOX_UNAVAILABLE' && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
@@ -2661,7 +2432,6 @@ export function GeneratePage() {
           <h2 className="text-sm font-semibold text-slate-900">Your answers so far</h2>
           <dl className="mt-3 space-y-3 text-sm">
             <SummaryItem label="Project" value={name || 'Not chosen'} />
-            <SummaryItem label="Engine" value={generationEngine || 'Not chosen'} />
             <SummaryItem label="Backend" value={backend ? BACKEND_LABELS[backend] : 'Not chosen'} />
             <SummaryItem label="Frontend" value={frontend ? FRONTEND_LABELS[frontend] : 'Not chosen'} />
             <SummaryItem label="Runtime" value={languageRuntime || 'Not chosen'} />
@@ -2762,8 +2532,11 @@ function formatBytes(bytes: number): string {
 function messageOf(error: unknown): string {
   if (error instanceof ApiError) {
     const message = error.message.toLowerCase();
-    if (message.includes('template generation supports')) {
-      return 'This stack is not available for Template. Switch to the AI engine.';
+    if (message.includes('needs an ai key') || message.includes('platform ai configuration')) {
+      return 'This stack needs an AI key. Add one below, or choose Spring Boot + React.';
+    }
+    if (message.includes('daily platform ai run limit')) {
+      return "Today's platform AI run limit has been reached. Add your own AI key to continue.";
     }
     if (message.includes('answer these questions')) {
       return 'Complete the required questions before continuing.';

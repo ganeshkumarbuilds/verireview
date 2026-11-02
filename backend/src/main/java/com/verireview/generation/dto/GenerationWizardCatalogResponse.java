@@ -4,13 +4,19 @@ import com.verireview.generation.GenerationBackend;
 import com.verireview.generation.GenerationFrontend;
 import java.util.List;
 
-public record GenerationWizardCatalogResponse(List<Engine> engines) {
+public record GenerationWizardCatalogResponse(
+    List<BackendOption> backends,
+    List<FrontendOption> frontends) {
 
-  public record Engine(
-      String id,
+  public record BackendOption(
+      GenerationBackend id,
       String label,
-      String description,
-      List<GenerationBackend> supportedBackends,
-      List<GenerationFrontend> supportedFrontends) {
+      String description) {
+  }
+
+  public record FrontendOption(
+      GenerationFrontend id,
+      String label,
+      String description) {
   }
 }

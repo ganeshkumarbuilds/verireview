@@ -43,7 +43,7 @@ public class GenerateWizardController {
       @AuthenticationPrincipal VeriReviewUserDetails principal,
       @Valid @RequestBody GenerationWizardStackValidationRequest request) {
     GenerationWizardCatalog.validateStack(
-        request.engine(), request.backend(), request.frontend());
+        request.backend(), request.frontend());
     return ResponseEntity.noContent().build();
   }
 

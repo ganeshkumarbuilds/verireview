@@ -124,16 +124,9 @@ export interface GenerationWizardPlanInput {
   answers: GenerationAnswer[];
 }
 
-export interface GenerationWizardCatalogEngine {
-  id: 'TEMPLATE' | 'AI';
-  label: string;
-  description: string;
-  supportedBackends: GenerationBackend[];
-  supportedFrontends: GenerationFrontend[];
-}
-
 export interface GenerationWizardCatalog {
-  engines: GenerationWizardCatalogEngine[];
+  backends: Array<{ id: GenerationBackend; label: string; description: string }>;
+  frontends: Array<{ id: GenerationFrontend; label: string; description: string }>;
 }
 
 export interface UpdateGenerationInput {
@@ -364,6 +357,9 @@ export interface AgentStepView {
   createdAt: string;
   finishedAt: string | null;
   activityLog: string | null;
+  currentActivity: string | null;
+  filesWritten: number | null;
+  filesPlanned: number | null;
   roundNumber: number;
 }
 

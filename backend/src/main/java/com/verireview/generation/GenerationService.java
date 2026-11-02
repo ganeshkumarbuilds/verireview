@@ -54,6 +54,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.HashSet;
@@ -70,6 +72,7 @@ import java.util.zip.ZipOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -124,6 +127,18 @@ public class GenerationService {
   private final GenerationFixApprovalRepository fixApprovals;
   private final GenerationFileVersionRepository fileVersions;
   private final ConcurrentMap<UUID, GenerationSecrets> secrets = new ConcurrentHashMap<>();
+
+  @Value("${app.generation.platform-ai-provider:}")
+  private String platformAiProvider;
+
+  @Value("${app.generation.platform-ai-model:}")
+  private String platformAiModel;
+
+  @Value("${app.generation.platform-ai-api-key:}")
+  private String platformAiApiKey;
+
+  @Value("${app.generation.platform-ai-daily-run-limit:5}")
+  private int platformAiDailyRunLimit;
 
   private static final Logger log = LoggerFactory.getLogger(GenerationService.class);
 
@@ -198,6 +213,7 @@ public class GenerationService {
       throw new ResponseStatusException(HttpStatus.CONFLICT, "Generation name is already used");
     }
     boolean draft = Boolean.TRUE.equals(request.draft());
+    CreateGenerationRequest.AiConfig aiConfig = resolveAiConfig(ownerId, request.aiConfig(), draft);
     String requirement = request.requirement().trim();
     GenerationQuestionsRequest wizardProject = new GenerationQuestionsRequest(
         name,
@@ -218,7 +234,7 @@ public class GenerationService {
           "Answer these questions before generating: " + String.join(", ", resolved.missing()));
     }
     if (resolved != null) {
-      checkAnswersMatchAiConfig(resolved, request.aiConfig());
+      checkAnswersMatchAiConfig(request.backend(), request.frontend(), aiConfig);
     }
     GenerationDatabase database = resolved != null ? resolved.database() : request.database();
     GenerationAuth auth = resolved != null
@@ -238,10 +254,10 @@ public class GenerationService {
     checkSelection(request.backend(), request.frontend(), database, auth, integrations);
     checkStackCoherence(request.backend(), request.frontend(), database,
         request.databaseConfig() != null,
-        request.aiConfig().provider(), request.aiConfig().baseUrl(), request.aiConfig().apiKey(),
-        request.aiConfig().model(), draft, databaseConfigureLater);
+        aiConfig.provider(), aiConfig.baseUrl(), aiConfig.apiKey(),
+        aiConfig.model(), draft, databaseConfigureLater);
     if (!draft) {
-      requireSecrets(request, databaseConfigureLater);
+      requireSecrets(aiConfig);
     }
 
     Generation generation = new Generation();
@@ -269,11 +285,11 @@ public class GenerationService {
       generation.setDbUsername(db.username().trim());
       generation.setDbSslMode(blankToNull(db.sslMode()));
     }
-    generation.setAiProvider(request.aiConfig().provider());
-    String model = request.aiConfig().model() == null ? "" : request.aiConfig().model().trim();
-    generation.setAiModel(model.isEmpty() && request.aiConfig().provider() == GenerationAiProvider.NONE
+    generation.setAiProvider(aiConfig.provider());
+    String model = aiConfig.model() == null ? "" : aiConfig.model().trim();
+    generation.setAiModel(model.isEmpty() && aiConfig.provider() == GenerationAiProvider.NONE
         ? "template" : model);
-    generation.setAiBaseUrl(blankToNull(request.aiConfig().baseUrl()));
+    generation.setAiBaseUrl(blankToNull(aiConfig.baseUrl()));
     generation.setStatus(draft ? GenerationStatus.DRAFT : GenerationStatus.QUEUED);
     try {
       generations.saveAndFlush(generation);
@@ -295,7 +311,7 @@ public class GenerationService {
               ? "" : request.databaseConfig().password())
           : null;
       secrets.put(generation.getId(),
-          new GenerationSecrets(dbPassword, request.aiConfig().apiKey()));
+          new GenerationSecrets(dbPassword, aiConfig.apiKey()));
     }
 
     audits.record(generation.getOwner(), "GENERATION_CREATED", "generation",
@@ -533,37 +549,19 @@ public class GenerationService {
   }
 
   /**
-   * The wizard answers are authoritative. Reject a request whose AI config
-   * names a different engine/model than the user approved instead of silently
-   * running one and displaying the other.
+   * The selected stack determines the engine. Reject a request whose provider
+   * disagrees with that deterministic mapping.
    */
   private static void checkAnswersMatchAiConfig(
-      GenerationWizardCatalog.Resolution resolved, CreateGenerationRequest.AiConfig aiConfig) {
-    String engine = resolved.values().get(GenerationWizardCatalog.ENGINE);
-    GenerationAiProvider expectedProvider = switch (engine == null ? "" : engine) {
-      case "TEMPLATE" -> GenerationAiProvider.NONE;
-      case "CUSTOM" -> GenerationAiProvider.CUSTOM;
-      default -> GenerationAiProvider.OPENROUTER;
-    };
+      GenerationBackend backend, GenerationFrontend frontend,
+      CreateGenerationRequest.AiConfig aiConfig) {
+    GenerationAiProvider expectedProvider =
+        "TEMPLATE".equals(GenerationWizardCatalog.engineFor(backend, frontend))
+            ? GenerationAiProvider.NONE
+            : GenerationAiProvider.OPENROUTER;
     if (aiConfig.provider() != expectedProvider) {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "AI provider does not match the approved generation engine");
-    }
-    if (!"TEMPLATE".equals(engine)) {
-      String expectedModel = resolved.values().getOrDefault(GenerationWizardCatalog.MODEL, "");
-      String requestedModel = aiConfig.model() == null ? "" : aiConfig.model().trim();
-      if (!expectedModel.equals(requestedModel)) {
-        throw new ResponseStatusException(
-            HttpStatus.BAD_REQUEST, "AI model does not match the approved generation model");
-      }
-    }
-    if ("CUSTOM".equals(engine)) {
-      String expectedBaseUrl = resolved.values().getOrDefault(GenerationWizardCatalog.BASE_URL, "");
-      String requestedBaseUrl = aiConfig.baseUrl() == null ? "" : aiConfig.baseUrl().trim();
-      if (!expectedBaseUrl.equals(requestedBaseUrl)) {
-        throw new ResponseStatusException(
-            HttpStatus.BAD_REQUEST, "AI base URL does not match the approved generation endpoint");
-      }
     }
   }
 
@@ -614,7 +612,8 @@ public class GenerationService {
     if (!draft && (apiKey == null || apiKey.isBlank())) {
       // Drafts may omit secrets (re-supplied at start); dispatched runs may not.
       throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST, "AI API key is required");
+          HttpStatus.BAD_REQUEST,
+          "This stack needs an AI key. Add one below, or choose Spring Boot + React.");
     }
   }
 
@@ -649,13 +648,58 @@ public class GenerationService {
     return List.copyOf(result);
   }
 
-  private void requireSecrets(CreateGenerationRequest request, boolean databaseConfigureLater) {
-    // The database password is optional: a blank password is passed through.
-    // When the user explicitly chose "configure later", no DB secret exists.
-    if (request.aiConfig().provider() != GenerationAiProvider.NONE
-        && (request.aiConfig().apiKey() == null || request.aiConfig().apiKey().isBlank())) {
+  private CreateGenerationRequest.AiConfig resolveAiConfig(
+      UUID ownerId, CreateGenerationRequest.AiConfig requested, boolean draft) {
+    if (requested.provider() == GenerationAiProvider.NONE || draft
+        || requested.apiKey() != null && !requested.apiKey().isBlank()) {
+      return requested;
+    }
+    String provider = blankToNull(platformAiProvider);
+    String model = blankToNull(platformAiModel);
+    String apiKey = blankToNull(platformAiApiKey);
+    if (provider == null || model == null || apiKey == null) {
       throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST, "AI API key is required");
+          HttpStatus.BAD_REQUEST,
+          "This stack needs an AI key. Add one below, or choose Spring Boot + React.");
+    }
+    if (platformAiDailyRunLimit < 1) {
+      throw new ResponseStatusException(
+          HttpStatus.TOO_MANY_REQUESTS,
+          "The platform AI daily run limit is currently unavailable. Add your own AI key.");
+    }
+    Instant startOfDay = Instant.now().atZone(ZoneOffset.UTC).toLocalDate()
+        .atStartOfDay(ZoneOffset.UTC).toInstant();
+    GenerationAiProvider platformProvider;
+    try {
+      platformProvider = GenerationAiProvider.valueOf(provider.trim().toUpperCase());
+    } catch (IllegalArgumentException error) {
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "The platform AI configuration is unavailable. Add your own AI key.", error);
+    }
+    if (platformProvider == GenerationAiProvider.NONE) {
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          "The platform AI configuration is unavailable. Add your own AI key.");
+    }
+    long runsToday = generations.countByOwnerIdAndAiProviderAndCreatedAtGreaterThanEqual(
+        ownerId, platformProvider, startOfDay);
+    if (runsToday >= platformAiDailyRunLimit) {
+      throw new ResponseStatusException(
+          HttpStatus.TOO_MANY_REQUESTS,
+          "You have reached today's platform AI run limit. Add your own AI key to continue.");
+    }
+    return new CreateGenerationRequest.AiConfig(
+        platformProvider, apiKey,
+        requested.baseUrl(), model);
+  }
+
+  private void requireSecrets(CreateGenerationRequest.AiConfig aiConfig) {
+    if (aiConfig.provider() != GenerationAiProvider.NONE
+        && (aiConfig.apiKey() == null || aiConfig.apiKey().isBlank())) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST,
+          "This stack needs an AI key. Add one below, or choose Spring Boot + React.");
     }
   }
 
@@ -1543,6 +1587,7 @@ public class GenerationService {
     execution.setRoundNumber(managed.getIteration());
     execution.setStatus(AgentExecutionStatus.RUNNING);
     execution.setInputHash(inputHash);
+    execution.setCurrentActivity(agentType.name().toLowerCase() + " started");
     UUID executionId = executions.save(execution).getId();
     publishAfterCommit(generationId);
     return executionId;
@@ -1557,6 +1602,20 @@ public class GenerationService {
     execution.setError(error);
     execution.setDurationMs(durationMs);
     execution.setOutputRef(outputRef);
+    execution.setCurrentActivity(status == AgentExecutionStatus.COMPLETED
+        ? "completed" : status.name().toLowerCase());
+    if (execution.getGeneration() != null) {
+      publishAfterCommit(execution.getGeneration().getId());
+    }
+  }
+
+  @Transactional
+  public void updateAgentProgress(UUID executionId, String activity,
+      Integer filesWritten, Integer filesPlanned) {
+    AgentExecution execution = executions.findById(executionId).orElseThrow();
+    execution.setCurrentActivity(activity);
+    execution.setFilesWritten(filesWritten);
+    execution.setFilesPlanned(filesPlanned);
     if (execution.getGeneration() != null) {
       publishAfterCommit(execution.getGeneration().getId());
     }
@@ -2450,6 +2509,9 @@ public class GenerationService {
               || ex.getStatus() == AgentExecutionStatus.PENDING
               ? null : ex.getUpdatedAt(),
           ex.getOutputRef(),
+          ex.getCurrentActivity(),
+          ex.getFilesWritten(),
+          ex.getFilesPlanned(),
           ex.getRoundNumber()));
     }
     return steps;

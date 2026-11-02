@@ -51,6 +51,15 @@ public class AgentExecution extends BaseEntity {
   @Column(name = "output_ref", length = 1000)
   private String outputRef;
 
+  @Column(name = "current_activity", length = 1000)
+  private String currentActivity;
+
+  @Column(name = "files_written")
+  private Integer filesWritten;
+
+  @Column(name = "files_planned")
+  private Integer filesPlanned;
+
   @Column(name = "duration_ms")
   private Long durationMs;
 
@@ -147,6 +156,30 @@ public class AgentExecution extends BaseEntity {
 
   public void setOutputRef(String outputRef) {
     this.outputRef = outputRef;
+  }
+
+  public String getCurrentActivity() {
+    return currentActivity;
+  }
+
+  public void setCurrentActivity(String currentActivity) {
+    this.currentActivity = currentActivity;
+  }
+
+  public Integer getFilesWritten() {
+    return filesWritten;
+  }
+
+  public void setFilesWritten(Integer filesWritten) {
+    this.filesWritten = filesWritten;
+  }
+
+  public Integer getFilesPlanned() {
+    return filesPlanned;
+  }
+
+  public void setFilesPlanned(Integer filesPlanned) {
+    this.filesPlanned = filesPlanned;
   }
 
   public Long getDurationMs() {

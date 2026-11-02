@@ -51,38 +51,43 @@ public final class GenerationWizardCatalog {
   }
 
   public static GenerationWizardCatalogResponse catalog() {
-    return new GenerationWizardCatalogResponse(List.of(
-        new GenerationWizardCatalogResponse.Engine(
-            "TEMPLATE",
-            "Template",
-            "Fast, no AI key, Spring Boot + React only.",
-            List.of(GenerationBackend.JAVA_SPRING_BOOT),
-            List.of(GenerationFrontend.REACT_TYPESCRIPT, GenerationFrontend.NONE)),
-        new GenerationWizardCatalogResponse.Engine(
-            "AI",
-            "AI",
-            "Any stack, needs your AI key.",
-            List.of(GenerationBackend.values()),
-            List.of(GenerationFrontend.values()))));
+    return new GenerationWizardCatalogResponse(
+        List.of(
+            new GenerationWizardCatalogResponse.BackendOption(
+                GenerationBackend.JAVA_SPRING_BOOT, "Spring Boot", "Java Spring Boot backend"),
+            new GenerationWizardCatalogResponse.BackendOption(
+                GenerationBackend.NODEJS, "Node.js (Express)", "Node.js backend with Express"),
+            new GenerationWizardCatalogResponse.BackendOption(
+                GenerationBackend.PYTHON_FASTAPI, "FastAPI", "Python FastAPI backend"),
+            new GenerationWizardCatalogResponse.BackendOption(
+                GenerationBackend.OTHER, "Other", "Type your own backend"),
+            new GenerationWizardCatalogResponse.BackendOption(
+                GenerationBackend.NONE, "None", "No backend")
+        ),
+        List.of(
+            new GenerationWizardCatalogResponse.FrontendOption(
+                GenerationFrontend.REACT_TYPESCRIPT, "React", "React with TypeScript"),
+            new GenerationWizardCatalogResponse.FrontendOption(
+                GenerationFrontend.NEXTJS, "Next.js", "Next.js application"),
+            new GenerationWizardCatalogResponse.FrontendOption(
+                GenerationFrontend.VUE, "Vue", "Vue application"),
+            new GenerationWizardCatalogResponse.FrontendOption(
+                GenerationFrontend.OTHER, "Other", "Type your own frontend"),
+            new GenerationWizardCatalogResponse.FrontendOption(
+                GenerationFrontend.NONE, "None", "No frontend")));
   }
 
-  public static void validateStack(String engine, GenerationBackend backend,
-      GenerationFrontend frontend) {
-    String normalized = engine == null ? "" : engine.trim().toUpperCase(Locale.ROOT);
-    boolean template = "TEMPLATE".equals(normalized);
-    boolean ai = "AI".equals(normalized) || "OPENROUTER".equals(normalized)
-        || "CUSTOM".equals(normalized);
-    if (!template && !ai) {
+  public static void validateStack(GenerationBackend backend, GenerationFrontend frontend) {
+    if (backend == GenerationBackend.NONE && frontend == GenerationFrontend.NONE) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-          "Choose a supported generation engine.");
+          "Choose at least a backend or a frontend.");
     }
-    if (template && (backend != GenerationBackend.JAVA_SPRING_BOOT
-        || (frontend != GenerationFrontend.REACT_TYPESCRIPT
-            && frontend != GenerationFrontend.NONE))) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-          "Template generation supports Spring Boot with React or no frontend. "
-              + "Switch to the AI engine to use another stack.");
-    }
+  }
+
+  public static String engineFor(GenerationBackend backend, GenerationFrontend frontend) {
+    return backend == GenerationBackend.JAVA_SPRING_BOOT
+        && (frontend == GenerationFrontend.REACT_TYPESCRIPT || frontend == GenerationFrontend.NONE)
+        ? "TEMPLATE" : "AI";
   }
 
   /** Every question is derived from the explicit steps 1–2 choices. */
@@ -137,46 +142,6 @@ public final class GenerationWizardCatalog {
         false,
         List.of()));
     questions.add(new GenerationQuestion(
-        ENGINE,
-        "Which generation engine should write the code?",
-        "OpenRouter and custom OpenAI-compatible endpoints need a key. Template "
-            + "is deterministic and currently supports Spring Boot + React only.",
-        GenerationQuestionType.CHOICE,
-        true,
-        false,
-        false,
-        List.of(
-            option("OPENROUTER", "OpenRouter"),
-            option("CUSTOM", "Custom (OpenAI-compatible)"),
-            option("TEMPLATE", "Template — no AI key"))));
-    questions.add(new GenerationQuestion(
-        MODEL,
-        "Which generation model?",
-        "Required unless the template engine is selected.",
-        GenerationQuestionType.TEXT,
-        false,
-        false,
-        false,
-        List.of()));
-    questions.add(new GenerationQuestion(
-        API_KEY,
-        "Generation engine API key",
-        "Sent once and held in memory for the run only. Never stored or returned.",
-        GenerationQuestionType.TEXT,
-        false,
-        false,
-        true,
-        List.of()));
-    questions.add(new GenerationQuestion(
-        BASE_URL,
-        "Custom OpenAI-compatible base URL",
-        "Required when the custom engine is selected.",
-        GenerationQuestionType.TEXT,
-        false,
-        false,
-        false,
-        List.of()));
-    questions.add(new GenerationQuestion(
         DEPLOYMENT_TARGET,
         "Where will this deploy?",
         "Adds the matching deployment files to the plan.",
@@ -221,7 +186,8 @@ public final class GenerationWizardCatalog {
     Map<String, GenerationAnswerRequest> byId = new LinkedHashMap<>();
     for (GenerationAnswerRequest answer : answers == null ? List.<GenerationAnswerRequest>of() : answers) {
       String id = answer.questionId().trim();
-      if (questions.stream().noneMatch(question -> question.id().equals(id))) {
+      if (questions.stream().noneMatch(question -> question.id().equals(id))
+          && !Set.of(ENGINE, MODEL, API_KEY, BASE_URL).contains(id)) {
         throw new ResponseStatusException(
             HttpStatus.BAD_REQUEST, "Unknown question id: " + id);
       }
@@ -265,18 +231,8 @@ public final class GenerationWizardCatalog {
       }
     }
 
-    String engine = values.get(ENGINE);
-    if (engine == null || engine.isBlank()) {
-      if (!missing.contains(ENGINE)) {
-        missing.add(ENGINE);
-      }
-    } else if (!"TEMPLATE".equals(engine)) {
-      require(values, MODEL, missing);
-      require(values, API_KEY, missing);
-      if ("CUSTOM".equals(engine)) {
-        require(values, BASE_URL, missing);
-      }
-    }
+    String engine = engineFor(project.backend(), project.frontend());
+    values.put(ENGINE, engine);
 
     // A selected database needs either connection details or an explicit
     // "Ask me later". A blank optional field must not silently become that
@@ -339,13 +295,7 @@ public final class GenerationWizardCatalog {
       throw new ResponseStatusException(
           HttpStatus.BAD_REQUEST, "Authentication requires a backend");
     }
-    validateStack(engine, project.backend(), project.frontend());
-    boolean aiFeatures = "YES".equalsIgnoreCase(values.get(AI_FEATURES));
-    if (aiFeatures && "TEMPLATE".equals(engine)) {
-      throw new ResponseStatusException(
-          HttpStatus.BAD_REQUEST,
-          "AI features require an OpenRouter or custom generation engine");
-    }
+    validateStack(project.backend(), project.frontend());
 
     return new Resolution(values, database, auth, integrations,
         databaseConfigureLater, List.of());

@@ -49,9 +49,24 @@ class GenerationWizardServiceTest {
         skipped(GenerationWizardCatalog.DATABASE_CONNECTION),
         answer(GenerationWizardCatalog.AUTH_METHOD, "NONE"),
         answer(GenerationWizardCatalog.AI_FEATURES, "NO"),
-        answer(GenerationWizardCatalog.ENGINE, "TEMPLATE"),
         answer(GenerationWizardCatalog.DEPLOYMENT_TARGET, "LOCAL"),
         answer(GenerationWizardCatalog.INTEGRATIONS, "EMAIL"));
+  }
+
+  @Test
+  void engineIsDerivedFromTheSelectedStack() {
+    assertThat(GenerationWizardCatalog.engineFor(
+        GenerationBackend.JAVA_SPRING_BOOT, GenerationFrontend.REACT_TYPESCRIPT))
+        .isEqualTo("TEMPLATE");
+    assertThat(GenerationWizardCatalog.engineFor(
+        GenerationBackend.JAVA_SPRING_BOOT, GenerationFrontend.NONE))
+        .isEqualTo("TEMPLATE");
+    assertThat(GenerationWizardCatalog.engineFor(
+        GenerationBackend.NODEJS, GenerationFrontend.REACT_TYPESCRIPT))
+        .isEqualTo("AI");
+    assertThat(GenerationWizardCatalog.engineFor(
+        GenerationBackend.PYTHON_FASTAPI, GenerationFrontend.NONE))
+        .isEqualTo("AI");
   }
 
   @Test
@@ -64,9 +79,6 @@ class GenerationWizardServiceTest {
             GenerationWizardCatalog.DATABASE_CONNECTION,
             GenerationWizardCatalog.AUTH_METHOD,
             GenerationWizardCatalog.AI_FEATURES,
-            GenerationWizardCatalog.ENGINE,
-            GenerationWizardCatalog.MODEL,
-            GenerationWizardCatalog.API_KEY,
             GenerationWizardCatalog.DEPLOYMENT_TARGET,
             GenerationWizardCatalog.INTEGRATIONS);
     assertThat(questions)
@@ -91,7 +103,6 @@ class GenerationWizardServiceTest {
           assertThat(error.getReason())
               .contains(GenerationWizardCatalog.DATABASE_TYPE)
               .contains(GenerationWizardCatalog.AUTH_METHOD)
-              .contains(GenerationWizardCatalog.ENGINE)
               .contains(GenerationWizardCatalog.DEPLOYMENT_TARGET);
         });
   }
@@ -124,7 +135,7 @@ class GenerationWizardServiceTest {
         answer(GenerationWizardCatalog.DATABASE_TYPE, "NONE"),
         answer(GenerationWizardCatalog.AUTH_METHOD, "NONE"),
         answer(GenerationWizardCatalog.AI_FEATURES, "NO"),
-        answer(GenerationWizardCatalog.ENGINE, "BOGUS"),
+        answer(GenerationWizardCatalog.DATABASE_TYPE, "BOGUS"),
         answer(GenerationWizardCatalog.DEPLOYMENT_TARGET, "LOCAL"));
 
     assertThatThrownBy(() -> GenerationWizardCatalog.resolve(project(), answers))
@@ -138,7 +149,6 @@ class GenerationWizardServiceTest {
         answer(GenerationWizardCatalog.DATABASE_TYPE, "POSTGRESQL"),
         answer(GenerationWizardCatalog.AUTH_METHOD, "NONE"),
         answer(GenerationWizardCatalog.AI_FEATURES, "NO"),
-        answer(GenerationWizardCatalog.ENGINE, "TEMPLATE"),
         answer(GenerationWizardCatalog.DEPLOYMENT_TARGET, "LOCAL"));
 
     GenerationWizardCatalog.Resolution missing =
@@ -151,7 +161,6 @@ class GenerationWizardServiceTest {
         skipped(GenerationWizardCatalog.DATABASE_CONNECTION),
         answer(GenerationWizardCatalog.AUTH_METHOD, "NONE"),
         answer(GenerationWizardCatalog.AI_FEATURES, "NO"),
-        answer(GenerationWizardCatalog.ENGINE, "TEMPLATE"),
         answer(GenerationWizardCatalog.DEPLOYMENT_TARGET, "LOCAL"));
 
     GenerationWizardCatalog.Resolution later =
@@ -169,15 +178,12 @@ class GenerationWizardServiceTest {
             "postgresql://reviewer:private-password@db.example.test:5432/app"),
         answer(GenerationWizardCatalog.AUTH_METHOD, "NONE"),
         answer(GenerationWizardCatalog.AI_FEATURES, "YES"),
-        answer(GenerationWizardCatalog.ENGINE, "OPENROUTER"),
-        answer(GenerationWizardCatalog.MODEL, "openai/test-model"),
-        answer(GenerationWizardCatalog.API_KEY, "sk-live-must-not-persist"),
         answer(GenerationWizardCatalog.DEPLOYMENT_TARGET, "DOCKER"));
 
     String json = wizard.storedAnswersJson(project(), answers);
 
     assertThat(json)
-        .contains("\"questionId\":\"generation.apiKey\"")
+        .contains("\"questionId\":\"database.connection\"")
         .contains("\"secret\":true")
         .contains("\"configured\":true")
         .doesNotContain("postgresql://reviewer")
@@ -192,19 +198,11 @@ class GenerationWizardServiceTest {
   }
 
   @Test
-  void templatePlanNeedsNoAiKeyAndRejectsTemplateForUnsupportedStacks() {
+  void templatePlanNeedsNoAiKey() {
     PlanPreviewResponse plan =
         wizard.plan(new GenerationPlanRequest(project(), completeTemplateAnswers()));
     assertThat(plan.files()).extracting(PlanPreviewResponse.PlanFile::path)
         .doesNotContain("integrations/ai-llm.md");
 
-    GenerationQuestionsRequest pythonProject = new GenerationQuestionsRequest(
-        "api", "A small API with tests and docs.", null,
-        GenerationBackend.PYTHON_FASTAPI, GenerationFrontend.NONE,
-        "Python 3.12", null, null);
-    assertThatThrownBy(() -> wizard.plan(
-        new GenerationPlanRequest(pythonProject, completeTemplateAnswers())))
-        .isInstanceOfSatisfying(ResponseStatusException.class, error ->
-            assertThat(error.getReason()).contains("Template generation supports Spring Boot"));
   }
 }

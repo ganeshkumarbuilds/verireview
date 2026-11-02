@@ -107,6 +107,11 @@ app:
     model-label: "ai-service/review"
     max-files: 25
     max-bytes-per-file: 16384
+  generation:
+    platform-ai-provider: ${PLATFORM_AI_PROVIDER:}
+    platform-ai-model: ${PLATFORM_AI_MODEL:}
+    platform-ai-api-key: ${PLATFORM_AI_API_KEY:}
+    platform-ai-daily-run-limit: ${PLATFORM_AI_DAILY_RUN_LIMIT:5}
 
 server:
   # Overridable at runtime: PORT=8081 ./mvnw spring-boot:run

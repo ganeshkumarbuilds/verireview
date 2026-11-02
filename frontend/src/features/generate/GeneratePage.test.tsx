@@ -112,39 +112,6 @@ function questionSet() {
       options: [],
     },
     {
-      id: 'generation.engine',
-      prompt: 'Which generation engine should write the code?',
-      help: 'Template is deterministic.',
-      type: 'CHOICE',
-      required: true,
-      allowSkip: false,
-      secret: false,
-      options: [
-        { value: 'OPENROUTER', label: 'OpenRouter' },
-        { value: 'TEMPLATE', label: 'Template — no AI key' },
-      ],
-    },
-    {
-      id: 'generation.model',
-      prompt: 'Which generation model?',
-      help: 'Required unless template.',
-      type: 'TEXT',
-      required: false,
-      allowSkip: false,
-      secret: false,
-      options: [],
-    },
-    {
-      id: 'generation.apiKey',
-      prompt: 'Generation engine API key',
-      help: 'Sent once.',
-      type: 'TEXT',
-      required: false,
-      allowSkip: false,
-      secret: true,
-      options: [],
-    },
-    {
       id: 'deployment.target',
       prompt: 'Where will this deploy?',
       help: 'Adds deployment files.',
@@ -216,8 +183,6 @@ function answerBasics(name = 'task-tracker') {
   fireEvent.change(screen.getByLabelText(/Project name/), { target: { value: name } });
   fireEvent.change(screen.getByLabelText(/Task description/), { target: { value: IDEA } });
   fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
-  fireEvent.click(screen.getByRole('radio', { name: /Template/ }));
-  fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
 }
 
 function chooseStack() {
@@ -238,9 +203,6 @@ async function answerQuestions() {
     target: { value: 'NONE' },
   });
   fireEvent.click(screen.getByRole('button', { name: 'No' }));
-  fireEvent.change(screen.getByLabelText('Which generation engine should write the code?'), {
-    target: { value: 'TEMPLATE' },
-  });
   fireEvent.change(screen.getByLabelText('Where will this deploy?'), {
     target: { value: 'LOCAL' },
   });
@@ -257,21 +219,19 @@ function handlerWithQuestions(extra?: (url: string, init?: RequestInit) => Respo
     }
     if (url.endsWith('/generate/catalog')) {
       return new Response(JSON.stringify({
-        engines: [
-          {
-            id: 'TEMPLATE',
-            label: 'Template',
-            description: 'Fast, no AI key, Spring Boot + React only.',
-            supportedBackends: ['JAVA_SPRING_BOOT'],
-            supportedFrontends: ['REACT_TYPESCRIPT', 'NONE'],
-          },
-          {
-            id: 'AI',
-            label: 'AI',
-            description: 'Any stack, needs your AI key.',
-            supportedBackends: ['JAVA_SPRING_BOOT', 'PYTHON_FASTAPI', 'NODEJS', 'OTHER', 'NONE'],
-            supportedFrontends: ['REACT_TYPESCRIPT', 'NEXTJS', 'VUE', 'OTHER', 'NONE'],
-          },
+        backends: [
+          { id: 'JAVA_SPRING_BOOT', label: 'Spring Boot', description: 'Java Spring Boot backend' },
+          { id: 'NODEJS', label: 'Node.js (Express)', description: 'Node.js backend with Express' },
+          { id: 'PYTHON_FASTAPI', label: 'FastAPI', description: 'Python FastAPI backend' },
+          { id: 'OTHER', label: 'Other', description: 'Type your own backend' },
+          { id: 'NONE', label: 'None', description: 'No backend' },
+        ],
+        frontends: [
+          { id: 'REACT_TYPESCRIPT', label: 'React', description: 'React with TypeScript' },
+          { id: 'NEXTJS', label: 'Next.js', description: 'Next.js application' },
+          { id: 'VUE', label: 'Vue', description: 'Vue application' },
+          { id: 'OTHER', label: 'Other', description: 'Type your own frontend' },
+          { id: 'NONE', label: 'None', description: 'No frontend' },
         ],
       }), { status: 200 });
     }
@@ -343,19 +303,13 @@ afterEach(() => {
 });
 
 describe('GeneratePage — four-step explicit wizard', () => {
-  it('disables stacks unsupported by Template and explains an engine change', () => {
+  it('keeps every stack option enabled and starts with no selection', () => {
     renderGenerate(handlerWithQuestions());
     answerBasics();
-    expect(screen.getByRole('option', { name: /Next\.js/ })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
-    fireEvent.click(screen.getAllByRole('radio').find((radio) => radio.textContent?.startsWith('AI'))!);
-    fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
-    fireEvent.change(screen.getByLabelText('Backend'), { target: { value: 'JAVA_SPRING_BOOT' } });
-    fireEvent.change(screen.getByLabelText('Frontend'), { target: { value: 'NEXTJS' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
-    fireEvent.click(screen.getAllByRole('radio').find((radio) => radio.textContent?.startsWith('Template'))!);
-    expect(screen.getAllByRole('status').find((status) =>
-      status.textContent?.includes('cleared because this engine does not support'))).toBeTruthy();
+    expect(screen.getByLabelText('Frontend')).toHaveValue('');
+    expect(screen.getByLabelText('Backend')).toHaveValue('');
+    expect(screen.getByRole('option', { name: /Next\.js/ })).not.toBeDisabled();
+    expect(screen.getByRole('option', { name: /FastAPI/ })).not.toBeDisabled();
   });
 
   it('restores non-secret wizard progress without storing API keys or DB URLs', () => {
@@ -365,7 +319,6 @@ describe('GeneratePage — four-step explicit wizard', () => {
       name: 'restored-project',
       idea: IDEA,
       extraInfo: 'restored',
-      generationEngine: 'TEMPLATE',
       backend: 'JAVA_SPRING_BOOT',
       frontend: 'REACT_TYPESCRIPT',
       languageRuntime: 'Java 21',
@@ -446,7 +399,7 @@ describe('GeneratePage — four-step explicit wizard', () => {
 
     fireEvent.change(screen.getByLabelText(/Task description/), { target: { value: IDEA } });
     fireEvent.click(screen.getByRole('button', { name: 'Choose stack' }));
-    expect(screen.getByRole('heading', { name: 'Generation engine' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Stack' })).toBeInTheDocument();
   });
 
   it('shows an inline error and focuses an invalid project name', () => {
@@ -485,6 +438,53 @@ describe('GeneratePage — four-step explicit wizard', () => {
     expect(screen.getByLabelText(/Custom backend/)).toBeInTheDocument();
   });
 
+  it('shows an optional AI key only for AI stacks and sends it for this run', async () => {
+    const calls = renderGenerate(
+      handlerWithQuestions((url, init) => {
+        if (url.endsWith('/generations') && init?.method === 'POST') {
+          return new Response(JSON.stringify(baseGeneration({
+            backend: 'JAVA_SPRING_BOOT',
+            frontend: 'NEXTJS',
+            aiConfig: { provider: 'OPENROUTER', model: 'platform-default', baseUrl: null, keyConfigured: true },
+          })), { status: 201 });
+        }
+        return undefined;
+      }),
+    );
+    answerBasics();
+    fireEvent.change(screen.getByLabelText('Backend'), {
+      target: { value: 'JAVA_SPRING_BOOT' },
+    });
+    fireEvent.change(screen.getByLabelText('Frontend'), {
+      target: { value: 'NEXTJS' },
+    });
+    fireEvent.change(screen.getByLabelText(/Language \/ runtime/), {
+      target: { value: 'Java 21' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Answer questions' }));
+
+    expect(await screen.findByLabelText('AI key (optional)')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('AI key (optional)'), {
+      target: { value: 'sk-user-run-only' },
+    });
+    await answerQuestions();
+    fireEvent.click(screen.getByRole('button', { name: 'Review plan' }));
+    await screen.findByLabelText('Planned file path 1');
+    fireEvent.click(screen.getByRole('button', { name: 'Approve and generate' }));
+
+    await waitFor(() => expect(
+      calls.some((call) => call.method === 'POST' && call.url.endsWith('/generations')),
+    ).toBe(true));
+    const created = calls.find(
+      (call) => call.method === 'POST' && call.url.endsWith('/generations'),
+    );
+    expect(JSON.parse(created!.body).aiConfig).toEqual({
+      provider: 'OPENROUTER',
+      model: 'platform-default',
+      apiKey: 'sk-user-run-only',
+    });
+  });
+
   it('step 3 renders backend questions and blocks unanswered required ones', async () => {
     renderGenerate(handlerWithQuestions());
     answerBasics();
@@ -493,8 +493,8 @@ describe('GeneratePage — four-step explicit wizard', () => {
     await screen.findByLabelText('Which database should the project use?');
     fireEvent.click(screen.getByRole('button', { name: 'Review plan' }));
     expect(screen.getByText(/Answer these questions first/)).toBeInTheDocument();
-    expect(screen.getByText('5 questions need an answer')).toBeInTheDocument();
-    expect(screen.getAllByText(/This question is required/)).toHaveLength(5);
+    expect(screen.getByText('4 questions need an answer')).toBeInTheDocument();
+    expect(screen.getAllByText(/This question is required/)).toHaveLength(4);
     expect(screen.getByLabelText('Which database should the project use?')).toHaveFocus();
 
     await answerQuestions();
@@ -516,9 +516,6 @@ describe('GeneratePage — four-step explicit wizard', () => {
       target: { value: 'NONE' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'No' }));
-    fireEvent.change(screen.getByLabelText('Which generation engine should write the code?'), {
-      target: { value: 'TEMPLATE' },
-    });
     fireEvent.click(screen.getByRole('button', { name: 'Review plan' }));
     expect(await screen.findByLabelText('Planned file path 1')).toBeInTheDocument();
   });
@@ -558,9 +555,6 @@ describe('GeneratePage — four-step explicit wizard', () => {
       target: { value: 'NONE' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'No' }));
-    fireEvent.change(screen.getByLabelText('Which generation engine should write the code?'), {
-      target: { value: 'TEMPLATE' },
-    });
     fireEvent.change(screen.getByLabelText('Where will this deploy?'), {
       target: { value: 'LOCAL' },
     });
@@ -606,7 +600,6 @@ describe('GeneratePage — four-step explicit wizard', () => {
       expect.arrayContaining([
         expect.objectContaining({ questionId: 'database.type', value: 'NONE' }),
         expect.objectContaining({ questionId: 'auth.method', value: 'NONE' }),
-        expect.objectContaining({ questionId: 'generation.engine', value: 'TEMPLATE' }),
       ]),
     );
 
@@ -636,12 +629,12 @@ describe('GeneratePage — four-step explicit wizard', () => {
     );
   });
 
-  it('step 4 sends a secret answer once and never uses a default key', async () => {
+  it('infers the template engine for Spring Boot with React without a key', async () => {
     const calls = renderGenerate(
       handlerWithQuestions((url, init) => {
         if (url.endsWith('/generations') && init?.method === 'POST') {
           return new Response(
-            JSON.stringify(baseGeneration({ aiConfig: { provider: 'OPENROUTER', model: 'm', baseUrl: null, keyConfigured: true } })),
+            JSON.stringify(baseGeneration({ aiConfig: { provider: 'NONE', model: 'template', baseUrl: null, keyConfigured: false } })),
             { status: 201 },
           );
         }
@@ -658,15 +651,6 @@ describe('GeneratePage — four-step explicit wizard', () => {
       target: { value: 'NONE' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'No' }));
-    fireEvent.change(screen.getByLabelText('Which generation engine should write the code?'), {
-      target: { value: 'OPENROUTER' },
-    });
-    fireEvent.change(screen.getByLabelText('Which generation model?'), {
-      target: { value: 'openai/gpt-test' },
-    });
-    fireEvent.change(screen.getByLabelText('Generation engine API key'), {
-      target: { value: 'sk-test-key' },
-    });
     fireEvent.change(screen.getByLabelText('Where will this deploy?'), {
       target: { value: 'LOCAL' },
     });
@@ -683,9 +667,9 @@ describe('GeneratePage — four-step explicit wizard', () => {
       (call) => call.method === 'POST' && call.url.endsWith('/generations'),
     );
     const body = JSON.parse(created!.body);
-    expect(body.aiConfig.apiKey).toBe('sk-test-key');
-    expect(body.aiConfig.provider).toBe('OPENROUTER');
-    expect(body.aiConfig.model).toBe('openai/gpt-test');
+    expect(body.aiConfig.apiKey).toBeUndefined();
+    expect(body.aiConfig.provider).toBe('NONE');
+    expect(body.aiConfig.model).toBe('template');
   });
 
   it('shows the real pipeline and hands a reviewed generation to Review', async () => {
@@ -989,7 +973,7 @@ describe('GeneratePage — four-step explicit wizard', () => {
     expect(
       (await screen.findAllByText(/build and tests not run: sandbox unavailable/i)).length,
     ).toBeGreaterThan(0);
-    const buildStage = screen.getByText('3. Verifying').closest('li')!;
+    const buildStage = screen.getByText('4. Verifying').closest('li')!;
     expect(within(buildStage).getByText('Not verified')).toBeInTheDocument();
     expect(within(buildStage).queryByText('Done')).not.toBeInTheDocument();
   });

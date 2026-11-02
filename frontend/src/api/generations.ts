@@ -308,7 +308,10 @@ export async function getGenerationWizardCatalog(
 export async function validateGenerationWizardStack(
   client: ApiClient,
   token: string,
-  input: { engine: string; backend: GenerationQuestionsInput['backend']; frontend: GenerationQuestionsInput['frontend'] },
+  input: {
+    backend: GenerationQuestionsInput['backend'];
+    frontend: GenerationQuestionsInput['frontend'];
+  },
 ): Promise<void> {
   await client.request<void>('/generate/validate-stack', {
     method: 'POST',

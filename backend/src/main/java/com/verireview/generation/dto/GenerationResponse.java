@@ -195,6 +195,9 @@ public record GenerationResponse(
       Instant createdAt,
       Instant finishedAt,
       String activityLog,
+      String currentActivity,
+      Integer filesWritten,
+      Integer filesPlanned,
       int roundNumber) {
   }
 
